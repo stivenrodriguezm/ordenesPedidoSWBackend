@@ -105,10 +105,10 @@ WSGI_APPLICATION = 'lottusPedidos.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'lottusdb',
-        'USER': 'root',
-        'PASSWORD': 'Bicicleta123.',
-        'HOST': 'localhost',
+        'NAME': 'u756180748_lottusmuebles',
+        'USER': 'u756180748_root',
+        'PASSWORD': 'LottusMuebles1',
+        'HOST': '185.28.21.52',
         'PORT': '3306',
     }
 }
