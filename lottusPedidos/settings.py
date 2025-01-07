@@ -50,7 +50,7 @@ CORS_ALLOW_HEADERS = [
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",  # URL del frontend en desarrollo
-    "localhost",
+    "https://stivenrodriguezm.github.io",
 ]
 
 # Application definition
