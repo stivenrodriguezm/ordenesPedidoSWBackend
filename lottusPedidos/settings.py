@@ -113,6 +113,7 @@ DATABASES = {
         'PASSWORD': 'LottusMuebles1',
         'HOST': '185.28.21.52',
         'PORT': '3306',
+        'CONN_MAX_AGE': 600, 
     }
 }
 
