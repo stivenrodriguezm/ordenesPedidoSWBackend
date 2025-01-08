@@ -25,7 +25,7 @@ class OrdenPedidoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OrdenPedido
-        fields = ['id', 'proveedor', 'fecha_creacion', 'fecha_esperada', 'estado', 'notas', 'detalles']
+        fields = ['id', 'proveedor', 'fecha_creacion', 'fecha_esperada', 'estado', 'notas', 'orden_venta', 'detalles']  # Incluimos orden_venta
 
     def create(self, validated_data):
         request = self.context.get('request')  # Obtener el contexto del request

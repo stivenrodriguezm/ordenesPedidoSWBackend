@@ -33,6 +33,7 @@ class OrdenPedido(models.Model):
     costo = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     usuario = models.ForeignKey(User, on_delete=models.CASCADE)
     proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE)
+    orden_venta = models.CharField(max_length=20, null=True, blank=True)  # Nuevo campo
 
     def __str__(self):
         return f"Orden {self.id}"
