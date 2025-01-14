@@ -89,11 +89,13 @@ def listar_pedidos(request):
         o.costo,
         o.orden_venta
     FROM 
-        ordenes_ordenpedido o 
+            ordenes_ordenpedido o 
     JOIN 
-        ordenes_proveedor p ON o.proveedor_id = p.id 
+            ordenes_proveedor p ON o.proveedor_id = p.id 
     JOIN 
-        auth_user u ON o.usuario_id = u.id;
+            auth_user u ON o.usuario_id = u.id
+    ORDER BY 
+            o.id DESC;
     """
 
     # Filtrar según el rol del usuario
