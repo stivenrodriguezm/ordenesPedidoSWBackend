@@ -61,12 +61,22 @@ class UserDetailView(APIView):
             "is_staff": user.is_staff,  # Indica si es administrador
         })
 
+from django.db import connection
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def listar_pedidos(request):
     """
     Endpoint para listar las órdenes de pedido con datos personalizados.
     """
+    usuario = request.user
+    estado = request.GET.get('estado', None)
+    usuario_id = request.GET.get('usuario_id', None)
+
+    # Consulta base
     query = """
     SELECT 
         o.id AS id_orden, 
@@ -81,20 +91,38 @@ def listar_pedidos(request):
     JOIN 
         ordenes_proveedor p ON o.proveedor_id = p.id 
     JOIN 
-        auth_user u ON o.usuario_id = u.id 
-    ORDER BY 
-        o.fecha_creacion DESC 
-    LIMIT 25;
+        auth_user u ON o.usuario_id = u.id
     """
+
+    # Filtrar según el rol del usuario
+    if usuario.is_staff:
+        # Administradores pueden ver todos los pedidos
+        filters = []
+    else:
+        # Vendedores solo ven sus propios pedidos
+        filters = [f"o.usuario_id = {usuario.id}"]
+
+    # Filtros adicionales
+    if estado:
+        filters.append(f"o.estado = '{estado}'")
+    if usuario_id and usuario.is_staff:
+        filters.append(f"o.usuario_id = {usuario_id}")
+
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+
+    query += " ORDER BY o.fecha_creacion DESC LIMIT 25;"
+
+    # Ejecutar la consulta
     with connection.cursor() as cursor:
         cursor.execute(query)
         columns = [col[0] for col in cursor.description]
         rows = cursor.fetchall()
-    
+
     # Formatear los resultados como lista de diccionarios
     results = [dict(zip(columns, row)) for row in rows]
-
     return Response(results)
+
 
 def home(request):
     return HttpResponse("<h1>Bienvenido a LottusPedidos</h1><p>Por favor, dirígete a /api/login/ para iniciar sesión.</p>")
