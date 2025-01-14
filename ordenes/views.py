@@ -9,7 +9,17 @@ from .serializers import ReferenciaSerializer, ProveedorSerializer, OrdenPedidoS
 from .permissions import IsAdmin, IsVendedor
 from django.db import connection
 from django.db.models import Q
+from django.contrib.auth.models import User
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def listar_vendedores(request):
+    """
+    Devuelve una lista de vendedores (usuarios no administradores).
+    """
+    vendedores = User.objects.filter(is_staff=False)  # Filtra solo los usuarios no administradores
+    data = [{"id": v.id, "first_name": v.first_name, "last_name": v.last_name} for v in vendedores]
+    return Response(data)
 
 class ReferenciaViewSet(viewsets.ModelViewSet):
     queryset = Referencia.objects.all()
