@@ -86,7 +86,8 @@ def listar_pedidos(request):
         o.fecha_esperada, 
         o.estado, 
         o.notas AS nota,
-        o.costo
+        o.costo,
+        o.orden_venta
     FROM 
         ordenes_ordenpedido o 
     JOIN 
