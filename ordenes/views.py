@@ -106,7 +106,7 @@ def listar_pedidos(request):
     # Construir filtros dinámicamente
     filters = []
 
-    # Vendedores solo ven sus pedidos, excepto administradores
+    # Los vendedores solo ven sus pedidos (excepto administradores)
     if not usuario.is_staff:
         filters.append(f"o.usuario_id = {usuario.id}")
 
@@ -118,7 +118,7 @@ def listar_pedidos(request):
     if id_proveedor:
         filters.append(f"o.proveedor_id = {id_proveedor}")
 
-    # Añadir filtros a la consulta
+    # Agregar filtros a la consulta
     if filters:
         query += " WHERE " + " AND ".join(filters)
 
@@ -127,9 +127,12 @@ def listar_pedidos(request):
 
     # Ejecutar la consulta
     with connection.cursor() as cursor:
-        cursor.execute(query)
-        columns = [col[0] for col in cursor.description]
-        rows = cursor.fetchall()
+        try:
+            cursor.execute(query)
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
+        except Exception as e:
+            return Response({"error": str(e)}, status=400)
 
     # Formatear los resultados como lista de diccionarios
     results = [dict(zip(columns, row)) for row in rows]
