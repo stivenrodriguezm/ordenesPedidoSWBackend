@@ -12,5 +12,5 @@ router.register(r'detalles', DetallePedidoViewSet)
 
 urlpatterns = [
     path("user/", UserDetailView.as_view(), name="user-detail"),
-    path('ordenes-combinadas/', ordenes_combinadas, name='ordenes_combinadas'),
+    path('listar-pedidos/', listar_pedidos, name='listar_pedidos'),
 ] + router.urls
