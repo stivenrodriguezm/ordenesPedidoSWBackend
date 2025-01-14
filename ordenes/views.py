@@ -1,11 +1,14 @@
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.views import APIView
+from rest_framework.views import APIView, permission_classes
 from rest_framework.response import Response  # Importación necesaria
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from .models import Referencia, Proveedor, OrdenPedido, DetallePedido
 from .serializers import ReferenciaSerializer, ProveedorSerializer, OrdenPedidoSerializer, DetallePedidoSerializer
 from .permissions import IsAdmin, IsVendedor
+from django.db import connection
+from django.db.models import Q
+
 
 class ReferenciaViewSet(viewsets.ModelViewSet):
     queryset = Referencia.objects.all()
@@ -56,6 +59,40 @@ class UserDetailView(APIView):
             "last_name": user.last_name,    # Apellido del usuario
             "is_staff": user.is_staff,  # Indica si es administrador
         })
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def ordenes_combinadas(request):
+    """
+    Endpoint para obtener las órdenes combinadas.
+    - Los administradores ven todas las órdenes.
+    - Los vendedores ven solo sus órdenes.
+    """
+    usuario = request.user
+    estado = request.GET.get('estado', None)
+    usuario_id = request.GET.get('usuario_id', None)
+
+    # Administradores: Ver todas las órdenes
+    if usuario.is_staff:
+        queryset = OrdenPedido.objects.all()
+    else:
+        # Vendedores: Ver solo sus órdenes
+        queryset = OrdenPedido.objects.filter(usuario=usuario)
+
+    # Filtro por estado (opcional)
+    if estado:
+        queryset = queryset.filter(estado=estado)
+
+    # Filtro por usuario_id (opcional, para el caso de validaciones)
+    if usuario_id:
+        queryset = queryset.filter(usuario_id=usuario_id)
+
+    # Ordenar por fecha de creación (descendente)
+    queryset = queryset.order_by('-fecha_creacion')
+
+    # Serialización
+    serializer = OrdenPedidoSerializer(queryset, many=True)
+    return Response(serializer.data)
 
 def home(request):
     return HttpResponse("<h1>Bienvenido a LottusPedidos</h1><p>Por favor, dirígete a /api/login/ para iniciar sesión.</p>")

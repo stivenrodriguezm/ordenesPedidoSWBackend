@@ -24,10 +24,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-9k362@l)2sf4x1pstt7f=js1!y5u8*+ck*z77x=3x#k24j%r)-'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
 
 ALLOWED_HOSTS = [
-    '147.93.43.111'
+    '147.93.43.111',
+    'api.muebleslottus.com',
+    'https://api.muebleslottus.com'
 ]
 
 CORS_ALLOW_ALL_ORIGINS = True
@@ -113,7 +115,11 @@ DATABASES = {
         'PASSWORD': 'LottusMuebles1',
         'HOST': '185.28.21.52',
         'PORT': '3306',
-        'CONN_MAX_AGE': 600, 
+        'OPTIONS': {
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+            'connect_timeout': 10,  # Tiempo máximo para conectar
+            'autocommit': True,     # Finaliza automáticamente cada transacción
+        },
     }
 }
 
