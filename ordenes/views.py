@@ -112,11 +112,11 @@ def listar_pedidos(request):
 
     # Filtros adicionales
     if estado:
-        filters.append(f"o.estado = '{estado}'")
+        filters.append(f"o.estado = %s")
     if id_vendedor:
-        filters.append(f"o.usuario_id = {id_vendedor}")
+        filters.append(f"o.usuario_id = %s")
     if id_proveedor:
-        filters.append(f"o.proveedor_id = {id_proveedor}")
+        filters.append(f"o.proveedor_id = %s")
 
     # Agregar filtros a la consulta
     if filters:
@@ -125,10 +125,19 @@ def listar_pedidos(request):
     # Ordenar por ID descendente
     query += " ORDER BY o.id DESC;"
 
+    # Preparar parámetros para la consulta
+    params = []
+    if estado:
+        params.append(estado)
+    if id_vendedor:
+        params.append(id_vendedor)
+    if id_proveedor:
+        params.append(id_proveedor)
+
     # Ejecutar la consulta
     with connection.cursor() as cursor:
         try:
-            cursor.execute(query)
+            cursor.execute(query, params)  # Pasar parámetros para evitar inyección SQL
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchall()
         except Exception as e:
