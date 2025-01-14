@@ -15,10 +15,10 @@ from django.contrib.auth.models import User
 @permission_classes([IsAuthenticated])
 def listar_vendedores(request):
     """
-    Devuelve una lista de vendedores (usuarios no administradores).
+    Devuelve una lista de usuarios activos
     """
-    vendedores = User.objects.filter(is_staff=False)  # Filtra solo los usuarios no administradores
-    data = [{"id": v.id, "first_name": v.first_name, "last_name": v.last_name} for v in vendedores]
+    vendedores = User.objects.filter(is_active=True)  # Filtra solo los usuarios activos
+    data = [{"id": v.id, "first_name": v.first_name} for v in vendedores]
     return Response(data)
 
 class ReferenciaViewSet(viewsets.ModelViewSet):
