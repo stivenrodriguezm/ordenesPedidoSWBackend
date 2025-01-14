@@ -108,15 +108,15 @@ def listar_pedidos(request):
 
     # Los vendedores solo ven sus pedidos (excepto administradores)
     if not usuario.is_staff:
-        filters.append(f"o.usuario_id = {usuario.id}")
+        filters.append("o.usuario_id = %s")
 
     # Filtros adicionales
     if estado:
-        filters.append(f"o.estado = %s")
+        filters.append("o.estado = %s")
     if id_vendedor:
-        filters.append(f"o.usuario_id = %s")
+        filters.append("o.usuario_id = %s")
     if id_proveedor:
-        filters.append(f"o.proveedor_id = %s")
+        filters.append("o.proveedor_id = %s")
 
     # Agregar filtros a la consulta
     if filters:
@@ -127,6 +127,8 @@ def listar_pedidos(request):
 
     # Preparar parámetros para la consulta
     params = []
+    if not usuario.is_staff:
+        params.append(usuario.id)
     if estado:
         params.append(estado)
     if id_vendedor:
@@ -146,6 +148,7 @@ def listar_pedidos(request):
     # Formatear los resultados como lista de diccionarios
     results = [dict(zip(columns, row)) for row in rows]
     return Response(results)
+
 
 
 def home(request):
