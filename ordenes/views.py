@@ -71,20 +71,17 @@ class UserDetailView(APIView):
             "is_staff": user.is_staff,  # Indica si es administrador
         })
 
-from django.db import connection
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def listar_pedidos(request):
     """
-    Endpoint para listar las órdenes de pedido con datos personalizados.
+    Endpoint para listar las órdenes de pedido con datos personalizados y filtros.
     """
     usuario = request.user
     estado = request.GET.get('estado', None)
-    usuario_id = request.GET.get('usuario_id', None)
+    id_vendedor = request.GET.get('id_vendedor', None)
+    id_proveedor = request.GET.get('id_proveedor', None)
 
     # Consulta base
     query = """
@@ -99,33 +96,34 @@ def listar_pedidos(request):
         o.costo,
         o.orden_venta
     FROM 
-            ordenes_ordenpedido o 
+        ordenes_ordenpedido o 
     JOIN 
-            ordenes_proveedor p ON o.proveedor_id = p.id 
+        ordenes_proveedor p ON o.proveedor_id = p.id 
     JOIN 
-            auth_user u ON o.usuario_id = u.id
-    ORDER BY 
-            o.id DESC;
+        auth_user u ON o.usuario_id = u.id
     """
 
-    # Filtrar según el rol del usuario
-    if usuario.is_staff:
-        # Administradores pueden ver todos los pedidos
-        filters = []
-    else:
-        # Vendedores solo ven sus propios pedidos
-        filters = [f"o.usuario_id = {usuario.id}"]
+    # Construir filtros dinámicamente
+    filters = []
+
+    # Vendedores solo ven sus pedidos, excepto administradores
+    if not usuario.is_staff:
+        filters.append(f"o.usuario_id = {usuario.id}")
 
     # Filtros adicionales
     if estado:
         filters.append(f"o.estado = '{estado}'")
-    if usuario_id and usuario.is_staff:
-        filters.append(f"o.usuario_id = {usuario_id}")
+    if id_vendedor:
+        filters.append(f"o.usuario_id = {id_vendedor}")
+    if id_proveedor:
+        filters.append(f"o.proveedor_id = {id_proveedor}")
 
+    # Añadir filtros a la consulta
     if filters:
         query += " WHERE " + " AND ".join(filters)
 
-    query += " ORDER BY o.fecha_creacion DESC LIMIT 25;"
+    # Ordenar por ID descendente
+    query += " ORDER BY o.id DESC;"
 
     # Ejecutar la consulta
     with connection.cursor() as cursor:
