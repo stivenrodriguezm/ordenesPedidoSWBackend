@@ -81,17 +81,18 @@ def listar_pedidos(request):
     SELECT 
         o.id AS id_orden, 
         p.nombre_empresa AS proveedor, 
-        CONCAT(u.first_name, ' ', u.last_name) AS vendedor, 
+        u.first_name AS vendedor, 
         o.fecha_creacion, 
         o.fecha_esperada, 
         o.estado, 
-        o.notas AS nota 
+        o.notas AS nota,
+        o.costo
     FROM 
         ordenes_ordenpedido o 
     JOIN 
         ordenes_proveedor p ON o.proveedor_id = p.id 
     JOIN 
-        auth_user u ON o.usuario_id = u.id
+        auth_user u ON o.usuario_id = u.id;
     """
 
     # Filtrar según el rol del usuario
