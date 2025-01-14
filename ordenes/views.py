@@ -63,37 +63,38 @@ class UserDetailView(APIView):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def ordenes_combinadas(request):
+def listar_pedidos(request):
     """
-    Endpoint para obtener las órdenes combinadas.
-    - Los administradores ven todas las órdenes.
-    - Los vendedores ven solo sus órdenes.
+    Endpoint para listar las órdenes de pedido con datos personalizados.
     """
-    usuario = request.user
-    estado = request.GET.get('estado', None)
-    usuario_id = request.GET.get('usuario_id', None)
+    query = """
+    SELECT 
+        o.id AS id_orden, 
+        p.nombre_empresa AS proveedor, 
+        CONCAT(u.first_name, ' ', u.last_name) AS vendedor, 
+        o.fecha_creacion, 
+        o.fecha_esperada, 
+        o.estado, 
+        o.notas AS nota 
+    FROM 
+        ordenes_ordenpedido o 
+    JOIN 
+        ordenes_proveedor p ON o.proveedor_id = p.id 
+    JOIN 
+        auth_user u ON o.usuario_id = u.id 
+    ORDER BY 
+        o.fecha_creacion DESC 
+    LIMIT 25;
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(query)
+        columns = [col[0] for col in cursor.description]
+        rows = cursor.fetchall()
+    
+    # Formatear los resultados como lista de diccionarios
+    results = [dict(zip(columns, row)) for row in rows]
 
-    # Administradores: Ver todas las órdenes
-    if usuario.is_staff:
-        queryset = OrdenPedido.objects.all()
-    else:
-        # Vendedores: Ver solo sus órdenes
-        queryset = OrdenPedido.objects.filter(usuario=usuario)
-
-    # Filtro por estado (opcional)
-    if estado:
-        queryset = queryset.filter(estado=estado)
-
-    # Filtro por usuario_id (opcional, para el caso de validaciones)
-    if usuario_id:
-        queryset = queryset.filter(usuario_id=usuario_id)
-
-    # Ordenar por fecha de creación (descendente)
-    queryset = queryset.order_by('-fecha_creacion')
-
-    # Serialización
-    serializer = OrdenPedidoSerializer(queryset, many=True)
-    return Response(serializer.data)
+    return Response(results)
 
 def home(request):
     return HttpResponse("<h1>Bienvenido a LottusPedidos</h1><p>Por favor, dirígete a /api/login/ para iniciar sesión.</p>")
