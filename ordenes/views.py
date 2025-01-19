@@ -43,6 +43,8 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
     serializer_class = OrdenPedidoSerializer
     permission_classes = [IsAuthenticated]
     http_method_names = ['get', 'post', 'put', 'patch', 'delete']
+    print("Datos recibidos:", request.data)
+
 
     def get_queryset(self):
         if self.request.user.is_staff:
