@@ -53,12 +53,14 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
         return {'request': self.request}
 
     def update(self, request, *args, **kwargs):
+        print("Datos recibidos:", request.data)  # Log de los datos enviados
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
-        serializer.is_valid(raise_exception=True)
+        serializer.is_valid(raise_exception=True)  # Aquí se validan los datos
         self.perform_update(serializer)
         return Response(serializer.data)
+
 
 
 class DetallePedidoViewSet(viewsets.ModelViewSet):
