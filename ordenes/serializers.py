@@ -37,7 +37,7 @@ class OrdenPedidoSerializer(serializers.ModelSerializer):
         return orden
 
     def update(self, instance, validated_data):
-        instance.costo = validated_data.get('costo', instance.costo)
+        instance.costo = float(validated_data.get('costo', instance.costo)) if 'costo' in validated_data else instance.costo
         instance.estado = validated_data.get('estado', instance.estado)
         instance.save()
         return instance
