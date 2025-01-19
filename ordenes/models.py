@@ -30,7 +30,7 @@ class OrdenPedido(models.Model):
     fecha_esperada = models.DateField()
     estado = models.CharField(max_length=20, choices=ESTADOS, default='en_proceso')
     notas = models.TextField(null=True, blank=True)
-    costo = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    costo = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, default=0)
     usuario = models.ForeignKey(User, on_delete=models.CASCADE)
     proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE)
     orden_venta = models.CharField(max_length=20, null=True, blank=True)  # Nuevo campo
