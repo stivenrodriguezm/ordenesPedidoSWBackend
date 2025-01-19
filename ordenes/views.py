@@ -168,6 +168,25 @@ def listar_pedidos(request):
 
     return Response(results)
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def detalles_pedido(request, orden_id):
+    """
+    Devuelve los detalles de productos de una orden de pedido específica.
+    """
+    try:
+        detalles = DetallePedido.objects.filter(orden_id=orden_id).select_related('referencia')
+        data = [
+            {
+                "cantidad": detalle.cantidad,
+                "especificaciones": detalle.especificaciones,
+                "referencia": detalle.referencia.nombre if detalle.referencia else "Sin referencia"
+            }
+            for detalle in detalles
+        ]
+        return Response(data, status=200)
+    except DetallePedido.DoesNotExist:
+        return Response({"error": "No se encontraron detalles para esta orden."}, status=404)
 
 
 
