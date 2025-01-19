@@ -27,6 +27,15 @@ class OrdenPedidoSerializer(serializers.ModelSerializer):
         model = OrdenPedido
         fields = ['id', 'proveedor', 'fecha_creacion', 'fecha_esperada', 'estado', 'notas', 'orden_venta', 'detalles', 'costo']
 
+    def validate(self, data):
+        # Verificar que costo sea numérico
+        if 'costo' in data and not isinstance(data['costo'], (int, float)):
+            raise serializers.ValidationError({"costo": "El costo debe ser un número válido."})
+        # Validar estado
+        if 'estado' in data and data['estado'] not in dict(OrdenPedido.ESTADOS).keys():
+            raise serializers.ValidationError({"estado": "Estado inválido."})
+        return data
+
     def create(self, validated_data):
         request = self.context.get('request')  # Obtener el contexto del request
         detalles_data = validated_data.pop('detalles', [])
