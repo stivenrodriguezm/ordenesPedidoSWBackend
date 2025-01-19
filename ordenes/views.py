@@ -10,7 +10,6 @@ from .permissions import IsAdmin, IsVendedor
 from django.db import connection
 from django.db.models import Q
 from django.contrib.auth.models import User
-import requests
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -44,8 +43,6 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
     serializer_class = OrdenPedidoSerializer
     permission_classes = [IsAuthenticated]
     http_method_names = ['get', 'post', 'put', 'patch', 'delete']
-    print("Datos recibidos:", request.data)
-
 
     def get_queryset(self):
         if self.request.user.is_staff:
@@ -57,6 +54,7 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
         return {'request': self.request}
 
     def update(self, request, *args, **kwargs):
+        print("Datos recibidos:", request.data)
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
