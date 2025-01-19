@@ -77,13 +77,14 @@ class UserDetailView(APIView):
 def listar_pedidos(request):
     """
     Endpoint para listar las órdenes de pedido con datos personalizados y filtros.
+    Incluye los detalles de cada pedido.
     """
     usuario = request.user
     estado = request.GET.get('estado', None)
     id_vendedor = request.GET.get('id_vendedor', None)
     id_proveedor = request.GET.get('id_proveedor', None)
 
-    # Consulta base
+    # Consulta base para las órdenes
     query = """
     SELECT 
         o.id AS id_orden, 
@@ -106,11 +107,9 @@ def listar_pedidos(request):
     # Construir filtros dinámicamente
     filters = []
 
-    # Los vendedores solo ven sus pedidos (excepto administradores)
     if not usuario.is_staff:
         filters.append("o.usuario_id = %s")
 
-    # Filtros adicionales
     if estado:
         filters.append("o.estado = %s")
     if id_vendedor:
@@ -118,14 +117,11 @@ def listar_pedidos(request):
     if id_proveedor:
         filters.append("o.proveedor_id = %s")
 
-    # Agregar filtros a la consulta
     if filters:
         query += " WHERE " + " AND ".join(filters)
 
-    # Ordenar por ID descendente
     query += " ORDER BY o.id DESC;"
 
-    # Preparar parámetros para la consulta
     params = []
     if not usuario.is_staff:
         params.append(usuario.id)
@@ -136,18 +132,42 @@ def listar_pedidos(request):
     if id_proveedor:
         params.append(id_proveedor)
 
-    # Ejecutar la consulta
+    # Ejecutar consulta principal
     with connection.cursor() as cursor:
         try:
-            cursor.execute(query, params)  # Pasar parámetros para evitar inyección SQL
+            cursor.execute(query, params)
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchall()
         except Exception as e:
             return Response({"error": str(e)}, status=400)
 
-    # Formatear los resultados como lista de diccionarios
-    results = [dict(zip(columns, row)) for row in rows]
+    # Agregar detalles de productos a cada pedido
+    results = []
+    for row in rows:
+        pedido = dict(zip(columns, row))
+        detalles_query = """
+        SELECT 
+            d.cantidad, 
+            d.especificaciones, 
+            r.nombre AS referencia
+        FROM 
+            ordenes_detallepedido d
+        LEFT JOIN 
+            ordenes_referencia r ON d.referencia_id = r.id
+        WHERE 
+            d.orden_id = %s
+        """
+        with connection.cursor() as cursor:
+            cursor.execute(detalles_query, [pedido['id_orden']])
+            detalles = [
+                {"cantidad": det[0], "especificaciones": det[1], "referencia": det[2]}
+                for det in cursor.fetchall()
+            ]
+        pedido['detalles'] = detalles
+        results.append(pedido)
+
     return Response(results)
+
 
 
 
