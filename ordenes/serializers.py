@@ -25,7 +25,7 @@ class OrdenPedidoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OrdenPedido
-        fields = ['id', 'proveedor', 'fecha_creacion', 'fecha_esperada', 'estado', 'notas', 'orden_venta', 'detalles']  # Incluimos orden_venta
+        fields = ['id', 'proveedor', 'fecha_creacion', 'fecha_esperada', 'estado', 'notas', 'orden_venta', 'detalles', 'costo']
 
     def create(self, validated_data):
         request = self.context.get('request')  # Obtener el contexto del request
@@ -37,7 +37,7 @@ class OrdenPedidoSerializer(serializers.ModelSerializer):
         return orden
 
     def update(self, instance, validated_data):
-            instance.costo = validated_data.get('costo', instance.costo)
-            instance.estado = validated_data.get('estado', instance.estado)
-            instance.save()
-            return instance
+        instance.costo = validated_data.get('costo', instance.costo)
+        instance.estado = validated_data.get('estado', instance.estado)
+        instance.save()
+        return instance
