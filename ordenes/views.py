@@ -54,16 +54,9 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
         return {'request': self.request}
 
     def update(self, request, *args, **kwargs):
-        if 'costo' in request.data:
-            try:
-                float(request.data['costo'])  # Convertir costo a número
-            except ValueError:
-                return Response({"error": "El campo costo debe ser numérico."}, status=400)
-        print("Datos recibidos:", request.data)  # Log de los datos enviados
-        partial = kwargs.pop('partial', False)
         instance = self.get_object()
-        serializer = self.get_serializer(instance, data=request.data, partial=partial)
-        serializer.is_valid(raise_exception=True)  # Aquí se validan los datos
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
         return Response(serializer.data)
 
