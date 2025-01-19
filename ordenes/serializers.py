@@ -37,8 +37,12 @@ class OrdenPedidoSerializer(serializers.ModelSerializer):
         return orden
 
     def validate_costo(self, value):
-        if not isinstance(value, (int, float)):
-            raise serializers.ValidationError("El costo debe ser numérico.")
+        try:
+            value = float(value)  # Intenta convertir el valor a un número flotante
+        except (TypeError, ValueError):
+            raise serializers.ValidationError("El costo debe ser un número válido.")
+        if value < 0:  # Opcional: valida que el costo no sea negativo
+            raise serializers.ValidationError("El costo no puede ser negativo.")
         return value
 
     def validate_estado(self, value):
