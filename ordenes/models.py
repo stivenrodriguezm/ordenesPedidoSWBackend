@@ -23,7 +23,7 @@ class OrdenPedido(models.Model):
     ESTADOS = [
         ('en_proceso', 'En Proceso'),
         ('recibido', 'Recibido'),
-        ('cancelado', 'Cancelado'),
+        ('anulado', 'Anulado'),
     ]
 
     fecha_creacion = models.DateField(auto_now_add=True)
