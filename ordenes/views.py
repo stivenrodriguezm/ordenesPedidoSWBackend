@@ -42,6 +42,7 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
     queryset = OrdenPedido.objects.all()
     serializer_class = OrdenPedidoSerializer
     permission_classes = [IsAuthenticated]
+    http_method_names = ['get', 'post', 'put', 'patch', 'delete']
 
     def get_queryset(self):
         if self.request.user.is_staff:
