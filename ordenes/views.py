@@ -10,6 +10,8 @@ from .permissions import IsAdmin, IsVendedor
 from django.db import connection
 from django.db.models import Q
 from django.contrib.auth.models import User
+from rest_framework.exceptions import ValidationError
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
