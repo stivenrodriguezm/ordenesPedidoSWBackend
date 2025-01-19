@@ -50,16 +50,21 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
         return OrdenPedido.objects.filter(usuario=self.request.user)
 
     def get_serializer_context(self):
-        # Agregar el contexto del request al serializer
         return {'request': self.request}
 
     def update(self, request, *args, **kwargs):
         print("Datos recibidos:", request.data)
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except ValidationError as e:
+            print("Errores de validación:", e.detail)
+            return Response({"error": "Datos inválidos", "detalles": e.detail}, status=400)
+
         self.perform_update(serializer)
         return Response(serializer.data)
+
 
 
 
