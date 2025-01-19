@@ -10,6 +10,7 @@ from .permissions import IsAdmin, IsVendedor
 from django.db import connection
 from django.db.models import Q
 from django.contrib.auth.models import User
+import requests
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
