@@ -2,7 +2,7 @@ from rest_framework.routers import DefaultRouter
 from .views import ReferenciaViewSet, ProveedorViewSet, OrdenPedidoViewSet, DetallePedidoViewSet
 from .views import UserDetailView
 from django.urls import path
-from .views import UserDetailView, listar_pedidos, listar_vendedores
+from .views import UserDetailView, listar_pedidos, listar_vendedores, detalles_pedido
 
 router = DefaultRouter()
 router.register(r'referencias', ReferenciaViewSet)
