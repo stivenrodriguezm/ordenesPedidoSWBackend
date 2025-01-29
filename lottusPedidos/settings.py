@@ -56,7 +56,7 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",  # URL del frontend en desarrollo
+    "http://localhost:5173",
     "https://stivenrodriguezm.github.io",
     "https://api.muebleslottus.com",
 ]
