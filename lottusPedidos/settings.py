@@ -61,6 +61,9 @@ CORS_ALLOWED_ORIGINS = [
     "https://api.muebleslottus.com",
 ]
 
+CSRF_COOKIE_SECURE = True
+SESSION_COOKIE_SECURE = True
+
 # Application definition
 
 INSTALLED_APPS = [
