@@ -50,7 +50,10 @@ CORS_ALLOW_HEADERS = [
     "x-csrf-token",
 ]
 
-
+CSRF_TRUSTED_ORIGINS = [
+    "https://api.muebleslottus.com",
+    "https://stivenrodriguezm.github.io",
+]
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",  # URL del frontend en desarrollo
