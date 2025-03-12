@@ -33,7 +33,7 @@ end
 # Unset irrelevant variables.
 deactivate nondestructive
 
-set -gx VIRTUAL_ENV /root/ordenesPedidoSWBackend/venv
+set -gx VIRTUAL_ENV /home/stivemaster/Programming/ordenesPedidoSWBackend/venv
 
 set -gx _OLD_VIRTUAL_PATH $PATH
 set -gx PATH "$VIRTUAL_ENV/"bin $PATH

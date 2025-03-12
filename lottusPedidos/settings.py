@@ -24,9 +24,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-9k362@l)2sf4x1pstt7f=js1!y5u8*+ck*z77x=3x#k24j%r)-'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
+
+AUTH_USER_MODEL = 'ordenes.CustomUser' 
 
 ALLOWED_HOSTS = [
+    '127.0.0.1',
     '147.93.43.111',
     'api.muebleslottus.com',
     'https://api.muebleslottus.com'
@@ -117,8 +120,8 @@ WSGI_APPLICATION = 'lottusPedidos.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'u756180748_lottusmuebles',
-        'USER': 'u756180748_root',
+        'NAME': 'u756180748_lottus',
+        'USER': 'u756180748_lottus',
         'PASSWORD': 'LottusMuebles1',
         'HOST': '185.28.21.52',
         'PORT': '3306',
@@ -129,6 +132,20 @@ DATABASES = {
         },
     }
 }
+
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.mysql',
+#         'NAME': 'ordenes_pedido_db',  # Asegúrate de que la BD existe
+#         'USER': 'root',  # Usuario en XAMPP es "root"
+#         'PASSWORD': '',  # XAMPP no tiene contraseña por defecto
+#         'HOST': '127.0.0.1',  # No uses 'localhost', usa '127.0.0.1'
+#         'PORT': '3306',  # Puerto correcto
+#         'OPTIONS': {
+#             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+#         },
+#     }
+# }
 
 
 # Password validation

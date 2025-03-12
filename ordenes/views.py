@@ -4,7 +4,7 @@ from rest_framework.views import APIView
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response  # Importación necesaria
 from django.http import HttpResponse, JsonResponse
-from .models import Referencia, Proveedor, OrdenPedido, DetallePedido
+from .models import Referencia, Proveedor, OrdenPedido, DetallePedido, CustomUser
 from .serializers import ReferenciaSerializer, ProveedorSerializer, OrdenPedidoSerializer, DetallePedidoSerializer
 from .permissions import IsAdmin, IsVendedor
 from django.db import connection
@@ -17,9 +17,9 @@ from rest_framework.exceptions import ValidationError
 @permission_classes([IsAuthenticated])
 def listar_vendedores(request):
     """
-    Devuelve una lista de usuarios activos
+    Devuelve una lista de usuarios con rol de 'VENDEDOR' y que estén activos
     """
-    vendedores = User.objects.filter(is_active=True)  # Filtra solo los usuarios activos
+    vendedores = CustomUser.objects.filter(is_active=True, role=CustomUser.VENDEDOR)
     data = [{"id": v.id, "first_name": v.first_name} for v in vendedores]
     return Response(data)
 
@@ -85,7 +85,7 @@ class UserDetailView(APIView):
             "username": user.username,
             "first_name": user.first_name,  # Nombre del usuario
             "last_name": user.last_name,    # Apellido del usuario
-            "is_staff": user.is_staff,  # Indica si es administrador
+            "role": user.role,  # Indica si es administrador
         })
 
 
@@ -93,12 +93,12 @@ class UserDetailView(APIView):
 @permission_classes([IsAuthenticated])
 def listar_pedidos(request):
     """
-    Endpoint para listar las órdenes de pedido con datos personalizados y filtros.
+    Endpoint para listar órdenes de pedido con filtros dinámicos.
     """
     usuario = request.user
-    estado = request.GET.get('estado', None)
-    id_vendedor = request.GET.get('id_vendedor', None)
-    id_proveedor = request.GET.get('id_proveedor', None)
+    estado = request.GET.get('estado')
+    id_proveedor = request.GET.get('id_proveedor')
+    id_vendedor = request.GET.get('id_vendedor')  # ✅ Nuevo filtro
 
     # Consulta base
     query = """
@@ -117,23 +117,32 @@ def listar_pedidos(request):
     JOIN 
         ordenes_proveedor p ON o.proveedor_id = p.id 
     JOIN 
-        auth_user u ON o.usuario_id = u.id
+        ordenes_customuser u ON o.usuario_id = u.id
     """
 
-    # Construir filtros dinámicamente
+    # Construcción de filtros dinámicos
     filters = []
+    params = []
 
-    # Los vendedores solo ven sus pedidos (excepto administradores)
-    if not usuario.is_staff:
+    # 🚀 Restricción para VENDEDORES: solo pueden ver sus propios pedidos
+    if usuario.role == "VENDEDOR":
         filters.append("o.usuario_id = %s")
+        params.append(usuario.id)
 
-    # Filtros adicionales
-    if estado:
+    # ✅ Filtrar por ID de vendedor (si lo solicita un administrador)
+    if id_vendedor and id_vendedor.isdigit():
+        filters.append("o.usuario_id = %s")
+        params.append(int(id_vendedor))
+
+    # ✅ Filtrar por estado
+    if estado and estado.strip():
         filters.append("o.estado = %s")
-    if id_vendedor:
-        filters.append("o.usuario_id = %s")
-    if id_proveedor:
+        params.append(estado.strip())
+
+    # ✅ Filtrar por proveedor
+    if id_proveedor and id_proveedor.isdigit():
         filters.append("o.proveedor_id = %s")
+        params.append(int(id_proveedor))
 
     # Agregar filtros a la consulta
     if filters:
@@ -142,29 +151,24 @@ def listar_pedidos(request):
     # Ordenar por ID descendente
     query += " ORDER BY o.id DESC;"
 
-    # Preparar parámetros para la consulta
-    params = []
-    if not usuario.is_staff:
-        params.append(usuario.id)
-    if estado:
-        params.append(estado)
-    if id_vendedor:
-        params.append(id_vendedor)
-    if id_proveedor:
-        params.append(id_proveedor)
+    # 🔍 Depuración: Ver la consulta generada y los parámetros
+    # print("QUERY FINAL:", query)
+    # print("PARAMS:", params)
 
     # Ejecutar la consulta
     with connection.cursor() as cursor:
         try:
-            cursor.execute(query, params)  # Pasar parámetros para evitar inyección SQL
+            cursor.execute(query, params)
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchall()
         except Exception as e:
             return Response({"error": str(e)}, status=400)
 
-    # Formatear los resultados como lista de diccionarios
+    # Formatear los resultados
     results = [dict(zip(columns, row)) for row in rows]
     return Response(results)
+
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
