@@ -9,6 +9,7 @@ from .serializers import ReferenciaSerializer, ProveedorSerializer, OrdenPedidoS
 from .permissions import IsAdmin, IsVendedor
 from django.db import connection
 from django.db.models import Q
+from rest_framework import status
 from django.contrib.auth.models import User
 from rest_framework.exceptions import ValidationError
 
@@ -88,6 +89,23 @@ class UserDetailView(APIView):
             "role": user.role,  # Indica si es administrador
         })
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def cambiar_contrasena(request):
+    user = request.user  # Usuario autenticado
+
+    old_password = request.data.get("old_password")
+    new_password = request.data.get("new_password")
+
+    # Verificar que la contraseña actual sea correcta
+    if not user.check_password(old_password):
+        return Response({"error": "La contraseña actual es incorrecta."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Cambiar la contraseña y guardar el usuario
+    user.set_password(new_password)
+    user.save()
+
+    return Response({"message": "Contraseña actualizada correctamente."}, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])

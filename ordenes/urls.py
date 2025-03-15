@@ -3,6 +3,7 @@ from .views import ReferenciaViewSet, ProveedorViewSet, OrdenPedidoViewSet, Deta
 from .views import UserDetailView
 from django.urls import path
 from .views import UserDetailView, listar_pedidos, listar_vendedores, detalles_pedido
+from .views import cambiar_contrasena
 
 router = DefaultRouter()
 router.register(r'referencias', ReferenciaViewSet)
@@ -15,4 +16,5 @@ urlpatterns = [
     path('vendedores/', listar_vendedores, name='listar_vendedores'),
     path('listar-pedidos/', listar_pedidos, name='listar_pedidos'),
     path('detalles-pedido/<int:orden_id>/', detalles_pedido, name='detalles_pedido'),
+    path('cambiar-contrasena/', cambiar_contrasena, name='cambiar_contrasena'),
 ] + router.urls
