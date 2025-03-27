@@ -33,7 +33,7 @@ ALLOWED_HOSTS = [
     '147.93.43.111',
     'api.muebleslottus.com',
     'https://api.muebleslottus.com'
-    "http://app.muebleslottus.com",
+    "https://app.muebleslottus.com",
 ]
 
 CORS_ALLOW_ALL_ORIGINS = True
@@ -57,14 +57,14 @@ CORS_ALLOW_HEADERS = [
 CSRF_TRUSTED_ORIGINS = [
     "https://api.muebleslottus.com",
     "https://stivenrodriguezm.github.io",
-    "http://app.muebleslottus.com",
+    "https://app.muebleslottus.com",
 ]
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "https://stivenrodriguezm.github.io",
     "https://api.muebleslottus.com",
-    "http://app.muebleslottus.com",
+    "https://app.muebleslottus.com",
 ]
 
 CSRF_COOKIE_SECURE = True
