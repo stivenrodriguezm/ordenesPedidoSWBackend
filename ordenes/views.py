@@ -20,7 +20,7 @@ def listar_vendedores(request):
     """
     Devuelve una lista de usuarios con rol de 'VENDEDOR' y que estén activos
     """
-    vendedores = CustomUser.objects.filter(is_active=True, role=CustomUser.VENDEDOR)
+    vendedores = CustomUser.objects.filter(is_active=True)
     data = [{"id": v.id, "first_name": v.first_name} for v in vendedores]
     return Response(data)
 
