@@ -21,11 +21,11 @@ class DetallePedidoSerializer(serializers.ModelSerializer):
 
 class OrdenPedidoSerializer(serializers.ModelSerializer):
     detalles = DetallePedidoSerializer(many=True, required=False)
-    fecha_creacion = serializers.DateField(read_only=True)  # Campo de solo lectura
+    fecha_creacion = serializers.DateField(read_only=True)
 
     class Meta:
         model = OrdenPedido
-        fields = ['id', 'proveedor', 'fecha_creacion', 'fecha_esperada', 'estado', 'notas', 'orden_venta', 'detalles', 'costo']
+        fields = ['id', 'proveedor', 'fecha_creacion', 'fecha_esperada', 'estado', 'notas', 'orden_venta', 'detalles', 'costo', 'tela']  # Incluir 'tela'
 
     def create(self, validated_data):
         request = self.context.get('request')  # Obtener el contexto del request
@@ -35,7 +35,6 @@ class OrdenPedidoSerializer(serializers.ModelSerializer):
         for detalle_data in detalles_data:
             DetallePedido.objects.create(orden=orden, **detalle_data)
         return orden
-
     def validate_costo(self, value):
         try:
             value = float(value)  # Intenta convertir el valor a un número flotante
@@ -44,12 +43,10 @@ class OrdenPedidoSerializer(serializers.ModelSerializer):
         if value < 0:  # Opcional: valida que el costo no sea negativo
             raise serializers.ValidationError("El costo no puede ser negativo.")
         return value
-
     def validate_estado(self, value):
         if value not in dict(OrdenPedido.ESTADOS).keys():
             raise serializers.ValidationError("Estado inválido.")
         return value
-
     def update(self, instance, validated_data):
         for attr, value in validated_data.items():
             setattr(instance, attr, value)

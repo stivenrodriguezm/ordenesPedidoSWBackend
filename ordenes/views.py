@@ -114,7 +114,8 @@ def listar_pedidos(request):
         o.estado, 
         o.notas AS nota,
         o.costo,
-        o.orden_venta
+        o.orden_venta,
+        o.tela  -- Incluir el campo 'tela'
     FROM 
         ordenes_ordenpedido o 
     JOIN 
