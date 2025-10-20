@@ -63,66 +63,56 @@ class ClienteSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class VentaSerializer(serializers.ModelSerializer):
-    saldo = serializers.DecimalField(max_digits=10, decimal_places=2) 
-    abono = serializers.DecimalField(max_digits=10, decimal_places=2, default=0)
     vendedor_nombre = serializers.CharField(source='vendedor.first_name', read_only=True)
     cliente_nombre = serializers.CharField(source='cliente.nombre', read_only=True)
-
+    
     class Meta:
         model = Venta
         fields = [
-            'id', 'fecha_venta', 'vendedor', 'vendedor_nombre', 'cliente', 'cliente_nombre', 'valor_total', 
-            'abono', 'saldo', 'fecha_entrega', 'estado', 'estado_pedidos'
+            'id', 
+            'fecha_venta', 
+            'vendedor', 
+            'vendedor_nombre', 
+            'cliente', 
+            'cliente_nombre', 
+            'valor_total', 
+            'abono', 
+            'saldo', 
+            'fecha_entrega', 
+            'estado', 
+            'estado_pedidos'
         ]
+        read_only_fields = [] # El saldo se calcula automáticamente
         extra_kwargs = {
             'vendedor': {'write_only': True},
-            'cliente': {'write_only': True}
-        }
-        
-    def to_representation(self, instance):
-        return {
-            'id_venta': instance.id,
-            'fecha_venta': instance.fecha_venta,
-            'vendedor': instance.vendedor.first_name if instance.vendedor else None,
-            'cliente': instance.cliente.nombre if instance.cliente else None,
-            'abono': f"{int(instance.abono) if instance.abono is not None else 0}",
-            'saldo': f"{int(instance.saldo) if instance.saldo is not None else 0}",
-            'valor': f"{int(instance.valor_total) if instance.valor_total is not None else 0}",
-            'fecha_entrega': instance.fecha_entrega,
-            'pedido': 'Finalizado' if instance.estado_pedidos else 'Pendiente',
-            'estado': instance.estado,
+            'cliente': {'write_only': True},
+            'valor_total': {'coerce_to_string': False},
+            'abono': {'coerce_to_string': False},
         }
 
 class ObservacionVentaSerializer(serializers.ModelSerializer):
-    autor = serializers.PrimaryKeyRelatedField(read_only=True, allow_null=True, required=False)
-    autor_username = serializers.SerializerMethodField()
+    autor_username = serializers.CharField(source='autor.username', read_only=True)
 
     class Meta:
         model = ObservacionVenta
         fields = ['id', 'texto', 'fecha', 'autor', 'autor_username', 'venta']
-        read_only_fields = ['venta']
+        read_only_fields = ['autor', 'fecha']
 
-    def get_autor_username(self, obj):
-        try:
-            return obj.autor.username if obj.autor else None
-        except Exception:
-            return "Usuario Desconocido"
+    def create(self, validated_data):
+        validated_data['autor'] = self.context['request'].user
+        return super().create(validated_data)
 
 class ObservacionClienteSerializer(serializers.ModelSerializer):
-    autor = serializers.PrimaryKeyRelatedField(read_only=True, allow_null=True, required=False)
-    autor_username = serializers.SerializerMethodField()
+    autor_username = serializers.CharField(source='autor.username', read_only=True)
 
     class Meta:
         model = ObservacionCliente
         fields = ['id', 'texto', 'fecha', 'autor', 'autor_username', 'cliente']
-        read_only_fields = ['cliente']
+        read_only_fields = ['autor', 'fecha']
 
-    def get_autor_username(self, obj):
-        try:
-            return obj.autor.username if obj.autor else None
-        except Exception:
-            return "Usuario Desconocido"
-
+    def create(self, validated_data):
+        validated_data['autor'] = self.context['request'].user
+        return super().create(validated_data)
 class RemisionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Remision
@@ -166,7 +156,7 @@ class ComprobanteEgresoSerializer(serializers.ModelSerializer):
     proveedor_nombre = serializers.CharField(source='proveedor.nombre_empresa', read_only=True)
     class Meta:
         model = ComprobanteEgreso
-        fields = ['id', 'proveedor', 'proveedor_nombre', 'medio_pago', 'valor', 'nota', 'fecha']
+        fields = ['id', 'proveedor', 'proveedor_nombre', 'metodo_pago', 'valor', 'descripcion', 'fecha', 'concepto']
 
 class ClienteDetalleSerializer(serializers.ModelSerializer):
     observaciones = ObservacionClienteSerializer(many=True, read_only=True)

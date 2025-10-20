@@ -43,8 +43,8 @@ class Cliente(models.Model):
 
 class Venta(models.Model):
     ESTADO_CHOICES = [
-        ('activa', 'Activa'),
-        ('finalizada', 'Finalizada'),
+        ('pendiente', 'Pendiente'),
+        ('entregado', 'Entregado'),
         ('anulada', 'Anulada'),
     ]
     id = models.PositiveIntegerField(primary_key=True)
@@ -55,7 +55,7 @@ class Venta(models.Model):
     saldo = models.DecimalField(max_digits=10, decimal_places=2)
     fecha_venta = models.DateField(default=timezone.now, db_index=True)
     fecha_entrega = models.DateField(db_index=True)
-    estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='activa', db_index=True)
+    estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='pendiente', db_index=True)
     estado_pedidos = models.BooleanField(default=False)
 
     def __str__(self):
@@ -66,6 +66,8 @@ class OrdenPedido(models.Model):
         ('pendiente', 'Pendiente'),
         ('en_proceso', 'En Proceso'),
         ('finalizado', 'Finalizado'),
+        ('recibido', 'Recibido'),
+        ('anulado', 'Anulado'),
     ]
     proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE, related_name='ordenes')
     usuario = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='ordenes')
@@ -106,12 +108,16 @@ class Remision(models.Model):
     venta = models.ForeignKey(Venta, on_delete=models.CASCADE, related_name='remisiones')
     codigo = models.CharField(max_length=50, unique=True)
     fecha = models.DateField(default=timezone.now)
-    descripcion = models.TextField()
 
 class ReciboCaja(models.Model):
+    id = models.PositiveIntegerField(primary_key=True)
     MEDIO_PAGO_CHOICES = [
         ('Efectivo', 'Efectivo'),
-        ('Transferencia', 'Transferencia'),
+        ('Davivienda', 'Davivienda'),
+        ('Bancolombia', 'Bancolombia'),
+        ('Bold', 'Bold'),
+        ('Datafono Lottus', 'Datafono Lottus'),
+        ('Otro', 'Otro'),
     ]
     ESTADO_CHOICES = [
         ('Pendiente', 'Pendiente'),
@@ -120,8 +126,9 @@ class ReciboCaja(models.Model):
     venta = models.ForeignKey(Venta, on_delete=models.CASCADE, related_name='recibos')
     fecha = models.DateField(default=timezone.now, db_index=True)
     valor = models.DecimalField(max_digits=10, decimal_places=2)
-    metodo_pago = models.CharField(max_length=20, choices=MEDIO_PAGO_CHOICES, db_index=True)
+    metodo_pago = models.CharField(max_length=50, choices=MEDIO_PAGO_CHOICES, db_index=True)
     estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='Pendiente', db_index=True)
+    nota = models.TextField(blank=True, null=True)
 
 class Caja(models.Model):
     TIPO_CHOICES = [
@@ -131,12 +138,13 @@ class Caja(models.Model):
     ]
     usuario = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
     fecha_hora = models.DateTimeField(default=timezone.now, db_index=True)
-    concepto = models.CharField(max_length=255)
+    concepto = models.CharField(max_length=255, blank=False, null=False, default='')
     tipo = models.CharField(max_length=10, choices=TIPO_CHOICES)
     valor = models.DecimalField(max_digits=10, decimal_places=2)
     total_acumulado = models.DecimalField(max_digits=12, decimal_places=2)
 
 class ComprobanteEgreso(models.Model):
+    id = models.PositiveIntegerField(primary_key=True)
     MEDIO_PAGO_CHOICES = [
         ('Efectivo', 'Efectivo'),
         ('Transferencia', 'Transferencia'),
@@ -144,5 +152,6 @@ class ComprobanteEgreso(models.Model):
     proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE)
     fecha = models.DateField(default=timezone.now, db_index=True)
     valor = models.DecimalField(max_digits=10, decimal_places=2)
-    medio_pago = models.CharField(max_length=20, choices=MEDIO_PAGO_CHOICES, db_index=True)
-    nota = models.TextField(blank=True, null=True)
+    metodo_pago = models.CharField(max_length=20, choices=MEDIO_PAGO_CHOICES, db_index=True)
+    descripcion = models.TextField(blank=True, null=True)
+    concepto = models.CharField(max_length=255, default='', blank=True)

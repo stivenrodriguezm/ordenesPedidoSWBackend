@@ -1,6 +1,9 @@
 # ==================== ordenes/views.py (CORRECCIÓN FINAL-FINAL) ====================
 
+import logging
 from rest_framework import viewsets, status, generics
+
+logger = logging.getLogger(__name__)
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework.decorators import api_view, permission_classes
@@ -23,6 +26,7 @@ from django.db import transaction
 from django.db.models import Q, F, Sum, Sum
 from rest_framework.exceptions import ValidationError
 from datetime import date, timedelta
+from django.utils import timezone
 import calendar
 import django_filters
 from rest_framework.pagination import PageNumberPagination
@@ -324,7 +328,12 @@ class EditarVentaClienteView(APIView):
 
             venta_serializer = VentaSerializer(venta, data=venta_data, partial=True)
             venta_serializer.is_valid(raise_exception=True)
-            venta = venta_serializer.save(saldo=F('valor_total') - F('abono'))
+
+            # Correctly calculate the new saldo
+            new_valor_total = venta_serializer.validated_data.get('valor_total', venta.valor_total)
+            new_saldo = new_valor_total - venta.abono
+
+            venta = venta_serializer.save(saldo=new_saldo)
             return Response({"message": "Venta actualizada.", "venta_id": venta.id}, status=200)
         except Venta.DoesNotExist:
             return Response({"error": "Venta no encontrada."}, status=404)
@@ -367,27 +376,6 @@ def listar_ventas(request):
 
             except ValueError:
                 return Response({"error": "Parámetros de mes o año inválidos."}, status=status.HTTP_400_BAD_REQUEST)
-        else:
-            today = date.today()
-            current_day = today.day
-            current_month = today.month
-            current_year = today.year
-
-            if current_day >= 6:
-                start_date = date(current_year, current_month, 6)
-                if current_month == 12:
-                    end_date = date(current_year + 1, 1, 5)
-                else:
-                    end_date = date(current_year, current_month + 1, 5)
-            else:
-                if current_month == 1:
-                    start_date = date(current_year - 1, 12, 6)
-                    end_date = date(current_year, 1, 5)
-                else:
-                    start_date = date(current_year, current_month - 1, 6)
-                    end_date = date(current_year, current_month, 5)
-            
-            ventas = ventas.filter(fecha_venta__gte=start_date, fecha_venta__lte=end_date)
 
         if estado:
             ventas = ventas.filter(estado=estado)
@@ -429,7 +417,7 @@ def detalle_venta(request, id):
 def anadir_observacion_venta(request, id):
     try:
         venta = Venta.objects.get(id=id)
-        serializer = ObservacionVentaSerializer(data={'venta': venta.id, 'autor': request.user.id, 'texto': request.data.get('texto')})
+        serializer = ObservacionVentaSerializer(data={'venta': venta.id, 'texto': request.data.get('texto')}, context={'request': request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=201)
@@ -516,7 +504,7 @@ def ventas_y_observaciones_cliente(request, id):
 def anadir_observacion_cliente(request, id):
     try:
         cliente = Cliente.objects.get(id=id)
-        serializer = ObservacionClienteSerializer(data={'cliente': cliente.id, 'autor': request.user.id, 'texto': request.data.get('texto')})
+        serializer = ObservacionClienteSerializer(data={'cliente': cliente.id, 'texto': request.data.get('texto')}, context={'request': request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=201)
@@ -530,46 +518,23 @@ class CajaPagination(PageNumberPagination):
 
 from django.db.models import Q, F, Sum, Case, When, DecimalField
 
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def caja_dashboard_view(request):
-    # 1. Estadísticas
-    today = timezone.now().date()
-    ingresos_hoy = Caja.objects.filter(fecha_hora__date=today, tipo='ingreso').aggregate(total=Sum('valor'))['total'] or 0
-    egresos_hoy = Caja.objects.filter(fecha_hora__date=today, tipo='egreso').aggregate(total=Sum('valor'))['total'] or 0
-    
-    ultimo_movimiento = Caja.objects.order_by('-fecha_hora').first()
-    saldo_actual = ultimo_movimiento.total_acumulado if ultimo_movimiento else 0
-
-    stats = {
-        'ingresos_hoy': ingresos_hoy,
-        'egresos_hoy': egresos_hoy,
-        'saldo_actual': saldo_actual
-    }
-
-    # 2. Movimientos Paginados (reutilizando la lógica existente)
-    movimientos = Caja.objects.select_related('usuario').order_by('-fecha_hora')
-    # ... (aquí iría tu lógica de filtros si la quieres combinar)
-    
-    paginator = CajaPagination() # Asumiendo que tienes esta clase definida
-    page = paginator.paginate_queryset(movimientos, request)
-    serializer = CajaSerializer(page, many=True)
-    
-    paginated_response = paginator.get_paginated_response(serializer.data)
-    
-    # 3. Combinar todo en una sola respuesta
-    data = {
-        'stats': stats,
-        'movimientos': paginated_response.data
-    }
-    
-    return Response(data)
-
-
 @api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
-def movimientos_caja(request):
+def caja_view(request):
     if request.method == 'GET':
+        # 1. Estadísticas
+        today = timezone.now().date()
+        ingresos_hoy = Caja.objects.filter(fecha_hora__date=today, tipo='ingreso').aggregate(total=Sum('valor'))['total'] or 0
+        egresos_hoy = Caja.objects.filter(fecha_hora__date=today, tipo='egreso').aggregate(total=Sum('valor'))['total'] or 0
+        ultimo_movimiento = Caja.objects.order_by('-fecha_hora').first()
+        saldo_actual = ultimo_movimiento.total_acumulado if ultimo_movimiento else 0
+        stats = {
+            'ingresos_hoy': ingresos_hoy,
+            'egresos_hoy': egresos_hoy,
+            'saldo_actual': saldo_actual
+        }
+
+        # 2. Movimientos Paginados con filtros
         movimientos = Caja.objects.select_related('usuario').order_by('-fecha_hora')
         fecha_inicio = request.GET.get('fecha_inicio')
         fecha_fin = request.GET.get('fecha_fin')
@@ -584,7 +549,14 @@ def movimientos_caja(request):
         paginator = CajaPagination()
         page = paginator.paginate_queryset(movimientos, request)
         serializer = CajaSerializer(page, many=True)
-        return paginator.get_paginated_response(serializer.data)
+        paginated_response = paginator.get_paginated_response(serializer.data)
+
+        # 3. Combinar todo en una sola respuesta
+        data = {
+            'stats': stats,
+            'movimientos': paginated_response.data
+        }
+        return Response(data)
 
     elif request.method == 'POST':
         serializer = CajaSerializer(data=request.data, context={'request': request})
@@ -635,7 +607,7 @@ def listar_comprobantes_egreso(request):
 
     fecha_inicio = request.GET.get('fecha_inicio')
     fecha_fin = request.GET.get('fecha_fin')
-    medio_pago = request.GET.get('medio_pago')
+    metodo_pago = request.GET.get('metodo_pago')
     proveedor_id = request.GET.get('proveedor')
     query = request.GET.get('query')
 
@@ -643,12 +615,12 @@ def listar_comprobantes_egreso(request):
         egresos = egresos.filter(fecha__gte=fecha_inicio)
     if fecha_fin:
         egresos = egresos.filter(fecha__lte=fecha_fin)
-    if medio_pago:
-        egresos = egresos.filter(medio_pago=medio_pago)
+    if metodo_pago:
+        egresos = egresos.filter(metodo_pago=metodo_pago)
     if proveedor_id:
         egresos = egresos.filter(proveedor__id=proveedor_id)
     if query:
-        egresos = egresos.filter(Q(id__icontains=query) | Q(concepto__icontains=query) | Q(proveedor__nombre_empresa__icontains=query))
+        egresos = egresos.filter(Q(id__icontains=query) | Q(concepto__icontains=query) | Q(descripcion__icontains=query) | Q(proveedor__nombre_empresa__icontains=query))
 
     paginator = ComprobanteEgresoPagination()
     page = paginator.paginate_queryset(egresos, request)
@@ -658,21 +630,26 @@ def listar_comprobantes_egreso(request):
 @permission_classes([IsAuthenticated])
 @transaction.atomic
 def crear_comprobante_egreso(request):
-    serializer = ComprobanteEgresoSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    egreso = serializer.save()
-    if egreso.medio_pago == 'Efectivo':
-        # Lógica de caja
-        concepto_caja = f"Pago a {egreso.proveedor.nombre_empresa}, CE. {egreso.id}"
-        caja_data = {
-            'concepto': concepto_caja,
-            'valor': egreso.valor,
-            'tipo': 'egreso',
-        }
-        caja_serializer = CajaSerializer(data=caja_data, context={'request': request})
-        caja_serializer.is_valid(raise_exception=True)
-        caja_serializer.save()
-    return Response(serializer.data, status=201)
+    logger.info(f"Received data for crear_comprobante_egreso: {request.data}")
+    try:
+        serializer = ComprobanteEgresoSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        egreso = serializer.save()
+        if egreso.metodo_pago == 'Efectivo':
+            # Lógica de caja
+            concepto_caja = f"Pago a {egreso.proveedor.nombre_empresa}, CE. {egreso.id}"
+            caja_data = {
+                'concepto': concepto_caja,
+                'valor': egreso.valor,
+                'tipo': 'egreso',
+            }
+            caja_serializer = CajaSerializer(data=caja_data, context={'request': request})
+            caja_serializer.is_valid(raise_exception=True)
+            caja_serializer.save()
+        return Response(serializer.data, status=201)
+    except Exception as e:
+        logger.error(f"Error creating comprobante de egreso: {e}", exc_info=True)
+        return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
