@@ -607,7 +607,7 @@ def listar_comprobantes_egreso(request):
 
     fecha_inicio = request.GET.get('fecha_inicio')
     fecha_fin = request.GET.get('fecha_fin')
-    metodo_pago = request.GET.get('metodo_pago')
+    medio_pago = request.GET.get('medio_pago')
     proveedor_id = request.GET.get('proveedor')
     query = request.GET.get('query')
 
@@ -615,8 +615,8 @@ def listar_comprobantes_egreso(request):
         egresos = egresos.filter(fecha__gte=fecha_inicio)
     if fecha_fin:
         egresos = egresos.filter(fecha__lte=fecha_fin)
-    if metodo_pago:
-        egresos = egresos.filter(metodo_pago=metodo_pago)
+    if medio_pago:
+        egresos = egresos.filter(medio_pago=medio_pago)
     if proveedor_id:
         egresos = egresos.filter(proveedor__id=proveedor_id)
     if query:
@@ -635,7 +635,7 @@ def crear_comprobante_egreso(request):
         serializer = ComprobanteEgresoSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         egreso = serializer.save()
-        if egreso.metodo_pago == 'Efectivo':
+        if egreso.medio_pago == 'Efectivo':
             # Lógica de caja
             concepto_caja = f"Pago a {egreso.proveedor.nombre_empresa}, CE. {egreso.id}"
             caja_data = {

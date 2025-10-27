@@ -1,4 +1,5 @@
 from rest_framework import serializers
+import logging
 from .models import (
     Referencia, Proveedor, OrdenPedido, DetallePedido, Cliente, Venta, 
     ObservacionVenta, ObservacionCliente, Remision, ReciboCaja, Caja, ComprobanteEgreso
@@ -11,10 +12,9 @@ class ReferenciaSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class ProveedorSerializer(serializers.ModelSerializer):
-    referencias = ReferenciaSerializer(many=True, read_only=True)
     class Meta:
         model = Proveedor
-        fields = '__all__'
+        fields = ['id', 'nombre_empresa', 'nombre_encargado', 'contacto']
 
 class DetallePedidoSerializer(serializers.ModelSerializer):
     referencia_nombre = serializers.CharField(source='referencia.nombre', read_only=True)
@@ -153,10 +153,18 @@ class CajaSerializer(serializers.ModelSerializer):
             return super().create(validated_data)
 
 class ComprobanteEgresoSerializer(serializers.ModelSerializer):
-    proveedor_nombre = serializers.CharField(source='proveedor.nombre_empresa', read_only=True)
+    proveedor_nombre = serializers.SerializerMethodField()
+
     class Meta:
         model = ComprobanteEgreso
-        fields = ['id', 'proveedor', 'proveedor_nombre', 'metodo_pago', 'valor', 'descripcion', 'fecha', 'concepto']
+        fields = ['id', 'proveedor', 'proveedor_nombre', 'medio_pago', 'valor', 'descripcion', 'fecha', 'concepto']
+
+    def get_proveedor_nombre(self, obj):
+        try:
+            return obj.proveedor.nombre_empresa if obj.proveedor else None
+        except Exception as e:
+            logging.error(f'Error serializing proveedor_nombre for ComprobanteEgreso {obj.id}: {e}')
+            return None
 
 class ClienteDetalleSerializer(serializers.ModelSerializer):
     observaciones = ObservacionClienteSerializer(many=True, read_only=True)

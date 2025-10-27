@@ -11,12 +11,8 @@ class CustomUser(AbstractUser):
 
 class Proveedor(models.Model):
     nombre_empresa = models.CharField(max_length=255, unique=True, default='N/A')
-    nombre_contacto = models.CharField(max_length=255, default='N/A')
-    nit = models.CharField(max_length=20, unique=True, null=True, blank=True)
-    direccion = models.CharField(max_length=255, default='N/A')
-    ciudad = models.CharField(max_length=100, default='N/A')
-    telefono = models.CharField(max_length=20, default='0')
-    correo = models.EmailField(default='na@na.com')
+    nombre_encargado = models.CharField(max_length=255, default='N/A')
+    contacto = models.CharField(max_length=20, default='0')
 
     def __str__(self):
         return self.nombre_empresa
@@ -152,6 +148,6 @@ class ComprobanteEgreso(models.Model):
     proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE)
     fecha = models.DateField(default=timezone.now, db_index=True)
     valor = models.DecimalField(max_digits=10, decimal_places=2)
-    metodo_pago = models.CharField(max_length=20, choices=MEDIO_PAGO_CHOICES, db_index=True)
+    medio_pago = models.CharField(max_length=20, choices=MEDIO_PAGO_CHOICES, db_index=True)
     descripcion = models.TextField(blank=True, null=True)
     concepto = models.CharField(max_length=255, default='', blank=True)
