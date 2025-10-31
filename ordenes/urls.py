@@ -9,7 +9,8 @@ from .views import (
     anadir_observacion_cliente, listar_recibos_caja, 
     listar_comprobantes_egreso, crear_comprobante_egreso, crear_recibo_caja, 
     confirmar_recibo, listar_vendedores, UserDetailView, cambiar_contrasena,
-    dashboard_stats, sales_chart_data, cierre_caja, listar_ventas_pendientes_ids
+    dashboard_stats, sales_chart_data, cierre_caja, listar_ventas_pendientes_ids,
+    vendedor_recent_activity
 )
 
 router = DefaultRouter()
@@ -45,5 +46,6 @@ urlpatterns = [
     path('dashboard-stats/', dashboard_stats, name='dashboard-stats'),
     path('sales-chart-data/', sales_chart_data, name='sales-chart-data'),
     path('caja/cierre/', cierre_caja, name='cierre-caja'),
-    path('get-pendientes-ids/', listar_ventas_pendientes_ids, name='listar-ventas-pendientes-ids'),
+    path('vendedor-recent-activity/', vendedor_recent_activity, name='vendedor-recent-activity'),
+    path('get-pendientes-ids/', listar_ventas_pendientes_ids, name='get-pendientes-ids'),
 ]

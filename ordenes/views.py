@@ -60,23 +60,29 @@ def cierre_caja(request):
 @permission_classes([IsAuthenticated])
 def dashboard_stats(request):
     today = date.today()
-    
-    # Ventas del día (considerando solo ventas no anuladas)
-    ventas_dia = Venta.objects.filter(fecha_venta=today).exclude(estado='anulado').aggregate(total=Sum('valor_total'))['total'] or 0
+    user = request.user
 
-    # Ventas del mes actual (considerando solo ventas no anuladas)
+    ventas = Venta.objects.exclude(estado='anulado')
+    if user.role == 'vendedor':
+        ventas = ventas.filter(vendedor=user)
+
+    ventas_dia = ventas.filter(fecha_venta=today).aggregate(total=Sum('valor_total'))['total'] or 0
+
     start_of_month = today.replace(day=1)
-    ventas_mes = Venta.objects.filter(fecha_venta__gte=start_of_month).exclude(estado='anulado').aggregate(total=Sum('valor_total'))['total'] or 0
+    ventas_mes = ventas.filter(fecha_venta__gte=start_of_month).aggregate(total=Sum('valor_total'))['total'] or 0
 
-    # Órdenes abiertas
-    ordenes_abiertas = OrdenPedido.objects.filter(estado='en_proceso').count()
-
-    # Saldo en Caja
-    ultimo_movimiento_caja = Caja.objects.order_by('-fecha_hora').first()
-    saldo_caja = ultimo_movimiento_caja.total_acumulado if ultimo_movimiento_caja else 0
+    ordenes = OrdenPedido.objects.all()
+    if user.role == 'vendedor':
+        ordenes = ordenes.filter(usuario=user)
     
-    # Últimas 5 ventas
-    ultimas_ventas = Venta.objects.select_related('cliente').order_by('-fecha_venta', '-id')[:5]
+    ordenes_abiertas = ordenes.filter(estado='en_proceso').count()
+
+    saldo_caja = 0
+    if user.role != 'vendedor':
+        ultimo_movimiento_caja = Caja.objects.order_by('-fecha_hora').first()
+        saldo_caja = ultimo_movimiento_caja.total_acumulado if ultimo_movimiento_caja else 0
+    
+    ultimas_ventas = ventas.select_related('cliente').order_by('-fecha_venta', '-id')[:5]
     ultimas_ventas_serializer = VentaSerializer(ultimas_ventas, many=True)
 
     data = {
@@ -94,10 +100,14 @@ def sales_chart_data(request):
     today = date.today()
     current_year = today.year
     last_year = current_year - 1
+    user = request.user
 
-    # Ventas del año actual y anterior, excluyendo anuladas
-    sales_current_year = Venta.objects.filter(fecha_venta__year=current_year).exclude(estado='anulado')
-    sales_last_year = Venta.objects.filter(fecha_venta__year=last_year).exclude(estado='anulado')
+    ventas = Venta.objects.exclude(estado='anulado')
+    if user.role == 'vendedor':
+        ventas = ventas.filter(vendedor=user)
+
+    sales_current_year = ventas.filter(fecha_venta__year=current_year)
+    sales_last_year = ventas.filter(fecha_venta__year=last_year)
 
     # Agrupar por mes y sumar
     current_year_data = {i: 0 for i in range(1, 13)}
@@ -230,54 +240,62 @@ class DetallePedidoViewSet(viewsets.ModelViewSet):
 
 # ... (El resto del archivo no cambia, lo incluyo para que sea el código completo) ...
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def listar_pedidos(request):
-    # 1. OBTENER QUERYSET BASE
-    pedidos = OrdenPedido.objects.select_related('proveedor', 'usuario', 'venta').all()
+    try:
+        pedidos = OrdenPedido.objects.select_related('proveedor', 'usuario', 'venta').all()
 
-    # 2. FILTRAR POR ROL DE USUARIO
-    if request.user.role not in ["ADMINISTRADOR", "AUXILIAR"]:
-        pedidos = pedidos.filter(usuario=request.user)
+        # If user is a vendedor, they can only see their own orders
+        if request.user.role == 'vendedor':
+            pedidos = pedidos.filter(usuario=request.user)
+        else:
+            # If admin or auxiliar, they can filter by vendedor
+            id_vendedor = request.GET.get('id_vendedor')
+            if id_vendedor:
+                pedidos = pedidos.filter(usuario__id=id_vendedor)
 
-    # 3. APLICAR FILTROS DE QUERY PARAMS
-    estado = request.GET.get('estado')
-    id_proveedor = request.GET.get('id_proveedor')
-    id_vendedor = request.GET.get('id_vendedor')
+        # Other filters
+        estado = request.GET.get('estado')
+        if estado:
+            pedidos = pedidos.filter(estado=estado)
+        
+        id_proveedor = request.GET.get('id_proveedor')
+        if id_proveedor:
+            pedidos = pedidos.filter(proveedor__id=id_proveedor)
 
-    if estado:
-        pedidos = pedidos.filter(estado=estado)
-    if id_proveedor:
-        pedidos = pedidos.filter(proveedor__id=id_proveedor)
-    if id_vendedor:
-        pedidos = pedidos.filter(usuario__id=id_vendedor)
+        pedidos = pedidos.order_by('-id')
 
-    # 4. ORDENAR
-    pedidos = pedidos.order_by('-id')
-
-    # 5. PAGINAR EL RESULTADO FILTRADO Y ORDENADO
-    paginator = StandardResultsSetPagination()
-    page = paginator.paginate_queryset(pedidos, request)
-    
-    # 6. SERIALIZAR Y DEVOLVER RESPUESTA
-    # Si la página es None (porque no se solicitó paginación), serializa el queryset completo
-    if page is not None:
-        serializer = OrdenPedidoSerializer(page, many=True)
-        return paginator.get_paginated_response(serializer.data)
-    
-    # Si no hay paginación, serializa el queryset completo
-    serializer = OrdenPedidoSerializer(pedidos, many=True)
-    return Response(serializer.data)
+        serializer = OrdenPedidoSerializer(pedidos, many=True)
+        return Response(serializer.data)
+    except Exception as e:
+        logger.error(f"Error en listar_pedidos: {e}", exc_info=True)
+        return Response({"error": "Ocurrió un error inesperado en el servidor."}, status=500)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def detalles_pedido(request, orden_id):
     try:
-        detalles = DetallePedido.objects.filter(orden_id=orden_id).select_related('referencia')
-        data = [{"cantidad": d.cantidad, "especificaciones": d.especificaciones, "referencia": d.referencia.nombre if d.referencia else "N/A"} for d in detalles]
+        # OPTIMIZACIÓN: Usar `select_related` y `only` para traer solo lo necesario
+        detalles = DetallePedido.objects.filter(orden_id=orden_id).select_related('referencia').only(
+            'cantidad', 'especificaciones', 'referencia__nombre'
+        )
+        
+        data = [{
+            "cantidad": d.cantidad,
+            "especificaciones": d.especificaciones,
+            "referencia": d.referencia.nombre if d.referencia else "N/A"
+        } for d in detalles]
+        
         return Response(data)
-    except DetallePedido.DoesNotExist:
-        return Response({"error": "No se encontraron detalles para esta orden."}, status=404)
+    except Exception as e:
+        # Log del error para depuración
+        logger.error(f"Error al obtener detalles del pedido {orden_id}: {str(e)}")
+        return Response({"error": "Ocurrió un error inesperado al cargar los detalles."}, status=500)
 
 class CrearVentaClienteView(APIView):
     permission_classes = [IsAuthenticated]
@@ -707,6 +725,51 @@ def confirmar_recibo(request, id):
     return Response({"message": "Recibo confirmado y venta actualizada."}, status=status.HTTP_200_OK)
 
 
+
+from itertools import chain
+from operator import attrgetter
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def vendedor_recent_activity(request):
+    user = request.user
+    if user.role != 'vendedor':
+        return Response({"error": "No autorizado"}, status=403)
+
+    recent_sales = Venta.objects.filter(vendedor=user).select_related('cliente').order_by('-fecha_venta')[:5]
+    for sale in recent_sales:
+        sale.fecha = sale.fecha_venta
+        sale.type = 'venta'
+
+    recent_orders = OrdenPedido.objects.filter(usuario=user).select_related('proveedor').order_by('-fecha_creacion')[:5]
+    for order in recent_orders:
+        order.fecha = order.fecha_creacion
+        order.type = 'pedido'
+
+    combined_activity = sorted(
+        chain(recent_sales, recent_orders),
+        key=attrgetter('fecha'),
+        reverse=True
+    )
+
+    data = []
+    for item in combined_activity[:5]:
+        if item.type == 'venta':
+            data.append({
+                "type": "venta",
+                "id": item.id,
+                "cliente": item.cliente.nombre,
+                "fecha": item.fecha,
+            })
+        elif item.type == 'pedido':
+            data.append({
+                "type": "pedido",
+                "id": item.id,
+                "proveedor": item.proveedor.nombre_empresa,
+                "fecha": item.fecha,
+            })
+            
+    return Response(data)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])

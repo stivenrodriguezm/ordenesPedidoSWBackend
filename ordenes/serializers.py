@@ -9,7 +9,7 @@ from django.db import transaction
 class ReferenciaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Referencia
-        fields = '__all__'
+        fields = ['id', 'nombre', 'proveedor']
 
 class ProveedorSerializer(serializers.ModelSerializer):
     class Meta:

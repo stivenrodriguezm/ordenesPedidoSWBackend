@@ -112,11 +112,26 @@ WSGI_APPLICATION = 'lottusPedidos.wsgi.application'
 # 'NAME': os.environ.get('DB_NAME', 'u756180748_pruebasv3'),
 # 'USER': os.environ.get('DB_USER', 'u756180748_root'),
 # 'PASSWORD': os.environ.get('DB_PASSWORD', 'Lottus123'),
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.mysql',
+#         'NAME': 'u756180748_pruebasv3',
+#         'USER': 'u756180748_root',
+#         'PASSWORD': 'Lottus123',
+#         'HOST': '31.170.167.52',
+#         'PORT': '3306',
+#         'OPTIONS': {
+#             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+#             'connect_timeout': 10,
+#             'autocommit': True,
+#         },
+#     }
+# }
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'u756180748_pruebasv3',
-        'USER': 'u756180748_root',
+        'NAME': 'u756180748_lottus',
+        'USER': 'u756180748_lottus',
         'PASSWORD': 'Lottus123',
         'HOST': '31.170.167.52',
         'PORT': '3306',
@@ -127,7 +142,6 @@ DATABASES = {
         },
     }
 }
-
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {
