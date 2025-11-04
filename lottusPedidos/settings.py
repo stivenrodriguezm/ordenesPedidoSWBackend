@@ -21,7 +21,7 @@ AUTH_USER_MODEL = 'ordenes.CustomUser'
 ALLOWED_HOSTS = ['api.muebleslottus.com', '147.93.43.111']
 
 # CORS configuration
-CORS_ALLOW_ALL_ORIGINS = False  # Cambiar a False en producción y especificar CORS_ALLOWED_ORIGINS
+CORS_ALLOW_ALL_ORIGINS = True  # Cambiar a False en producción y especificar CORS_ALLOWED_ORIGINS
 
 CORS_ALLOWED_ORIGINS = [
     'https://app.muebleslottus.com',
@@ -48,6 +48,10 @@ CORS_ALLOW_HEADERS = [
 CSRF_TRUSTED_ORIGINS = [
     'https://app.muebleslottus.com',
 ]
+
+# Settings for proxy
+USE_X_FORWARDED_HOST = True
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # **Importante: Para entorno de desarrollo local**
 CSRF_COOKIE_SECURE = True
