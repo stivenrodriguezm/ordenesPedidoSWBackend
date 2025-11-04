@@ -7,26 +7,24 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
+import os
+
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-9k362@l)2sf4x1pstt7f=js1!y5u8*+ck*z77x=3x#k24j%r)-'
+# It is recommended to set the DJANGO_SECRET_KEY environment variable.
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-9k362@l)2sf4x1pstt7f=js1!y5u8*+ck*z77x=3x#k24j%r)-')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True # Cambiar a False en producción
+DEBUG = False
 
 AUTH_USER_MODEL = 'ordenes.CustomUser'
 
-ALLOWED_HOSTS = [
-    # "your_production_domain.com", # Reemplazar con tu dominio de producción
-    # "your_production_ip",
-    "*", # ¡ADVERTENCIA! No usar en producción. Solo para desarrollo.
-]
+ALLOWED_HOSTS = ['api.muebleslottus.com', '147.93.43.111']
 
 # CORS configuration
 CORS_ALLOW_ALL_ORIGINS = False  # Cambiar a False en producción y especificar CORS_ALLOWED_ORIGINS
 
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
+    'https://app.muebleslottus.com',
 ]
 
 CORS_ALLOW_CREDENTIALS = True  # Permitir el envío de cookies y credenciales
@@ -48,15 +46,12 @@ CORS_ALLOW_HEADERS = [
 ]
 
 CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:5173",  # Tu frontend en localhost:5173
-    "http://127.0.0.1:5173", 
-    "http://127.0.0.1", 
-    "http://localhost",
+    'https://app.muebleslottus.com',
 ]
 
 # **Importante: Para entorno de desarrollo local**
-CSRF_COOKIE_SECURE = False  # Desactiva en desarrollo, cuando no usas HTTPS
-SESSION_COOKIE_SECURE = False  # Desactiva en desarrollo, cuando no usas HTTPS
+CSRF_COOKIE_SECURE = True
+SESSION_COOKIE_SECURE = True
 
 # Application definition
 INSTALLED_APPS = [
@@ -166,6 +161,7 @@ USE_TZ = True
 
 # Static files (CSS, JavaScript, Images)
 STATIC_URL = 'static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'static')
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
