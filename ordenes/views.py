@@ -335,10 +335,21 @@ class EditarVentaClienteView(APIView):
     permission_classes = [IsAuthenticated]
     @transaction.atomic
     def put(self, request, id):
+        user = request.user
+
+        if user.role == 'vendedor':
+            return Response({"error": "No tienes permiso para realizar esta acción."}, status=status.HTTP_403_FORBIDDEN)
+
         try:
             venta = Venta.objects.get(id=id)
             cliente_data = request.data.get('cliente', {})
             venta_data = request.data.get('venta', {})
+
+            if user.role == 'auxiliar':
+                allowed_keys = {'estado'}
+                submitted_keys = set(venta_data.keys())
+                if not submitted_keys.issubset(allowed_keys):
+                    return Response({"error": "Como auxiliar, solo puedes modificar el estado de la venta."}, status=status.HTTP_403_FORBIDDEN)
 
             cliente_serializer = ClienteSerializer(venta.cliente, data=cliente_data, partial=True)
             cliente_serializer.is_valid(raise_exception=True)
