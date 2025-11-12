@@ -25,6 +25,7 @@ CORS_ALLOW_ALL_ORIGINS = False  # Cambiar a False en producción y especificar C
 
 CORS_ALLOWED_ORIGINS = [
     'https://app.muebleslottus.com',
+    'http://localhost:5173',
 ]
 
 CORS_ALLOW_CREDENTIALS = True  # Permitir el envío de cookies y credenciales
@@ -47,6 +48,7 @@ CORS_ALLOW_HEADERS = [
 
 CSRF_TRUSTED_ORIGINS = [
     'https://app.muebleslottus.com',
+    'http://localhost:5173',
 ]
 
 # Settings for proxy
