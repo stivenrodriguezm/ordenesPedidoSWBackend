@@ -18,7 +18,7 @@ DEBUG = False
 
 AUTH_USER_MODEL = 'ordenes.CustomUser'
 
-ALLOWED_HOSTS = ['api.muebleslottus.com', '147.93.43.111']
+ALLOWED_HOSTS = ['api.muebleslottus.com', '147.93.43.111', 'localhost', '127.0.0.1']
 
 # CORS configuration
 CORS_ALLOW_ALL_ORIGINS = False  # Cambiar a False en producción y especificar CORS_ALLOWED_ORIGINS
@@ -194,5 +194,24 @@ SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(hours=8),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
     'AUTH_HEADER_TYPES': ('Bearer',),
+}
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'file': {
+            'level': 'DEBUG',
+            'class': 'logging.FileHandler',
+            'filename': BASE_DIR / 'cierre_caja.log',
+        },
+    },
+    'loggers': {
+        'ordenes.views': {
+            'handlers': ['file'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+    },
 }
 
