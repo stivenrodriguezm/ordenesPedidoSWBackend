@@ -35,23 +35,17 @@ from rest_framework.pagination import PageNumberPagination
 @permission_classes([IsAuthenticated])
 @transaction.atomic
 def cierre_caja(request):
-    print("CIERRE DE CAJA VIEW CALLED")
-    print(request.data)
     user = request.user
     descuadre = request.data.get('descuadre')
-    tipo_descuadre = request.data.get('tipoDescuadre')  # 'positivo' o 'negativo'
 
     last_movement = Caja.objects.order_by('-fecha_hora').first()
     total_acumulado = last_movement.total_acumulado if last_movement else 0
 
     if descuadre and float(descuadre) != 0:
         formatted_descuadre = f"${float(descuadre):,.0f}"
-        texto_descuadre = "a favor" if tipo_descuadre == 'positivo' else "en contra"
-        concepto = f"Cierre de caja por {user.first_name}, con descuadre {texto_descuadre} de {formatted_descuadre}"
+        concepto = f"Cierre de caja por {user.first_name}, descuadre de {formatted_descuadre}"
     else:
         concepto = f"Cierre de caja exitoso por {user.first_name}"
-
-    logger.debug(f"Concepto para cierre de caja: {concepto}")
 
     Caja.objects.create(
         usuario=user,
