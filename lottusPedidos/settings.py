@@ -14,21 +14,20 @@ import os
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-9k362@l)2sf4x1pstt7f=js1!y5u8*+ck*z77x=3x#k24j%r)-')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
 AUTH_USER_MODEL = 'ordenes.CustomUser'
 
-ALLOWED_HOSTS = ['api.muebleslottus.com', '147.93.43.111', 'localhost', '127.0.0.1']
+ALLOWED_HOSTS = ['api.muebleslottus.com', 'app.muebleslottus.com']
 
 # CORS configuration
-CORS_ALLOW_ALL_ORIGINS = False  # Cambiar a False en producción y especificar CORS_ALLOWED_ORIGINS
+CORS_ALLOW_ALL_ORIGINS = False
 
 CORS_ALLOWED_ORIGINS = [
     'https://app.muebleslottus.com',
-    'http://localhost:5173',
 ]
 
-CORS_ALLOW_CREDENTIALS = True  # Permitir el envío de cookies y credenciales
+CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOW_METHODS = [
     'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS',
@@ -37,7 +36,7 @@ CORS_ALLOW_METHODS = [
 CORS_ALLOW_HEADERS = [
     "accept",
     "accept-encoding",
-    "authorization",  # Permitir el encabezado de autorización
+    "authorization",
     "content-type",
     "dnt",
     "origin",
@@ -48,20 +47,19 @@ CORS_ALLOW_HEADERS = [
 
 CSRF_TRUSTED_ORIGINS = [
     'https://app.muebleslottus.com',
-    'http://localhost:5173',
 ]
 
 # Settings for proxy
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
-# **Importante: Para entorno de desarrollo local**
-CSRF_COOKIE_SECURE = False
-SESSION_COOKIE_SECURE = False
+# **Importante: Para entorno de producción**
+CSRF_COOKIE_SECURE = True
+SESSION_COOKIE_SECURE = True
 
 # Application definition
 INSTALLED_APPS = [
-    'corsheaders',  # Asegúrate de que corsheaders esté instalado
+    'corsheaders',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -75,7 +73,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
-    "corsheaders.middleware.CorsMiddleware",  # Debe ir primero
+    "corsheaders.middleware.CorsMiddleware",
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -106,43 +104,6 @@ TEMPLATES = [
 WSGI_APPLICATION = 'lottusPedidos.wsgi.application'
 
 # Database configuration
-# ADVERTENCIA: No usar credenciales hardcodeadas en producción.
-# Usar variables de entorno o un sistema de gestión de secretos.
-# Ejemplo:
-# import os
-# 'NAME': os.environ.get('DB_NAME', 'u756180748_pruebasv3'),
-# 'USER': os.environ.get('DB_USER', 'u756180748_root'),
-# 'PASSWORD': os.environ.get('DB_PASSWORD', 'Lottus123'),
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.mysql',
-#         'NAME': 'u756180748_pruebasv3',
-#         'USER': 'u756180748_root',
-#         'PASSWORD': 'Lottus123',
-#         'HOST': '31.170.167.52',
-#         'PORT': '3306',
-#         'OPTIONS': {
-#             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-#             'connect_timeout': 10,
-#             'autocommit': True,
-#         },
-#     }
-# }
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.mysql',
-#         'NAME': 'u756180748_lottus',
-#         'USER': 'u756180748_lottus',
-#         'PASSWORD': 'Lottus123',
-#         'HOST': '31.170.167.52',
-#         'PORT': '3306',
-#         'OPTIONS': {
-#             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-#             'connect_timeout': 10,
-#             'autocommit': True,
-#         },
-#     }
-# }
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
@@ -210,4 +171,3 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
-
