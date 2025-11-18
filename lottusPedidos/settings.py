@@ -14,7 +14,7 @@ import os
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-9k362@l)2sf4x1pstt7f=js1!y5u8*+ck*z77x=3x#k24j%r)-')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
 
 AUTH_USER_MODEL = 'ordenes.CustomUser'
 
@@ -56,8 +56,8 @@ USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # **Importante: Para entorno de desarrollo local**
-CSRF_COOKIE_SECURE = True
-SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = False
+SESSION_COOKIE_SECURE = False
 
 # Application definition
 INSTALLED_APPS = [
@@ -118,6 +118,21 @@ WSGI_APPLICATION = 'lottusPedidos.wsgi.application'
 #         'ENGINE': 'django.db.backends.mysql',
 #         'NAME': 'u756180748_pruebasv3',
 #         'USER': 'u756180748_root',
+#         'PASSWORD': 'Lottus123',
+#         'HOST': '31.170.167.52',
+#         'PORT': '3306',
+#         'OPTIONS': {
+#             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+#             'connect_timeout': 10,
+#             'autocommit': True,
+#         },
+#     }
+# }
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.mysql',
+#         'NAME': 'u756180748_lottus',
+#         'USER': 'u756180748_lottus',
 #         'PASSWORD': 'Lottus123',
 #         'HOST': '31.170.167.52',
 #         'PORT': '3306',

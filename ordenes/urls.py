@@ -10,7 +10,7 @@ from .views import (
     listar_comprobantes_egreso, crear_comprobante_egreso, crear_recibo_caja, 
     confirmar_recibo, listar_vendedores, UserDetailView, cambiar_contrasena,
     dashboard_stats, sales_chart_data, cierre_caja, listar_ventas_pendientes_ids,
-    vendedor_recent_activity
+    vendedor_recent_activity, test_view
 )
 
 router = DefaultRouter()
@@ -48,4 +48,5 @@ urlpatterns = [
     path('caja/cierre/', cierre_caja, name='cierre-caja'),
     path('vendedor-recent-activity/', vendedor_recent_activity, name='vendedor-recent-activity'),
     path('get-pendientes-ids/', listar_ventas_pendientes_ids, name='get-pendientes-ids'),
+    path('test/', test_view, name='test-view'),
 ]

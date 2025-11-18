@@ -2,8 +2,6 @@
 
 import logging
 from rest_framework import viewsets, status, generics
-
-logger = logging.getLogger(__name__)
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework.decorators import api_view, permission_classes
@@ -24,8 +22,9 @@ from .serializers import (
 from .permissions import IsAdmin
 from django.db import transaction
 from django.db.models import Q, F, Sum, Sum
+from decimal import Decimal, InvalidOperation
 from rest_framework.exceptions import ValidationError
-from datetime import date, timedelta
+from datetime import date, timedelta, time, datetime
 from django.utils import timezone
 import calendar
 import django_filters
@@ -36,13 +35,18 @@ from rest_framework.pagination import PageNumberPagination
 @transaction.atomic
 def cierre_caja(request):
     user = request.user
-    descuadre = request.data.get('descuadre')
+    descuadre = request.data.get('descuadre', 0)
+
+    try:
+        descuadre_decimal = Decimal(descuadre)
+    except (ValueError, TypeError, InvalidOperation):
+        return Response({"error": "El valor de descuadre debe ser un número válido."}, status=status.HTTP_400_BAD_REQUEST)
 
     last_movement = Caja.objects.order_by('-fecha_hora').first()
-    total_acumulado = last_movement.total_acumulado if last_movement else 0
+    total_acumulado = last_movement.total_acumulado if last_movement else Decimal('0')
 
-    if descuadre and float(descuadre) != 0:
-        formatted_descuadre = f"${float(descuadre):,.0f}"
+    if descuadre_decimal != 0:
+        formatted_descuadre = f"${descuadre_decimal:,.0f}"
         concepto = f"Cierre de caja por {user.first_name}, descuadre de {formatted_descuadre}"
     else:
         concepto = f"Cierre de caja exitoso por {user.first_name}"
@@ -50,7 +54,7 @@ def cierre_caja(request):
     Caja.objects.create(
         usuario=user,
         concepto=concepto,
-        valor=0,
+        valor=descuadre_decimal,
         tipo='cierre',
         total_acumulado=total_acumulado
     )
@@ -262,7 +266,10 @@ def listar_pedidos(request):
         # Other filters
         estado = request.GET.get('estado')
         if estado:
-            pedidos = pedidos.filter(estado=estado)
+            if estado == 'en_proceso':
+                pedidos = pedidos.filter(estado__in=['en_proceso', 'pendiente'])
+            else:
+                pedidos = pedidos.filter(estado=estado)
         
         id_proveedor = request.GET.get('id_proveedor')
         if id_proveedor:
@@ -346,10 +353,10 @@ class EditarVentaClienteView(APIView):
             venta_data = request.data.get('venta', {})
 
             if user.role == 'auxiliar':
-                allowed_keys = {'estado'}
+                allowed_keys = {'estado', 'estado_pedidos'}
                 submitted_keys = set(venta_data.keys())
                 if not submitted_keys.issubset(allowed_keys):
-                    return Response({"error": "Como auxiliar, solo puedes modificar el estado de la venta."}, status=status.HTTP_403_FORBIDDEN)
+                    return Response({"error": "Como auxiliar, solo puedes modificar el estado y el estado de los pedidos."}, status=status.HTTP_403_FORBIDDEN)
 
             cliente_serializer = ClienteSerializer(venta.cliente, data=cliente_data, partial=True)
             cliente_serializer.is_valid(raise_exception=True)
@@ -553,8 +560,20 @@ def caja_view(request):
     if request.method == 'GET':
         # 1. Estadísticas
         today = timezone.now().date()
-        ingresos_hoy = Caja.objects.filter(fecha_hora__date=today, tipo='ingreso').aggregate(total=Sum('valor'))['total'] or 0
-        egresos_hoy = Caja.objects.filter(fecha_hora__date=today, tipo='egreso').aggregate(total=Sum('valor'))['total'] or 0
+        start_of_day = timezone.make_aware(datetime.combine(today, time.min))
+        end_of_day = timezone.make_aware(datetime.combine(today, time.max))
+
+        logging.info(f"Fetching stats for date range: {start_of_day} to {end_of_day}")
+
+        ingresos_hoy_qs = Caja.objects.filter(fecha_hora__range=(start_of_day, end_of_day), tipo='ingreso')
+        egresos_hoy_qs = Caja.objects.filter(fecha_hora__range=(start_of_day, end_of_day), tipo='egreso')
+
+        ingresos_hoy = ingresos_hoy_qs.aggregate(total=Sum('valor'))['total'] or 0
+        egresos_hoy = egresos_hoy_qs.aggregate(total=Sum('valor'))['total'] or 0
+
+        logging.info(f"Found {ingresos_hoy_qs.count()} ingresos for today with a total of {ingresos_hoy}")
+        logging.info(f"Found {egresos_hoy_qs.count()} egresos for today with a total of {egresos_hoy}")
+
         ultimo_movimiento = Caja.objects.order_by('-fecha_hora').first()
         saldo_actual = ultimo_movimiento.total_acumulado if ultimo_movimiento else 0
         stats = {
@@ -785,5 +804,18 @@ def vendedor_recent_activity(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def listar_ventas_pendientes_ids(request):
-    ids = Venta.objects.filter(estado='pendiente').order_by('-id').values_list('id', flat=True)
+    user = request.user
+    # Excluir ventas que ya tienen pedidos asociados (estado_pedidos=True) o que están entregadas.
+    ventas = Venta.objects.exclude(Q(estado_pedidos=True) | Q(estado='entregado') | Q(estado='anulada'))
+    
+    if user.role == 'vendedor':
+        ventas = ventas.filter(vendedor=user)
+        
+    logging.info(f"Filtered ventas pendientes: {[venta.id for venta in ventas]}")
+    ids = ventas.order_by('-id').values_list('id', flat=True)
     return Response(list(ids))
+
+@api_view(['GET'])
+@permission_classes([])
+def test_view(request):
+    return Response({"message": "Test successful"}, status=status.HTTP_200_OK)
