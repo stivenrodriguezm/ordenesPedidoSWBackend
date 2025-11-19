@@ -588,9 +588,11 @@ def caja_view(request):
         fecha_fin = request.GET.get('fecha_fin')
         query = request.GET.get('query')
         if fecha_inicio:
-            movimientos = movimientos.filter(fecha_hora__date__gte=fecha_inicio)
+            start_datetime = datetime.combine(datetime.strptime(fecha_inicio, '%Y-%m-%d').date(), time.min)
+            movimientos = movimientos.filter(fecha_hora__gte=start_datetime)
         if fecha_fin:
-            movimientos = movimientos.filter(fecha_hora__date__lte=fecha_fin)
+            end_datetime = datetime.combine(datetime.strptime(fecha_fin, '%Y-%m-%d').date(), time.max)
+            movimientos = movimientos.filter(fecha_hora__lte=end_datetime)
         if query:
             movimientos = movimientos.filter(Q(id__icontains=query) | Q(concepto__icontains=query))
         
