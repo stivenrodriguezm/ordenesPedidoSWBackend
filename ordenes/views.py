@@ -423,6 +423,7 @@ def listar_ventas(request):
             except ValueError:
                 return Response({"error": "ID de vendedor inválido."}, status=status.HTTP_400_BAD_REQUEST)
 
+    ventas = ventas.order_by('-fecha_venta', '-id')
     serializer = VentaSerializer(ventas, many=True)
     return Response(serializer.data)
 
