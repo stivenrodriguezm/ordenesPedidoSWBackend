@@ -646,10 +646,9 @@ def listar_recibos_caja(request):
         try:
             v_id = int(venta_id_param)
             recibos = recibos.filter(venta__id=v_id)
+            logger.info(f"Filtering recibos by venta_id={v_id}. Count before pagination: {recibos.count()}")
         except ValueError:
-            pass # Ignore invalid ID
-    if query:
-        recibos = recibos.filter(Q(id__icontains=query) | Q(venta__id__icontains=query) | Q(venta__cliente__nombre__icontains=query))
+            logger.warning(f"Invalid venta_id parameter: {venta_id_param}")
     if query:
         recibos = recibos.filter(Q(id__icontains=query) | Q(venta__id__icontains=query) | Q(venta__cliente__nombre__icontains=query))
 
