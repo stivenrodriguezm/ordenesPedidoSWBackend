@@ -627,11 +627,13 @@ def listar_recibos_caja(request):
     # OPTIMIZACIÓN: Cargar datos del cliente relacionados en una sola consulta
     recibos = ReciboCaja.objects.select_related('venta__cliente').order_by('-fecha', '-id')
     
-    fecha_inicio = request.GET.get('fecha_inicio')
-    fecha_fin = request.GET.get('fecha_fin')
-    medio_pago = request.GET.get('medio_pago')
-    venta_id = request.GET.get('venta')
-    query = request.GET.get('query')
+    fecha_inicio = request.query_params.get('fecha_inicio')
+    fecha_fin = request.query_params.get('fecha_fin')
+    medio_pago = request.query_params.get('medio_pago')
+    venta_id = request.query_params.get('venta')
+    query = request.query_params.get('query')
+
+    logger.info(f"Listar Recibos Caja - Params: venta={venta_id}, query={query}")
 
     if fecha_inicio:
         recibos = recibos.filter(fecha__gte=fecha_inicio)
@@ -640,7 +642,7 @@ def listar_recibos_caja(request):
     if medio_pago:
         recibos = recibos.filter(metodo_pago=medio_pago)
     if venta_id:
-        recibos = recibos.filter(venta_id=venta_id)
+        recibos = recibos.filter(venta__id=venta_id)
     if query:
         recibos = recibos.filter(Q(id__icontains=query) | Q(venta__id__icontains=query) | Q(venta__cliente__nombre__icontains=query))
 
