@@ -633,7 +633,8 @@ def listar_recibos_caja(request):
     venta_id_param = request.GET.get('venta_id') or request.GET.get('venta')
     query = request.GET.get('query')
 
-    logger.info(f"Listar Recibos Caja - Params: venta_id={venta_id_param}, query={query}")
+    logger.info(f"Listar Recibos Caja - Full Params: {request.GET}")
+    logger.info(f"Listar Recibos Caja - Parsed: venta_id={venta_id_param}, query={query}")
 
     if fecha_inicio:
         recibos = recibos.filter(fecha__gte=fecha_inicio)

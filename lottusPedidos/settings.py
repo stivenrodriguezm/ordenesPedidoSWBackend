@@ -117,7 +117,7 @@ DATABASES = {
             'connect_timeout': 10,
             'autocommit': True,
         },
-        'CONN_MAX_AGE': 60, # Persist connections for 10 minutes
+        'CONN_MAX_AGE': 0, # Close connection after each request to prevent timeouts
     }
 }
 # Password validation
