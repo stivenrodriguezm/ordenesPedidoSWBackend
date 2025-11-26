@@ -175,7 +175,7 @@ class ClienteDetalleSerializer(serializers.ModelSerializer):
 class VentaDetalleSerializer(serializers.ModelSerializer):
     cliente = ClienteDetalleSerializer(read_only=True)
     observaciones_venta = ObservacionVentaSerializer(many=True, read_only=True, source='observaciones')
-    recibos = ReciboCajaSerializer(many=True, read_only=True)
+    # recibos = ReciboCajaSerializer(many=True, read_only=True) # REMOVED FOR PERFORMANCE
     remisiones = RemisionSerializer(many=True, read_only=True)
     ordenes_pedido = OrdenPedidoSerializer(many=True, read_only=True)
     vendedor_nombre = serializers.CharField(source='vendedor.first_name', read_only=True)
@@ -186,6 +186,6 @@ class VentaDetalleSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'cliente', 'vendedor', 'valor_total', 'abono', 'saldo', 
             'fecha_venta', 'fecha_entrega', 'estado', 'estado_pedidos', 
-            'observaciones_venta', 'recibos', 'remisiones', 'ordenes_pedido', 
+            'observaciones_venta', 'remisiones', 'ordenes_pedido', 
             'vendedor_nombre', 'cliente_nombre'
         ]

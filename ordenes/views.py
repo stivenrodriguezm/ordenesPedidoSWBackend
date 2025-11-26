@@ -437,7 +437,7 @@ def detalle_venta(request, id):
             'vendedor'
         ).prefetch_related(
             'observaciones__autor', 
-            'recibos', 
+            # 'recibos', # REMOVED FOR PERFORMANCE
             'remisiones', 
             'ordenes_pedido__proveedor', 
             'ordenes_pedido__usuario', 
