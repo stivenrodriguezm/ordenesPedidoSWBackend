@@ -63,36 +63,41 @@ def cierre_caja(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def dashboard_stats(request):
-    today = date.today()
     user = request.user
 
+    # Filter ventas by vendor if user is a vendedor
     ventas = Venta.objects.exclude(estado='anulado')
     if user.role == 'vendedor':
         ventas = ventas.filter(vendedor=user)
 
-    ventas_dia = ventas.filter(fecha_venta=today).aggregate(total=Sum('valor_total'))['total'] or 0
+    # New stat 1: Ventas Pendientes - count of all pending sales (all months)
+    ventas_pendientes = ventas.filter(estado='pendiente').count()
 
-    start_of_month = today.replace(day=1)
-    ventas_mes = ventas.filter(fecha_venta__gte=start_of_month).aggregate(total=Sum('valor_total'))['total'] or 0
+    # New stat 2: Pedidos Pendientes - count of ventas with estado_pedidos=False
+    pedidos_pendientes = ventas.filter(estado_pedidos=False).count()
 
+    # Filter orders by vendor if user is a vendedor
     ordenes = OrdenPedido.objects.all()
     if user.role == 'vendedor':
         ordenes = ordenes.filter(usuario=user)
     
-    ordenes_abiertas = ordenes.filter(estado='en_proceso').count()
+    # New stat 3: Órdenes Atrasadas - count of orders with estado='pendiente'
+    ordenes_atrasadas = ordenes.filter(estado='pendiente').count()
 
+    # Keep saldo_caja for admin/auxiliar users
     saldo_caja = 0
     if user.role != 'vendedor':
         ultimo_movimiento_caja = Caja.objects.order_by('-fecha_hora').first()
         saldo_caja = ultimo_movimiento_caja.total_acumulado if ultimo_movimiento_caja else 0
     
+    # Keep ultimas_ventas for compatibility
     ultimas_ventas = ventas.select_related('cliente').order_by('-fecha_venta', '-id')[:5]
     ultimas_ventas_serializer = VentaSerializer(ultimas_ventas, many=True)
 
     data = {
-        'ventas_dia': ventas_dia,
-        'ventas_mes': ventas_mes,
-        'ordenes_abiertas': ordenes_abiertas,
+        'ventas_pendientes': ventas_pendientes,
+        'pedidos_pendientes': pedidos_pendientes,
+        'ordenes_atrasadas': ordenes_atrasadas,
         'saldo_caja': saldo_caja,
         'ultimas_ventas': ultimas_ventas_serializer.data
     }
