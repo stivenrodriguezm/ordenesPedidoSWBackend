@@ -65,37 +65,61 @@ def cierre_caja(request):
 def dashboard_stats(request):
     user = request.user
 
-    # Filter ventas by vendor if user is a vendedor
-    ventas = Venta.objects.exclude(estado='anulado')
+    # For vendedores: return their specific stats
     if user.role == 'vendedor':
-        ventas = ventas.filter(vendedor=user)
+        # Filter ventas by vendor
+        ventas = Venta.objects.filter(vendedor=user).exclude(estado='anulado')
 
-    # New stat 1: Ventas Pendientes - count of all pending sales (all months)
-    ventas_pendientes = ventas.filter(estado='pendiente').count()
+        # Vendor stat 1: Ventas Pendientes - count of their pending sales
+        ventas_pendientes = ventas.filter(estado='pendiente').count()
 
-    # New stat 2: Pedidos Pendientes - count of ventas with estado_pedidos=False
+        # Vendor stat 2: Pedidos Pendientes - count of their ventas with estado_pedidos=False
+        pedidos_pendientes = ventas.filter(estado_pedidos=False).count()
+
+        # Filter orders by vendor
+        ordenes = OrdenPedido.objects.filter(usuario=user)
+        
+        # Vendor stat 3: Órdenes Atrasadas - count of their overdue orders
+        today = date.today()
+        ordenes_atrasadas = ordenes.filter(estado='en_proceso', fecha_esperada__lt=today).count()
+
+        data = {
+            'ventas_pendientes': ventas_pendientes,
+            'pedidos_pendientes': pedidos_pendientes,
+            'ordenes_atrasadas': ordenes_atrasadas,
+            'saldo_caja': 0,
+            'ultimas_ventas': []
+        }
+        return Response(data)
+
+    # For admin/auxiliar: return global stats
+    ventas = Venta.objects.exclude(estado='anulado')
+
+    # Admin stat 1: Ventas Hoy - sum of sales today
+    today = date.today()
+    ventas_dia = ventas.filter(fecha_venta=today).aggregate(total=Sum('valor_total'))['total'] or 0
+
+    # Admin stat 2: Ventas del Mes - sum of sales this month
+    first_day_of_month = today.replace(day=1)
+    ventas_mes = ventas.filter(fecha_venta__gte=first_day_of_month, fecha_venta__lte=today).aggregate(total=Sum('valor_total'))['total'] or 0
+
+    # Admin stat 3: Pedidos Pendientes - count of ALL ventas with estado_pedidos=False
     pedidos_pendientes = ventas.filter(estado_pedidos=False).count()
 
-    # Filter orders by vendor if user is a vendedor
-    ordenes = OrdenPedido.objects.all()
-    if user.role == 'vendedor':
-        ordenes = ordenes.filter(usuario=user)
-    
-    # New stat 3: Órdenes Atrasadas - count of orders with estado='pendiente'
-    ordenes_atrasadas = ordenes.filter(estado='pendiente').count()
+    # Admin stat 4: Órdenes Atrasadas - count of ALL overdue orders
+    ordenes_atrasadas = OrdenPedido.objects.filter(estado='en_proceso', fecha_esperada__lt=today).count()
 
     # Keep saldo_caja for admin/auxiliar users
-    saldo_caja = 0
-    if user.role != 'vendedor':
-        ultimo_movimiento_caja = Caja.objects.order_by('-fecha_hora').first()
-        saldo_caja = ultimo_movimiento_caja.total_acumulado if ultimo_movimiento_caja else 0
+    ultimo_movimiento_caja = Caja.objects.order_by('-fecha_hora').first()
+    saldo_caja = ultimo_movimiento_caja.total_acumulado if ultimo_movimiento_caja else 0
     
     # Keep ultimas_ventas for compatibility
     ultimas_ventas = ventas.select_related('cliente').order_by('-fecha_venta', '-id')[:5]
     ultimas_ventas_serializer = VentaSerializer(ultimas_ventas, many=True)
 
     data = {
-        'ventas_pendientes': ventas_pendientes,
+        'ventas_dia': ventas_dia,
+        'ventas_mes': ventas_mes,
         'pedidos_pendientes': pedidos_pendientes,
         'ordenes_atrasadas': ordenes_atrasadas,
         'saldo_caja': saldo_caja,
