@@ -880,8 +880,9 @@ def listar_ventas_pendientes_ids(request):
     # Only show ventas with estado='pendiente' (case insensitive)
     ventas = Venta.objects.filter(estado__iexact='pendiente')
     
-    if user.role == 'vendedor':
-        ventas = ventas.filter(vendedor=user)
+    # Vendor filter removed as per user request to show ALL pending sales
+    # if user.role == 'vendedor':
+    #     ventas = ventas.filter(vendedor=user)
         
     logging.info(f"Filtered ventas pendientes: {[venta.id for venta in ventas]}")
     ids = ventas.order_by('-id').values_list('id', flat=True)
