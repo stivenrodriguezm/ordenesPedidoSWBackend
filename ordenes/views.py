@@ -877,8 +877,8 @@ def vendedor_recent_activity(request):
 @permission_classes([IsAuthenticated])
 def listar_ventas_pendientes_ids(request):
     user = request.user
-    # Only show ventas with estado='pendiente'
-    ventas = Venta.objects.filter(estado='pendiente')
+    # Only show ventas with estado='pendiente' (case insensitive)
+    ventas = Venta.objects.filter(estado__iexact='pendiente')
     
     if user.role == 'vendedor':
         ventas = ventas.filter(vendedor=user)
