@@ -877,8 +877,8 @@ def vendedor_recent_activity(request):
 @permission_classes([IsAuthenticated])
 def listar_ventas_pendientes_ids(request):
     user = request.user
-    # Excluir ventas que ya tienen pedidos asociados (estado_pedidos=True) o que están entregadas.
-    ventas = Venta.objects.exclude(Q(estado_pedidos=True) | Q(estado='entregado') | Q(estado='anulada'))
+    # Only show ventas with estado='pendiente'
+    ventas = Venta.objects.filter(estado='pendiente')
     
     if user.role == 'vendedor':
         ventas = ventas.filter(vendedor=user)
