@@ -99,15 +99,29 @@ def dashboard_stats(request):
     today = date.today()
     ventas_dia = ventas.filter(fecha_venta=today).aggregate(total=Sum('valor_total'))['total'] or 0
 
-    # Admin stat 2: Ventas del Mes - sum of sales this month
-    first_day_of_month = today.replace(day=1)
-    ventas_mes = ventas.filter(fecha_venta__gte=first_day_of_month, fecha_venta__lte=today).aggregate(total=Sum('valor_total'))['total'] or 0
+    # Admin stat 2: Ventas del Mes - sum of sales this month (Custom range: 6th to 5th)
+    if today.day >= 6:
+        start_date = date(today.year, today.month, 6)
+        # Handle December rollover
+        if today.month == 12:
+            end_date = date(today.year + 1, 1, 5)
+        else:
+            end_date = date(today.year, today.month + 1, 5)
+    else:
+        # Handle January rollover
+        if today.month == 1:
+            start_date = date(today.year - 1, 12, 6)
+        else:
+            start_date = date(today.year, today.month - 1, 6)
+        end_date = date(today.year, today.month, 5)
+
+    ventas_mes = ventas.filter(fecha_venta__gte=start_date, fecha_venta__lte=end_date).aggregate(total=Sum('valor_total'))['total'] or 0
 
     # Admin stat 3: Pedidos Pendientes - count of ALL ventas with estado_pedidos=False
     pedidos_pendientes = ventas.filter(estado_pedidos=False).count()
 
-    # Admin stat 4: Órdenes Atrasadas - count of ALL overdue orders
-    ordenes_atrasadas = OrdenPedido.objects.filter(estado='en_proceso', fecha_esperada__lt=today).count()
+    # Admin stat 4: Órdenes Atrasadas - count of ALL overdue orders (estado='pendiente' and fecha_esperada < today)
+    ordenes_atrasadas = OrdenPedido.objects.filter(estado='pendiente', fecha_esperada__lt=today).count()
 
     # Keep saldo_caja for admin/auxiliar users
     ultimo_movimiento_caja = Caja.objects.order_by('-fecha_hora').first()
