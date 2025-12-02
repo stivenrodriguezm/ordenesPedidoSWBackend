@@ -125,6 +125,7 @@ class ReciboCaja(models.Model):
     metodo_pago = models.CharField(max_length=50, choices=MEDIO_PAGO_CHOICES, db_index=True)
     estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='Pendiente', db_index=True)
     nota = models.TextField(blank=True, null=True)
+    confirmacion = models.TextField(blank=True, null=True)
 
 class Caja(models.Model):
     TIPO_CHOICES = [

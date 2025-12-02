@@ -764,9 +764,15 @@ def crear_recibo_caja(request):
     serializer.is_valid(raise_exception=True)
     
     metodo_pago = request.data.get('metodo_pago')
+    fecha_creacion = date.today()
+    usuario_nombre = request.user.first_name or request.user.username
+    
+    # Format date as "20-nov-2025"
+    fecha_str = fecha_creacion.strftime('%d-%b-%Y').lower()
     
     if metodo_pago == 'Efectivo':
-        recibo = serializer.save(estado='Confirmado')
+        confirmacion_text = f"Confirmado el {fecha_str} por {usuario_nombre}"
+        recibo = serializer.save(estado='Confirmado', confirmacion=confirmacion_text)
         # Actualizar abono y saldo de la venta
         venta = recibo.venta
         venta.abono = F('abono') + recibo.valor
@@ -800,8 +806,17 @@ def confirmar_recibo(request, id):
     if recibo.estado == 'Confirmado':
         return Response({"message": "El recibo ya está confirmado."}, status=status.HTTP_200_OK)
 
+    # Get current date and admin user
+    fecha_confirmacion = date.today()
+    admin_nombre = request.user.first_name or request.user.username
+    
+    # Format date as "20-nov-2025"
+    fecha_str = fecha_confirmacion.strftime('%d-%b-%Y').lower()
+    confirmacion_text = f"Confirmado el {fecha_str} por {admin_nombre}"
+    
     recibo.estado = 'Confirmado'
-    recibo.save(update_fields=['estado'])
+    recibo.confirmacion = confirmacion_text
+    recibo.save(update_fields=['estado', 'confirmacion'])
 
     # Actualizar abono y saldo de la venta
     venta = recibo.venta
