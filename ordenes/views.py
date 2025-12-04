@@ -764,7 +764,17 @@ def crear_recibo_caja(request):
     serializer.is_valid(raise_exception=True)
     
     metodo_pago = request.data.get('metodo_pago')
-    fecha_creacion = date.today()
+    
+    # Use provided date or default to today
+    fecha_str_input = request.data.get('fecha')
+    if fecha_str_input:
+        try:
+            fecha_creacion = datetime.strptime(fecha_str_input, '%Y-%m-%d').date()
+        except ValueError:
+            fecha_creacion = date.today()
+    else:
+        fecha_creacion = date.today()
+        
     usuario_nombre = request.user.first_name or request.user.username
     
     # Format date as "20-nov-2025"
@@ -772,7 +782,7 @@ def crear_recibo_caja(request):
     
     if metodo_pago == 'Efectivo':
         confirmacion_text = f"Confirmado el {fecha_str} por {usuario_nombre}"
-        recibo = serializer.save(estado='Confirmado', confirmacion=confirmacion_text)
+        recibo = serializer.save(estado='Confirmado', confirmacion=confirmacion_text, fecha=fecha_creacion)
         # Actualizar abono y saldo de la venta
         venta = recibo.venta
         venta.abono = F('abono') + recibo.valor
