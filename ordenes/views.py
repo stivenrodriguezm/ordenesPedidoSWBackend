@@ -335,13 +335,23 @@ def detalles_pedido(request, orden_id):
             'cantidad', 'especificaciones', 'referencia__nombre'
         )
         
-        data = [{
+        # Obtener la observación de la orden
+        try:
+            orden = OrdenPedido.objects.get(id=orden_id)
+            observacion = orden.observacion
+        except OrdenPedido.DoesNotExist:
+            observacion = None
+
+        detalles_data = [{
             "cantidad": d.cantidad,
             "especificaciones": d.especificaciones,
             "referencia": d.referencia.nombre if d.referencia else "N/A"
         } for d in detalles]
         
-        return Response(data)
+        return Response({
+            "detalles": detalles_data,
+            "observacion": observacion
+        })
     except Exception as e:
         # Log del error para depuración
         logger.error(f"Error al obtener detalles del pedido {orden_id}: {str(e)}")
