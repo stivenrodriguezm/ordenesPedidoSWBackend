@@ -10,14 +10,15 @@ from django.http import HttpResponse
 from .models import (
     Referencia, Proveedor, OrdenPedido, DetallePedido, CustomUser, Cliente,
     Venta, ObservacionVenta, Caja, ReciboCaja, ComprobanteEgreso,
-    ObservacionCliente, Remision
+    ObservacionCliente, Remision, ProveedorTela, PedidoTela, DetallePedidoTela, DireccionEntrega
 )
 from .serializers import (
     ReferenciaSerializer, ProveedorSerializer, OrdenPedidoSerializer,
     DetallePedidoSerializer, ClienteSerializer, VentaSerializer,
     ObservacionVentaSerializer, CajaSerializer, ReciboCajaSerializer,
     ComprobanteEgresoSerializer, VentaDetalleSerializer,
-    ObservacionClienteSerializer, RemisionSerializer
+    ObservacionClienteSerializer, RemisionSerializer,
+    ProveedorTelaSerializer, PedidoTelaSerializer, DetallePedidoTelaSerializer, DireccionEntregaSerializer
 )
 from .permissions import IsAdmin
 from django.db import transaction
@@ -274,7 +275,11 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
     
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        data = request.data.copy()
+        # Vendedores solo pueden actualizar el estado de tela
+        if request.user.role == 'vendedor':
+            data = {'tela': data.get('tela', instance.tela)}
+        serializer = self.get_serializer(instance, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
         return Response(serializer.data)
@@ -347,10 +352,32 @@ def detalles_pedido(request, orden_id):
             "especificaciones": d.especificaciones,
             "referencia": d.referencia.nombre if d.referencia else "N/A"
         } for d in detalles]
+
+        # --- NUEVO: Obtener los PedidoTela asociados a esta orden ---
+        pedidos_tela_qs = PedidoTela.objects.filter(
+            orden_asociada_id=orden_id
+        ).select_related('proveedor').prefetch_related('detalles')
+
+        pedidos_telas_data = []
+        for pt in pedidos_tela_qs:
+            detalles_tela = [{
+                "tela": dt.tela,
+                "cantidad": str(dt.cantidad),
+                "observacion": dt.observacion or '',
+            } for dt in pt.detalles.all()]
+            pedidos_telas_data.append({
+                "id": pt.id,
+                "proveedor": pt.proveedor.nombre_empresa if pt.proveedor else "N/A",
+                "fecha_creacion": str(pt.fecha_creacion) if pt.fecha_creacion else None,
+                "estado": pt.estado,
+                "detalles": detalles_tela,
+            })
+        # -------------------------------------------------------
         
         return Response({
             "detalles": detalles_data,
-            "observacion": observacion
+            "observacion": observacion,
+            "pedidos_telas": pedidos_telas_data,
         })
     except Exception as e:
         # Log del error para depuración
@@ -798,21 +825,76 @@ def crear_recibo_caja(request):
         venta.abono = F('abono') + recibo.valor
         venta.saldo = F('saldo') - recibo.valor
         venta.save(update_fields=['abono', 'saldo'])
-
-        # Crear movimiento de caja usando el serializador
-        concepto_caja = f"RC. {recibo.id}, OP. {recibo.venta.id}"
-        caja_data = {
-            'concepto': concepto_caja,
-            'valor': recibo.valor,
-            'tipo': 'ingreso',
-        }
-        caja_serializer = CajaSerializer(data=caja_data, context={'request': request})
-        caja_serializer.is_valid(raise_exception=True)
-        caja_serializer.save()
-    else:
-        recibo = serializer.save(estado='Pendiente')
         
-    return Response(serializer.data, status=201)
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+class ProveedorTelaViewSet(viewsets.ModelViewSet):
+    queryset = ProveedorTela.objects.all()
+    serializer_class = ProveedorTelaSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+
+class DireccionEntregaViewSet(viewsets.ModelViewSet):
+    queryset = DireccionEntrega.objects.all()
+    serializer_class = DireccionEntregaSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+
+class PedidoTelaViewSet(viewsets.ModelViewSet):
+    queryset = PedidoTela.objects.all()
+    serializer_class = PedidoTelaSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        queryset = PedidoTela.objects.select_related('proveedor', 'usuario', 'orden_asociada').prefetch_related('detalles').all().order_by('-id')
+
+        # Vendedores can only see their own pedidos de tela
+        if self.request.user.role == 'vendedor':
+            queryset = queryset.filter(usuario=self.request.user)
+
+        # Filter by provider
+        proveedor_id = self.request.query_params.get('proveedor')
+        if proveedor_id:
+            queryset = queryset.filter(proveedor_id=proveedor_id)
+
+        # Filter by status
+        estado = self.request.query_params.get('estado')
+        if estado:
+            queryset = queryset.filter(estado=estado)
+
+        return queryset
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        user = request.user
+
+        # Vendedores can only edit their own pedidos de tela
+        if user.role == 'vendedor' and instance.usuario != user:
+            return Response(
+                {'error': 'No tienes permiso para editar este pedido.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Non-admins cannot change estado when it is already 'En fabrica'
+        if user.role != 'administrador' and instance.estado == 'En fabrica':
+            return Response(
+                {'error': 'No puedes editar un pedido en estado "En fabrica".'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Only allow the 'estado' field to be updated via PATCH
+        new_estado = request.data.get('estado', instance.estado)
+        serializer = self.get_serializer(instance, data={'estado': new_estado}, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
+
+class DetallePedidoTelaViewSet(viewsets.ModelViewSet):
+    queryset = DetallePedidoTela.objects.all()
+    serializer_class = DetallePedidoTelaSerializer
+    permission_classes = [IsAuthenticated]
+
 
 @api_view(['PATCH'])
 @permission_classes([IsAdmin])

@@ -73,6 +73,7 @@ class OrdenPedido(models.Model):
     estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='pendiente', db_index=True)
     observacion = models.TextField(blank=True, null=True)
     tela = models.CharField(max_length=255, blank=True, null=True)
+    requiere_tela = models.BooleanField(default=False)
     costo = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     orden_venta = models.CharField(max_length=50, blank=True, null=True)
 
@@ -152,3 +153,44 @@ class ComprobanteEgreso(models.Model):
     medio_pago = models.CharField(max_length=20, choices=MEDIO_PAGO_CHOICES, db_index=True)
     descripcion = models.TextField(blank=True, null=True)
     concepto = models.CharField(max_length=255, default='', blank=True)
+
+class ProveedorTela(models.Model):
+    nombre_empresa = models.CharField(max_length=255, unique=True, default='N/A')
+    nombre_encargado = models.CharField(max_length=255, default='N/A')
+    contacto = models.CharField(max_length=20, default='0')
+
+    def __str__(self):
+        return self.nombre_empresa
+
+class PedidoTela(models.Model):
+    ESTADO_CHOICES = [
+        ('En fabrica', 'En fabrica'),
+        ('En Lottus', 'En Lottus'),
+        ('Pendiente', 'Pendiente'),
+    ]
+    id = models.PositiveIntegerField(primary_key=True)
+    usuario = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='pedidos_telas')
+    proveedor = models.ForeignKey(ProveedorTela, on_delete=models.CASCADE, related_name='pedidos')
+    direccion_entrega = models.TextField()
+    fecha_creacion = models.DateField(auto_now_add=True, db_index=True)
+    estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='Pendiente', db_index=True)
+    orden_asociada = models.ForeignKey(OrdenPedido, on_delete=models.SET_NULL, null=True, blank=True, related_name='pedidos_telas')
+
+    def __str__(self):
+        return f"Pedido Tela {self.id} - {self.proveedor.nombre_empresa}"
+
+class DetallePedidoTela(models.Model):
+    pedido = models.ForeignKey(PedidoTela, on_delete=models.CASCADE, related_name='detalles')
+    tela = models.TextField() # Changed to TextField as requested
+    cantidad = models.DecimalField(max_digits=10, decimal_places=2)
+    observacion = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"Detalle Tela {self.pedido.id} - {self.tela}"
+
+class DireccionEntrega(models.Model):
+    nombre = models.CharField(max_length=100)
+    detalles = models.TextField()
+
+    def __str__(self):
+        return f"{self.nombre} - {self.detalles}"

@@ -10,7 +10,8 @@ from .views import (
     listar_comprobantes_egreso, crear_comprobante_egreso, crear_recibo_caja, 
     confirmar_recibo, listar_vendedores, UserDetailView, cambiar_contrasena,
     dashboard_stats, sales_chart_data, cierre_caja, listar_ventas_pendientes_ids,
-    vendedor_recent_activity, test_view
+    vendedor_recent_activity, test_view,
+    ProveedorTelaViewSet, PedidoTelaViewSet, DetallePedidoTelaViewSet, DireccionEntregaViewSet
 )
 
 router = DefaultRouter()
@@ -18,6 +19,10 @@ router.register(r'referencias', ReferenciaViewSet)
 router.register(r'proveedores', ProveedorViewSet)
 router.register(r'ordenes-pedido', OrdenPedidoViewSet)
 router.register(r'detalles-pedido', DetallePedidoViewSet)
+router.register(r'proveedores-telas', ProveedorTelaViewSet)
+router.register(r'pedidos-telas', PedidoTelaViewSet)
+router.register(r'detalles-pedido-tela', DetallePedidoTelaViewSet)
+router.register(r'direcciones-entrega', DireccionEntregaViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),

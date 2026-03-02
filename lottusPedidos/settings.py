@@ -18,13 +18,14 @@ DEBUG = False
 
 AUTH_USER_MODEL = 'ordenes.CustomUser'
 
-ALLOWED_HOSTS = ['api.muebleslottus.com', 'app.muebleslottus.com']
+ALLOWED_HOSTS = ['api.muebleslottus.com', 'app.muebleslottus.com', 'localhost', '127.0.0.1']
 
 # CORS configuration
 CORS_ALLOW_ALL_ORIGINS = False
 
 CORS_ALLOWED_ORIGINS = [
     'https://app.muebleslottus.com',
+    'http://localhost:3000',
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -47,6 +48,7 @@ CORS_ALLOW_HEADERS = [
 
 CSRF_TRUSTED_ORIGINS = [
     'https://app.muebleslottus.com',
+    'http://localhost:3000',
 ]
 
 # Settings for proxy
@@ -104,13 +106,19 @@ TEMPLATES = [
 WSGI_APPLICATION = 'lottusPedidos.wsgi.application'
 
 # Database configuration
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.sqlite3',
+#         'NAME': BASE_DIR / 'db.sqlite3',
+#     }
+# }
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'u756180748_lottus',
-        'USER': 'u756180748_lottus',
+        'NAME': 'u756180748_pruebasv3',
+        'USER': 'u756180748_root',
         'PASSWORD': 'Lottus123',
-        'HOST': '31.170.167.52',
+        'HOST': '195.35.61.108',
         'PORT': '3306',
         'OPTIONS': {
             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",

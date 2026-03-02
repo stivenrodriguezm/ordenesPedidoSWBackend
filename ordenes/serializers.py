@@ -1,10 +1,16 @@
 from rest_framework import serializers
 import logging
 from .models import (
-    Referencia, Proveedor, OrdenPedido, DetallePedido, Cliente, Venta, 
-    ObservacionVenta, ObservacionCliente, Remision, ReciboCaja, Caja, ComprobanteEgreso
+    Referencia, Proveedor, OrdenPedido, DetallePedido, Cliente, Venta,
+    ObservacionVenta, ObservacionCliente, Remision, ReciboCaja, Caja, ComprobanteEgreso,
+    ProveedorTela, PedidoTela, DetallePedidoTela, DireccionEntrega
 )
 from django.db import transaction
+
+class DireccionEntregaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DireccionEntrega
+        fields = ['id', 'nombre', 'detalles']
 
 class ReferenciaSerializer(serializers.ModelSerializer):
     class Meta:
@@ -189,3 +195,59 @@ class VentaDetalleSerializer(serializers.ModelSerializer):
             'observaciones_venta', 'remisiones', 'ordenes_pedido', 
             'vendedor_nombre', 'cliente_nombre'
         ]
+
+class ProveedorTelaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProveedorTela
+        fields = '__all__'
+
+class DetallePedidoTelaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DetallePedidoTela
+        fields = ['id', 'tela', 'cantidad', 'observacion']
+
+class PedidoTelaSerializer(serializers.ModelSerializer):
+    proveedor_nombre = serializers.SerializerMethodField()
+    usuario_nombre = serializers.SerializerMethodField()
+    detalles = DetallePedidoTelaSerializer(many=True, required=False) # Nested serializer for details
+    orden_asociada_id = serializers.PrimaryKeyRelatedField(
+        queryset=OrdenPedido.objects.all(), source='orden_asociada', write_only=True, required=False, allow_null=True
+    )
+    orden_id = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PedidoTela
+        fields = [
+            'id', 'usuario', 'usuario_nombre', 'proveedor', 'proveedor_nombre', 
+            'direccion_entrega', 'fecha_creacion', 'estado', 'orden_asociada', 
+            'orden_asociada_id', 'detalles', 'orden_id'
+        ]
+        read_only_fields = ['fecha_creacion', 'usuario', 'id']
+
+    def get_proveedor_nombre(self, obj):
+        return obj.proveedor.nombre_empresa if obj.proveedor else None
+
+    def get_usuario_nombre(self, obj):
+        return obj.usuario.first_name if obj.usuario else None
+        
+    def get_orden_id(self, obj):
+        return obj.orden_asociada.id if obj.orden_asociada else None
+
+    @transaction.atomic
+    def create(self, validated_data):
+        detalles_data = validated_data.pop('detalles', [])
+        usuario = self.context['request'].user
+        
+        # Calculate next ID starting from 1000
+        last_pedido = PedidoTela.objects.all().order_by('id').last()
+        if last_pedido:
+            new_id = max(last_pedido.id + 1, 1000)
+        else:
+            new_id = 1000
+            
+        pedido = PedidoTela.objects.create(id=new_id, usuario=usuario, **validated_data)
+        
+        for detalle_data in detalles_data:
+            DetallePedidoTela.objects.create(pedido=pedido, **detalle_data)
+            
+        return pedido
