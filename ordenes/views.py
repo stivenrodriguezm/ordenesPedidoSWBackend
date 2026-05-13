@@ -18,9 +18,9 @@ from .serializers import (
     ObservacionVentaSerializer, CajaSerializer, ReciboCajaSerializer,
     ComprobanteEgresoSerializer, VentaDetalleSerializer,
     ObservacionClienteSerializer, RemisionSerializer,
-    ProveedorTelaSerializer, PedidoTelaSerializer, DetallePedidoTelaSerializer, DireccionEntregaSerializer
+    ProveedorTelaSerializer, PedidoTelaSerializer, DetallePedidoTelaSerializer, DireccionEntregaSerializer, UserManageSerializer
 )
-from .permissions import IsAdmin
+from .permissions import IsAdmin, IsAdministradorRole, check_feature_permission
 from django.db import transaction
 from django.db.models import Q, F, Sum, Sum
 from decimal import Decimal, InvalidOperation
@@ -32,7 +32,7 @@ import django_filters
 from rest_framework.pagination import PageNumberPagination
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_CAJA')])
 @transaction.atomic
 def cierre_caja(request):
     user = request.user
@@ -212,10 +212,38 @@ class UserDetailView(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
         user = request.user
+        perms = []
+        if user.role == 'administrador':
+            perms = ['ALL']
+        else:
+            from .models import RolePermission
+            rp = RolePermission.objects.filter(role=user.role).first()
+            if rp:
+                perms = rp.permissions
+            elif user.role == 'transportador':
+                # Permisos mínimos por defecto para transportadores sin reglas configuradas
+                perms = ['VER_REMISIONES']
+
         return Response({
             "id": user.id, "username": user.username, "first_name": user.first_name,
-            "last_name": user.last_name, "role": user.role,
+            "last_name": user.last_name, "role": user.role, "permissions": perms
         })
+
+class RolePermissionViewSet(viewsets.ModelViewSet):
+    from .models import RolePermission
+    queryset = RolePermission.objects.all()
+    # No standard serializer class defined yet, let's use a quick inline or explicit class
+    # To keep it completely in views.py, I'll use a local serializer for simplicity
+    permission_classes = [IsAuthenticated, IsAdministradorRole]
+    
+    def get_serializer_class(self):
+        from rest_framework import serializers
+        from .models import RolePermission
+        class RolePermissionSerializer(serializers.ModelSerializer):
+            class Meta:
+                model = RolePermission
+                fields = ['id', 'role', 'permissions']
+        return RolePermissionSerializer
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -230,9 +258,9 @@ def cambiar_contrasena(request):
     return Response({"message": "Contraseña actualizada correctamente."}, status=status.HTTP_200_OK)
 
 class ReferenciaViewSet(viewsets.ModelViewSet):
-    queryset = Referencia.objects.select_related('proveedor').all()
+    queryset = Referencia.objects.select_related('proveedor', 'categoria', 'subcategoria').all()
     serializer_class = ReferenciaSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, check_feature_permission('VER_REFERENCIAS')]
     # pagination_class = StandardResultsSetPagination
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -244,7 +272,13 @@ class ReferenciaViewSet(viewsets.ModelViewSet):
 class ProveedorViewSet(viewsets.ModelViewSet):
     queryset = Proveedor.objects.all()
     serializer_class = ProveedorSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, check_feature_permission('VER_PROVEEDORES')]
+    pagination_class = StandardResultsSetPagination
+
+class UserViewSet(viewsets.ModelViewSet):
+    queryset = CustomUser.objects.all().order_by('-is_active', 'first_name', 'last_name')
+    serializer_class = UserManageSerializer
+    permission_classes = [IsAuthenticated, IsAdministradorRole]
     pagination_class = StandardResultsSetPagination
 
 # ==============================================================================
@@ -256,7 +290,12 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
     queryset = OrdenPedido.objects.all() # Se necesita para que el router de DRF funcione.
     # ==========================================
     serializer_class = OrdenPedidoSerializer
-    permission_classes = [IsAuthenticated]
+    
+    def get_permissions(self):
+        from .permissions import check_feature_permission
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), check_feature_permission('CREAR_ORDEN')()]
+        return [IsAuthenticated(), check_feature_permission('VER_ORDENES')()]
     http_method_names = ['get', 'post', 'put', 'patch', 'delete']
     pagination_class = StandardResultsSetPagination
 
@@ -297,7 +336,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_ORDENES')])
 def listar_pedidos(request):
     try:
         pedidos = OrdenPedido.objects.select_related('proveedor', 'usuario', 'venta').all()
@@ -457,7 +496,7 @@ class EditarVentaClienteView(APIView):
             return Response({"error": str(e)}, status=500)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_VENTAS')])
 def listar_ventas(request):
     # OPTIMIZACIÓN: Iniciar con la consulta optimizada
     ventas = Venta.objects.select_related('cliente', 'vendedor').all()
@@ -580,7 +619,7 @@ class ClienteFilter(django_filters.FilterSet):
         return queryset.filter(Q(id__icontains=value) | Q(nombre__icontains=value) | Q(cedula__icontains=value))
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_CLIENTES')])
 def listar_clientes(request):
     filtro = ClienteFilter(request.GET, queryset=Cliente.objects.all().order_by('-id'))
     paginator = ClientePagination()
@@ -636,7 +675,7 @@ class CajaPagination(PageNumberPagination):
 from django.db.models import Q, F, Sum, Case, When, DecimalField
 
 @api_view(['GET', 'POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_CAJA')])
 def caja_view(request):
     if request.method == 'GET':
         # 1. Estadísticas
@@ -702,7 +741,7 @@ class ReciboCajaPagination(PageNumberPagination):
     max_page_size = 100
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_CAJA')])
 def listar_recibos_caja(request):
     # OPTIMIZACIÓN: Cargar datos del cliente relacionados en una sola consulta
     recibos = ReciboCaja.objects.select_related('venta__cliente').order_by('-fecha', '-id')
@@ -742,7 +781,7 @@ class ComprobanteEgresoPagination(PageNumberPagination):
     max_page_size = 100
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_CAJA')])
 def listar_comprobantes_egreso(request):
     # OPTIMIZACIÓN: Cargar datos del proveedor relacionados en una sola consulta
     egresos = ComprobanteEgreso.objects.select_related('proveedor').order_by('-fecha', '-id')
@@ -769,7 +808,7 @@ def listar_comprobantes_egreso(request):
     return paginator.get_paginated_response(ComprobanteEgresoSerializer(page, many=True).data)
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_CAJA')])
 @transaction.atomic
 def crear_comprobante_egreso(request):
     logger.info(f"Received data for crear_comprobante_egreso: {request.data}")
@@ -794,7 +833,7 @@ def crear_comprobante_egreso(request):
         return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_CAJA')])
 @transaction.atomic
 def crear_recibo_caja(request):
     serializer = ReciboCajaSerializer(data=request.data)
@@ -831,7 +870,7 @@ def crear_recibo_caja(request):
 class ProveedorTelaViewSet(viewsets.ModelViewSet):
     queryset = ProveedorTela.objects.all()
     serializer_class = ProveedorTelaSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, check_feature_permission('VER_TELAS')]
     pagination_class = StandardResultsSetPagination
 
 class DireccionEntregaViewSet(viewsets.ModelViewSet):
@@ -843,7 +882,7 @@ class DireccionEntregaViewSet(viewsets.ModelViewSet):
 class PedidoTelaViewSet(viewsets.ModelViewSet):
     queryset = PedidoTela.objects.all()
     serializer_class = PedidoTelaSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, check_feature_permission('VER_TELAS')]
     pagination_class = StandardResultsSetPagination
 
     def get_queryset(self):
@@ -976,7 +1015,7 @@ def vendedor_recent_activity(request):
     return Response(data)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_VENTAS')])
 def listar_ventas_pendientes_ids(request):
     user = request.user
     # Only show ventas with estado='pendiente' (case insensitive)
@@ -989,6 +1028,13 @@ def listar_ventas_pendientes_ids(request):
     logging.info(f"Filtered ventas pendientes: {[venta.id for venta in ventas]}")
     ids = ventas.order_by('-id').values_list('id', flat=True)
     return Response(list(ids))
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def listar_transportadores(request):
+    transportadores = CustomUser.objects.filter(is_active=True, role='transportador').only('id', 'first_name', 'username')
+    data = [{"id": t.id, "first_name": t.first_name, "username": t.username} for t in transportadores]
+    return Response(data)
 
 @api_view(['GET'])
 @permission_classes([])

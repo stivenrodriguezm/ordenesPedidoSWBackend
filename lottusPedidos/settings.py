@@ -14,7 +14,8 @@ import os
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-9k362@l)2sf4x1pstt7f=js1!y5u8*+ck*z77x=3x#k24j%r)-')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+# DEBUG = False  # Producción
+DEBUG = True  # Desarrollo local
 
 AUTH_USER_MODEL = 'ordenes.CustomUser'
 
@@ -24,7 +25,9 @@ ALLOWED_HOSTS = ['api.muebleslottus.com', 'app.muebleslottus.com', 'localhost', 
 CORS_ALLOW_ALL_ORIGINS = False
 
 CORS_ALLOWED_ORIGINS = [
-    'https://app.muebleslottus.com',
+    'https://app.muebleslottus.com',  # Producción
+    'http://localhost:3000',           # Desarrollo local
+    'http://127.0.0.1:3000',          # Desarrollo local (alt)
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -46,16 +49,22 @@ CORS_ALLOW_HEADERS = [
 ]
 
 CSRF_TRUSTED_ORIGINS = [
-    'https://app.muebleslottus.com',
+    'https://app.muebleslottus.com',  # Producción
+    'http://localhost:3000',           # Desarrollo local
+    'http://127.0.0.1:3000',          # Desarrollo local (alt)
+    'http://localhost:8000',           # Django admin local
 ]
 
-# Settings for proxy
-USE_X_FORWARDED_HOST = True
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+# Settings for proxy (solo en producción)
+# USE_X_FORWARDED_HOST = True
+# SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = False
 
-# **Importante: Para entorno de producción**
-CSRF_COOKIE_SECURE = True
-SESSION_COOKIE_SECURE = True
+# Cookies seguras: True en producción, False en desarrollo local (HTTP)
+# CSRF_COOKIE_SECURE = True    # Producción
+# SESSION_COOKIE_SECURE = True  # Producción
+CSRF_COOKIE_SECURE = False
+SESSION_COOKIE_SECURE = False
 
 # Application definition
 INSTALLED_APPS = [
@@ -68,6 +77,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'ordenes',
+    'suministros',
     'django_extensions',
     'django_filters',
 ]
@@ -113,8 +123,8 @@ WSGI_APPLICATION = 'lottusPedidos.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'u756180748_lottus',
-        'USER': 'u756180748_lottus',
+        'NAME': 'u756180748_pruebasv3',
+        'USER': 'u756180748_root',
         'PASSWORD': 'Lottus123',
         'HOST': '195.35.61.108',
         'PORT': '3306',

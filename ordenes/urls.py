@@ -10,8 +10,8 @@ from .views import (
     listar_comprobantes_egreso, crear_comprobante_egreso, crear_recibo_caja, 
     confirmar_recibo, listar_vendedores, UserDetailView, cambiar_contrasena,
     dashboard_stats, sales_chart_data, cierre_caja, listar_ventas_pendientes_ids,
-    vendedor_recent_activity, test_view,
-    ProveedorTelaViewSet, PedidoTelaViewSet, DetallePedidoTelaViewSet, DireccionEntregaViewSet
+    vendedor_recent_activity, test_view, listar_transportadores,
+    ProveedorTelaViewSet, PedidoTelaViewSet, DetallePedidoTelaViewSet, DireccionEntregaViewSet, UserViewSet, RolePermissionViewSet
 )
 
 router = DefaultRouter()
@@ -23,6 +23,8 @@ router.register(r'proveedores-telas', ProveedorTelaViewSet)
 router.register(r'pedidos-telas', PedidoTelaViewSet)
 router.register(r'detalles-pedido-tela', DetallePedidoTelaViewSet)
 router.register(r'direcciones-entrega', DireccionEntregaViewSet)
+router.register(r'usuarios', UserViewSet)
+router.register(r'role-permissions', RolePermissionViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -53,5 +55,6 @@ urlpatterns = [
     path('caja/cierre/', cierre_caja, name='cierre-caja'),
     path('vendedor-recent-activity/', vendedor_recent_activity, name='vendedor-recent-activity'),
     path('get-pendientes-ids/', listar_ventas_pendientes_ids, name='get-pendientes-ids'),
+    path('transportadores/', listar_transportadores, name='listar-transportadores'),
     path('test/', test_view, name='test-view'),
 ]

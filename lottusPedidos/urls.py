@@ -6,6 +6,7 @@ urlpatterns = [
     path("api/login/", TokenObtainPairView.as_view(), name="login"),  # Alias para token
     path("api/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    path("api/suministros/", include("suministros.urls")),
     path("api/", include("ordenes.urls")),  # Incluye las rutas de la app ordenes
     path("admin/", admin.site.urls),
 ]

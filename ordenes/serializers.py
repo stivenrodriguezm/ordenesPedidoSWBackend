@@ -1,11 +1,41 @@
 from rest_framework import serializers
 import logging
+from django.db import transaction
+from django.contrib.auth.hashers import make_password
 from .models import (
-    Referencia, Proveedor, OrdenPedido, DetallePedido, Cliente, Venta,
+    CustomUser, Referencia, Proveedor, OrdenPedido, DetallePedido, Cliente, Venta,
     ObservacionVenta, ObservacionCliente, Remision, ReciboCaja, Caja, ComprobanteEgreso,
     ProveedorTela, PedidoTela, DetallePedidoTela, DireccionEntrega
 )
-from django.db import transaction
+
+class UserManageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'username', 'first_name', 'last_name', 'role', 'is_active', 'password']
+        extra_kwargs = {
+            'password': {'write_only': True, 'required': False}
+        }
+
+    def create(self, validated_data):
+        password = validated_data.pop('password', None)
+        user = CustomUser(**validated_data)
+        if password:
+            user.set_password(password)
+        else:
+            # If no password is provided in creation (though the frontend should require it),
+            # we generate an unusable password as fallback.
+            user.set_unusable_password()
+        user.save()
+        return user
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop('password', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        if password:
+            instance.set_password(password)
+        instance.save()
+        return instance
 
 class DireccionEntregaSerializer(serializers.ModelSerializer):
     class Meta:
@@ -13,9 +43,18 @@ class DireccionEntregaSerializer(serializers.ModelSerializer):
         fields = ['id', 'nombre', 'detalles']
 
 class ReferenciaSerializer(serializers.ModelSerializer):
+    categoria_nombre = serializers.SerializerMethodField()
+    subcategoria_nombre = serializers.SerializerMethodField()
+
     class Meta:
         model = Referencia
-        fields = ['id', 'nombre', 'proveedor']
+        fields = ['id', 'nombre', 'proveedor', 'categoria', 'categoria_nombre', 'subcategoria', 'subcategoria_nombre']
+
+    def get_categoria_nombre(self, obj):
+        return obj.categoria.nombre if obj.categoria else None
+
+    def get_subcategoria_nombre(self, obj):
+        return obj.subcategoria.nombre if obj.subcategoria else None
 
 class ProveedorSerializer(serializers.ModelSerializer):
     class Meta:

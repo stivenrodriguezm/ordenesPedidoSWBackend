@@ -7,8 +7,16 @@ class CustomUser(AbstractUser):
         ('vendedor', 'Vendedor'),
         ('administrador', 'Administrador'),
         ('auxiliar', 'Auxiliar'),
+        ('transportador', 'Transportador'),
     )
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='vendedor')
+
+class RolePermission(models.Model):
+    role = models.CharField(max_length=20, choices=CustomUser.ROLE_CHOICES, unique=True)
+    permissions = models.JSONField(default=list, blank=True)
+
+    def __str__(self):
+        return f"Permisos para Rol: {self.get_role_display()}"
 
 class Proveedor(models.Model):
     nombre_empresa = models.CharField(max_length=255, unique=True, default='N/A')
@@ -21,6 +29,20 @@ class Proveedor(models.Model):
 class Referencia(models.Model):
     proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE, related_name='referencias')
     nombre = models.CharField(max_length=255)
+    categoria = models.ForeignKey(
+        'suministros.Categoria',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='referencias',
+    )
+    subcategoria = models.ForeignKey(
+        'suministros.Subcategoria',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='referencias',
+    )
 
     def __str__(self):
         return f'{self.nombre} ({self.proveedor.nombre_empresa})'
