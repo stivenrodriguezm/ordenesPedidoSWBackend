@@ -69,7 +69,7 @@ def dashboard_stats(request):
     # For vendedores: return their specific stats
     if user.role == 'vendedor':
         # Filter ventas by vendor
-        ventas = Venta.objects.filter(vendedor=user).exclude(estado='anulado')
+        ventas = Venta.objects.filter(Q(vendedor=user) | Q(vendedores_compartidos=user)).distinct().exclude(estado='anulado')
 
         # Vendor stat 1: Ventas Pendientes - count of their pending sales
         ventas_pendientes = ventas.filter(estado='pendiente').count()
@@ -151,8 +151,21 @@ def sales_chart_data(request):
     user = request.user
 
     ventas = Venta.objects.exclude(estado='anulado')
+    
+    from django.db.models import Count, ExpressionWrapper, DecimalField, F
+    
     if user.role == 'vendedor':
-        ventas = ventas.filter(vendedor=user)
+        ventas = ventas.filter(Q(vendedor=user) | Q(vendedores_compartidos=user)).distinct()
+        ventas = ventas.annotate(
+            num_vendedores=Count('vendedores_compartidos') + 1
+        ).annotate(
+            valor_calculado=ExpressionWrapper(
+                F('valor_total') / F('num_vendedores'),
+                output_field=DecimalField(max_digits=10, decimal_places=2)
+            )
+        )
+    else:
+        ventas = ventas.annotate(valor_calculado=F('valor_total'))
 
     sales_current_year = ventas.filter(fecha_venta__year=current_year)
     sales_last_year = ventas.filter(fecha_venta__year=last_year)
@@ -161,11 +174,11 @@ def sales_chart_data(request):
     current_year_data = {i: 0 for i in range(1, 13)}
     last_year_data = {i: 0 for i in range(1, 13)}
 
-    current_sales_by_month = sales_current_year.values('fecha_venta__month').annotate(total=Sum('valor_total'))
+    current_sales_by_month = sales_current_year.values('fecha_venta__month').annotate(total=Sum('valor_calculado'))
     for item in current_sales_by_month:
         current_year_data[item['fecha_venta__month']] = item['total']
 
-    last_sales_by_month = sales_last_year.values('fecha_venta__month').annotate(total=Sum('valor_total'))
+    last_sales_by_month = sales_last_year.values('fecha_venta__month').annotate(total=Sum('valor_calculado'))
     for item in last_sales_by_month:
         last_year_data[item['fecha_venta__month']] = item['total']
 
@@ -258,7 +271,7 @@ def cambiar_contrasena(request):
     return Response({"message": "Contraseña actualizada correctamente."}, status=status.HTTP_200_OK)
 
 class ReferenciaViewSet(viewsets.ModelViewSet):
-    queryset = Referencia.objects.select_related('proveedor', 'categoria', 'subcategoria').all()
+    queryset = Referencia.objects.select_related('proveedor').prefetch_related('categorias', 'subcategorias').all()
     serializer_class = ReferenciaSerializer
     permission_classes = [IsAuthenticated, check_feature_permission('VER_REFERENCIAS')]
     # pagination_class = StandardResultsSetPagination
@@ -511,6 +524,7 @@ def listar_ventas(request):
         year_param = request.GET.get('year')
         estado = request.GET.get('estado')
         vendedor_id_param = request.GET.get('vendedor')
+        sede_param = request.GET.get('sede')
 
         if month_param and year_param:
             try:
@@ -538,9 +552,12 @@ def listar_ventas(request):
         if vendedor_id_param:
             try:
                 vendedor_id = int(vendedor_id_param)
-                ventas = ventas.filter(vendedor_id=vendedor_id)
+                ventas = ventas.filter(Q(vendedor_id=vendedor_id) | Q(vendedores_compartidos__id=vendedor_id)).distinct()
             except ValueError:
                 return Response({"error": "ID de vendedor inválido."}, status=status.HTTP_400_BAD_REQUEST)
+                
+        if sede_param:
+            ventas = ventas.filter(sede=sede_param)
 
     ventas = ventas.order_by('-fecha_venta', '-id')
     serializer = VentaSerializer(ventas, many=True)

@@ -43,18 +43,22 @@ class DireccionEntregaSerializer(serializers.ModelSerializer):
         fields = ['id', 'nombre', 'detalles']
 
 class ReferenciaSerializer(serializers.ModelSerializer):
-    categoria_nombre = serializers.SerializerMethodField()
-    subcategoria_nombre = serializers.SerializerMethodField()
+    categorias_nombres = serializers.SerializerMethodField()
+    subcategorias_nombres = serializers.SerializerMethodField()
 
     class Meta:
         model = Referencia
-        fields = ['id', 'nombre', 'proveedor', 'categoria', 'categoria_nombre', 'subcategoria', 'subcategoria_nombre']
+        fields = [
+            'id', 'nombre', 'proveedor', 
+            'categorias', 'categorias_nombres', 
+            'subcategorias', 'subcategorias_nombres'
+        ]
 
-    def get_categoria_nombre(self, obj):
-        return obj.categoria.nombre if obj.categoria else None
+    def get_categorias_nombres(self, obj):
+        return [c.nombre for c in obj.categorias.all()]
 
-    def get_subcategoria_nombre(self, obj):
-        return obj.subcategoria.nombre if obj.subcategoria else None
+    def get_subcategorias_nombres(self, obj):
+        return [s.nombre for s in obj.subcategorias.all()]
 
 class ProveedorSerializer(serializers.ModelSerializer):
     class Meta:
@@ -110,6 +114,10 @@ class ClienteSerializer(serializers.ModelSerializer):
 class VentaSerializer(serializers.ModelSerializer):
     vendedor_nombre = serializers.CharField(source='vendedor.first_name', read_only=True)
     cliente_nombre = serializers.CharField(source='cliente.nombre', read_only=True)
+    vendedores_compartidos_nombres = serializers.SerializerMethodField(read_only=True)
+    
+    def get_vendedores_compartidos_nombres(self, obj):
+        return ", ".join([v.first_name for v in obj.vendedores_compartidos.all()])
     
     class Meta:
         model = Venta
@@ -118,6 +126,10 @@ class VentaSerializer(serializers.ModelSerializer):
             'fecha_venta', 
             'vendedor', 
             'vendedor_nombre', 
+            'vendedores_compartidos',
+            'vendedores_compartidos_nombres',
+            'traslado',
+            'sede',
             'cliente', 
             'cliente_nombre', 
             'valor_total', 
@@ -131,6 +143,7 @@ class VentaSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'vendedor': {'write_only': True},
             'cliente': {'write_only': True},
+            'vendedores_compartidos': {'required': False, 'allow_empty': True},
             'valor_total': {'coerce_to_string': False},
             'abono': {'coerce_to_string': False},
         }
@@ -225,11 +238,16 @@ class VentaDetalleSerializer(serializers.ModelSerializer):
     ordenes_pedido = OrdenPedidoSerializer(many=True, read_only=True)
     vendedor_nombre = serializers.CharField(source='vendedor.first_name', read_only=True)
     cliente_nombre = serializers.CharField(source='cliente.nombre', read_only=True)
+    vendedores_compartidos_nombres = serializers.SerializerMethodField(read_only=True)
+
+    def get_vendedores_compartidos_nombres(self, obj):
+        return ", ".join([v.first_name for v in obj.vendedores_compartidos.all()])
     
     class Meta:
         model = Venta
         fields = [
-            'id', 'cliente', 'vendedor', 'valor_total', 'abono', 'saldo', 
+            'id', 'cliente', 'vendedor', 'vendedores_compartidos', 'vendedores_compartidos_nombres', 
+            'traslado', 'sede', 'valor_total', 'abono', 'saldo', 
             'fecha_venta', 'fecha_entrega', 'estado', 'estado_pedidos', 
             'observaciones_venta', 'remisiones', 'ordenes_pedido', 
             'vendedor_nombre', 'cliente_nombre'

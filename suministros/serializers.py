@@ -48,17 +48,29 @@ class GrupoInventarioComponenteSerializer(serializers.ModelSerializer):
 
 
 class GrupoInventarioSerializer(serializers.ModelSerializer):
-    componentes = GrupoInventarioComponenteSerializer(many=True)
+    componentes = GrupoInventarioComponenteSerializer(many=True, required=False)
     items_count = serializers.SerializerMethodField()
+    costo_total = serializers.SerializerMethodField()
+    subcategoria_id = serializers.PrimaryKeyRelatedField(
+        source='subcategoria', 
+        queryset=Subcategoria.objects.all(), 
+        required=False, 
+        allow_null=True
+    )
+    subcategoria_nombre = serializers.ReadOnlyField(source='subcategoria.nombre')
 
     class Meta:
         model = GrupoInventario
-        fields = ['id', 'nombre', 'descripcion', 'activo', 'componentes', 'items_count']
+        fields = [
+            'id', 'nombre', 'descripcion', 'activo', 'componentes', 
+            'items_count', 'costo_total', 'subcategoria_id', 'subcategoria_nombre', 'observacion'
+        ]
 
     def get_items_count(self, obj):
-        return obj.items_inventario.filter(
-            disponibilidad__in=['exhibicion', 'consignacion', 'cliente', 'venta']
-        ).count()
+        return obj.items_inventario.count()
+
+    def get_costo_total(self, obj):
+        return sum(item.costo_especifico for item in obj.items_inventario.all())
 
     def create(self, validated_data):
         componentes_data = validated_data.pop('componentes', [])
@@ -221,39 +233,54 @@ class DetalleFacturaSerializer(serializers.ModelSerializer):
 
 def _crear_item_inventario(prod_data, factura):
     """
-    Crea un item de Inventario directamente desde los datos del producto
+    Crea uno o más items de Inventario desde los datos del producto
     recibido en el form de Nueva Factura. No usa DetalleFactura.
+    Soporta 'cantidad' (crea N unidades) y 'grupo_id' (asigna al grupo).
     """
     ref_id = prod_data.get('referencia')
     cat_id = prod_data.get('categoria')
     subcat_id = prod_data.get('subcategoria')
     venta_id_str = str(prod_data.get('venta_id') or '')
+    grupo_id = prod_data.get('grupo_id') or prod_data.get('grupo')
+    cantidad = int(prod_data.get('cantidad') or 1)
+    if cantidad < 1:
+        cantidad = 1
 
     referencia = Referencia.objects.filter(id=ref_id).first() if ref_id else None
     categoria = Categoria.objects.filter(id=cat_id).first() if cat_id else None
     subcategoria = Subcategoria.objects.filter(id=subcat_id).first() if subcat_id else None
     venta = Venta.objects.filter(id=venta_id_str).first() if venta_id_str.isdigit() else None
 
-    # Generar id_referencia único con prefijo de categoría
-    prefix = (categoria.nombre[:2].upper() if categoria else 'XX')
-    gen_id = f"{prefix}{random.randint(1000, 9999)}"
-    while Inventario.objects.filter(id_referencia=gen_id).exists():
-        gen_id = f"{prefix}{random.randint(1000, 9999)}"
+    # Resolver grupo (puede ser id numérico o None)
+    grupo = None
+    if grupo_id:
+        try:
+            grupo = GrupoInventario.objects.filter(id=int(grupo_id)).first()
+        except (ValueError, TypeError):
+            grupo = None
 
-    Inventario.objects.create(
-        id_referencia=gen_id,
-        referencia=referencia,
-        categoria=categoria,
-        subcategoria=subcategoria,
-        variacion=prod_data.get('variacion', ''),
-        costo_especifico=prod_data.get('costo', 0),
-        observacion=prod_data.get('observacion') or '',
-        disponibilidad=prod_data.get('disponibilidad') or 'exhibicion',
-        venta=venta,
-        factura=factura,
-        factura_manual=factura.id_manual,
-        imagen=prod_data.get('imagen') or None,
-    )
+    prefix = (categoria.nombre[:2].upper() if categoria else 'XX')
+
+    for _ in range(cantidad):
+        gen_id = f"{prefix}{random.randint(1000, 9999)}"
+        while Inventario.objects.filter(id_referencia=gen_id).exists():
+            gen_id = f"{prefix}{random.randint(1000, 9999)}"
+
+        Inventario.objects.create(
+            id_referencia=gen_id,
+            referencia=referencia,
+            categoria=categoria,
+            subcategoria=subcategoria,
+            variacion=prod_data.get('variacion', ''),
+            costo_especifico=prod_data.get('costo', 0),
+            observacion=prod_data.get('observacion') or '',
+            disponibilidad=prod_data.get('disponibilidad') or 'exhibicion',
+            venta=venta,
+            factura=factura,
+            factura_manual=factura.id_manual,
+            imagen=prod_data.get('imagen') or None,
+            grupo=grupo,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -366,8 +393,8 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
                 'producto_nombre': getattr(item.referencia, 'nombre', ''),
                 'variacion': item.variacion,
                 'observacion': item.observacion,
-                'categoria_nombre': item.categoria.nombre if item.categoria else (item.referencia.categoria.nombre if item.referencia and item.referencia.categoria else ''),
-                'subcategoria_nombre': item.subcategoria.nombre if item.subcategoria else (item.referencia.subcategoria.nombre if item.referencia and item.referencia.subcategoria else ''),
+                'categoria_nombre': item.categoria.nombre if item.categoria else (item.referencia.categorias.first().nombre if item.referencia and item.referencia.categorias.exists() else ''),
+                'subcategoria_nombre': item.subcategoria.nombre if item.subcategoria else '',
                 'proveedor_nombre': item.referencia.proveedor.nombre_empresa if item.referencia and item.referencia.proveedor else '',
                 'imagen': item.imagen,
             })

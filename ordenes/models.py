@@ -29,17 +29,13 @@ class Proveedor(models.Model):
 class Referencia(models.Model):
     proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE, related_name='referencias')
     nombre = models.CharField(max_length=255)
-    categoria = models.ForeignKey(
+    categorias = models.ManyToManyField(
         'suministros.Categoria',
-        on_delete=models.SET_NULL,
-        null=True,
         blank=True,
         related_name='referencias',
     )
-    subcategoria = models.ForeignKey(
+    subcategorias = models.ManyToManyField(
         'suministros.Subcategoria',
-        on_delete=models.SET_NULL,
-        null=True,
         blank=True,
         related_name='referencias',
     )
@@ -68,6 +64,9 @@ class Venta(models.Model):
     id = models.PositiveIntegerField(primary_key=True)
     cliente = models.ForeignKey(Cliente, on_delete=models.CASCADE, related_name='ventas')
     vendedor = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='ventas')
+    vendedores_compartidos = models.ManyToManyField(CustomUser, related_name='ventas_compartidas', blank=True)
+    traslado = models.BooleanField(default=False)
+    sede = models.CharField(max_length=20, choices=[('Lottus 1', 'Lottus 1'), ('Lottus 2', 'Lottus 2')], default='Lottus 1')
     valor_total = models.DecimalField(max_digits=10, decimal_places=2)
     abono = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     saldo = models.DecimalField(max_digits=10, decimal_places=2)
