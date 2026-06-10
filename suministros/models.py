@@ -20,8 +20,10 @@ class GrupoInventario(models.Model):
     nombre = models.CharField(max_length=150)  # "Comedor 6 puestos"
     descripcion = models.TextField(blank=True)
     activo = models.BooleanField(default=True)
+    categoria = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True, blank=True)
     subcategoria = models.ForeignKey(Subcategoria, on_delete=models.SET_NULL, null=True, blank=True)
     observacion = models.TextField(blank=True)
+    venta = models.ForeignKey(Venta, on_delete=models.SET_NULL, null=True, blank=True, related_name='grupos_inventario')
 
     def __str__(self):
         return self.nombre

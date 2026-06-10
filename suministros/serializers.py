@@ -58,12 +58,25 @@ class GrupoInventarioSerializer(serializers.ModelSerializer):
         allow_null=True
     )
     subcategoria_nombre = serializers.ReadOnlyField(source='subcategoria.nombre')
+    categoria_id = serializers.PrimaryKeyRelatedField(
+        source='categoria', 
+        queryset=Categoria.objects.all(), 
+        required=False, 
+        allow_null=True
+    )
+    categoria_nombre = serializers.ReadOnlyField(source='categoria.nombre')
+    venta_id = serializers.PrimaryKeyRelatedField(
+        source='venta', 
+        queryset=Venta.objects.all(), 
+        required=False, 
+        allow_null=True
+    )
 
     class Meta:
         model = GrupoInventario
         fields = [
             'id', 'nombre', 'descripcion', 'activo', 'componentes', 
-            'items_count', 'costo_total', 'subcategoria_id', 'subcategoria_nombre', 'observacion'
+            'items_count', 'costo_total', 'categoria_id', 'categoria_nombre', 'subcategoria_id', 'subcategoria_nombre', 'observacion', 'venta_id'
         ]
 
     def get_items_count(self, obj):
