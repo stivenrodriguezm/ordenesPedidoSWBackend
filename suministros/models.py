@@ -82,7 +82,7 @@ class FacturaProveedor(models.Model):
     ]
     id_manual = models.CharField(max_length=50, unique=True)
     valor = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    fecha_factura = models.DateField(default=timezone.localdate)
+    fecha_factura = models.DateTimeField(default=timezone.now)
     fecha_pago = models.DateField(null=True, blank=True)
     estado = models.CharField(max_length=50, choices=ESTADO_CHOICES, default='pendiente')
     proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE, related_name='facturas_suministros', null=True, blank=True)

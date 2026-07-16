@@ -192,6 +192,7 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
     categoria_nombre = serializers.SerializerMethodField()
     subcategoria_nombre = serializers.SerializerMethodField()
     venta_id = serializers.SerializerMethodField()
+    grupo_nombre = serializers.SerializerMethodField()
 
     class Meta:
         model = Inventario
@@ -200,7 +201,7 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
             'categoria', 'categoria_nombre',
             'subcategoria', 'subcategoria_nombre',
             'variacion', 'costo_especifico', 'observacion',
-            'disponibilidad', 'venta', 'venta_id', 'imagen', 'fecha_ingreso',
+            'disponibilidad', 'venta', 'venta_id', 'imagen', 'fecha_ingreso', 'grupo_nombre'
         ]
 
     def get_referencia_nombre(self, obj):
@@ -214,6 +215,9 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
 
     def get_venta_id(self, obj):
         return str(obj.venta.id) if obj.venta else None
+
+    def get_grupo_nombre(self, obj):
+        return obj.grupo.nombre if obj.grupo else None
 
 
 # ---------------------------------------------------------------------------
@@ -386,29 +390,37 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
-        
-        # Obtener el nombre del cliente desde la orden asociada
-        if instance.orden_asociada and instance.orden_asociada.cliente:
-            representation['cliente_nombre'] = instance.orden_asociada.cliente.nombre
-            representation['cliente_documento'] = instance.orden_asociada.cliente.cedula
-            representation['cliente_telefono1'] = instance.orden_asociada.cliente.telefono1
-            representation['cliente_telefono2'] = instance.orden_asociada.cliente.telefono2
+
+        # Cliente — ya traído por select_related en el viewset, sin queries extra
+        if instance.orden_asociada_id and instance.orden_asociada and instance.orden_asociada.cliente:
+            c = instance.orden_asociada.cliente
+            representation['cliente_nombre'] = c.nombre
+            representation['cliente_documento'] = c.cedula
+            representation['cliente_telefono1'] = c.telefono1
+            representation['cliente_telefono2'] = c.telefono2
         else:
             representation['cliente_nombre'] = 'Cliente Nuevo'
             representation['cliente_documento'] = ''
             representation['cliente_telefono1'] = ''
             representation['cliente_telefono2'] = ''
-            
+
+        # inventario_items_detalle: solo usamos campos ya en el objeto prefetcheado.
+        # Usamos el prefetch_cache si existe (puesto por el viewset), sin llamadas extra.
         items_data = []
-        for item in instance.inventario_items.all():
+        prefetched = getattr(instance, '_prefetched_objects_cache', {}).get('inventario_items', None)
+        items_qs = prefetched if prefetched is not None else instance.inventario_items.select_related(
+            'referencia', 'referencia__proveedor', 'categoria', 'subcategoria'
+        ).all()
+        for item in items_qs:
+            ref = item.referencia
             items_data.append({
                 'id_referencia': item.id_referencia,
-                'producto_nombre': getattr(item.referencia, 'nombre', ''),
-                'variacion': item.variacion,
-                'observacion': item.observacion,
-                'categoria_nombre': item.categoria.nombre if item.categoria else (item.referencia.categorias.first().nombre if item.referencia and item.referencia.categorias.exists() else ''),
+                'producto_nombre': ref.nombre if ref else '',
+                'variacion': item.variacion or '',
+                'observacion': item.observacion or '',
+                'categoria_nombre': item.categoria.nombre if item.categoria else '',
                 'subcategoria_nombre': item.subcategoria.nombre if item.subcategoria else '',
-                'proveedor_nombre': item.referencia.proveedor.nombre_empresa if item.referencia and item.referencia.proveedor else '',
+                'proveedor_nombre': (ref.proveedor.nombre_empresa if ref and ref.proveedor else ''),
                 'imagen': item.imagen,
             })
         representation['inventario_items_detalle'] = items_data

@@ -65,6 +65,7 @@ class FacturaProveedorViewSet(viewsets.ModelViewSet):
     filterset_fields = ['estado', 'proveedor']
     search_fields = ['id_manual', 'proveedor__nombre_empresa']
     ordering_fields = ['fecha_factura', 'fecha_pago']
+    ordering = ['-fecha_factura', '-id']
 
 class DetalleFacturaViewSet(viewsets.ModelViewSet):
     queryset = DetalleFactura.objects.all()
@@ -74,16 +75,44 @@ class DetalleFacturaViewSet(viewsets.ModelViewSet):
 
 class RemisionSuministroViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, check_feature_permission('VER_REMISIONES')]
-    queryset = RemisionSuministro.objects.all()
     serializer_class = RemisionSuministroSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['estado', 'vendedor']
     search_fields = ['id', 'direccion_entrega', 'ciudad']
     ordering_fields = ['fecha_creacion', 'fecha_entrega']
+    ordering = ['-fecha_creacion', '-id']
+
+    def _base_queryset(self):
+        return RemisionSuministro.objects.select_related(
+            'orden_asociada',
+            'orden_asociada__cliente',
+            'transportador_usuario',
+            'vendedor',
+        ).prefetch_related(
+            'inventario_items',
+            'inventario_items__referencia',
+            'inventario_items__referencia__proveedor',
+            'inventario_items__categoria',
+            'inventario_items__subcategoria',
+        ).order_by('-fecha_creacion', '-id')
+
+    # Class-level queryset is needed for DRF router registration
+    queryset = RemisionSuministro.objects.select_related(
+        'orden_asociada',
+        'orden_asociada__cliente',
+        'transportador_usuario',
+        'vendedor',
+    ).prefetch_related(
+        'inventario_items',
+        'inventario_items__referencia',
+        'inventario_items__referencia__proveedor',
+        'inventario_items__categoria',
+        'inventario_items__subcategoria',
+    ).order_by('-fecha_creacion', '-id')
 
     def get_queryset(self):
         user = self.request.user
-        queryset = RemisionSuministro.objects.all()
+        queryset = self._base_queryset()
         if hasattr(user, 'role') and user.role == 'transportador':
             name_filters = Q(transportador__iexact=user.first_name) if user.first_name else Q()
             username_filter = Q(transportador__iexact=user.username)

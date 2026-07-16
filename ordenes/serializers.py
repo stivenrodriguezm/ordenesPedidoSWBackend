@@ -85,7 +85,7 @@ class OrdenPedidoSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'proveedor', 'proveedor_nombre', 'fecha_pedido', 'fecha_esperada', 
             'estado', 'observacion', 'tela', 'venta', 'costo',
-            'vendedor', 'detalles', 'orden_venta'
+            'vendedor', 'detalles', 'orden_venta', 'es_exhibicion'
         ]
         extra_kwargs = {
             'proveedor': {'write_only': True, 'queryset': Proveedor.objects.all()},

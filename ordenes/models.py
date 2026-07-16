@@ -97,6 +97,7 @@ class OrdenPedido(models.Model):
     requiere_tela = models.BooleanField(default=False)
     costo = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     orden_venta = models.CharField(max_length=50, blank=True, null=True)
+    es_exhibicion = models.BooleanField(default=False)
 
     def __str__(self):
         return f"Orden {self.id} para {self.proveedor.nombre_empresa}"

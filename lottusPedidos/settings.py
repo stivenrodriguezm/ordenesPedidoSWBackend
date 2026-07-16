@@ -1,5 +1,27 @@
 from pathlib import Path
 from datetime import timedelta
+import pymysql
+pymysql.version_info = (1, 4, 3, "final", 0)
+pymysql.install_as_MySQLdb()
+
+# Fix for PyMySQL returning strings for datetimes in Django
+import django.utils.timezone
+_original_make_aware = django.utils.timezone.make_aware
+def _make_aware_safe(value, timezone=None, is_dst=None):
+    if isinstance(value, str):
+        if value.startswith("0000-00-00"):
+            return None
+        from django.utils.dateparse import parse_datetime
+        try:
+            parsed = parse_datetime(value)
+            if parsed is not None:
+                value = parsed
+        except ValueError:
+            return None
+    if value is None:
+        return None
+    return _original_make_aware(value, timezone)
+django.utils.timezone.make_aware = _make_aware_safe
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent

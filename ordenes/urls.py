@@ -6,7 +6,7 @@ from .views import (
     listar_pedidos, detalles_pedido, CrearVentaClienteView, EditarVentaClienteView,
     listar_ventas, detalle_venta, anadir_observacion_venta, anadir_remision_a_venta,
     ver_remisiones_de_venta, listar_clientes, obtener_cliente, ventas_y_observaciones_cliente,
-    anadir_observacion_cliente, listar_recibos_caja, 
+    anadir_observacion_cliente, listar_recibos_caja, editar_eliminar_observacion_venta, editar_eliminar_observacion_cliente, 
     listar_comprobantes_egreso, crear_comprobante_egreso, crear_recibo_caja, 
     confirmar_recibo, listar_vendedores, UserDetailView, cambiar_contrasena,
     dashboard_stats, sales_chart_data, cierre_caja, listar_ventas_pendientes_ids,
@@ -57,4 +57,6 @@ urlpatterns = [
     path('get-pendientes-ids/', listar_ventas_pendientes_ids, name='get-pendientes-ids'),
     path('transportadores/', listar_transportadores, name='listar-transportadores'),
     path('test/', test_view, name='test-view'),
+    path('observaciones-venta/<int:obs_id>/', editar_eliminar_observacion_venta, name='editar-eliminar-observacion-venta'),
+    path('observaciones-cliente/<int:obs_id>/', editar_eliminar_observacion_cliente, name='editar-eliminar-observacion-cliente'),
 ]

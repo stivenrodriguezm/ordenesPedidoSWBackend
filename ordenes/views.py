@@ -129,7 +129,7 @@ def dashboard_stats(request):
     saldo_caja = ultimo_movimiento_caja.total_acumulado if ultimo_movimiento_caja else 0
     
     # Keep ultimas_ventas for compatibility
-    ultimas_ventas = ventas.select_related('cliente').order_by('-fecha_venta', '-id')[:5]
+    ultimas_ventas = ventas.select_related('cliente', 'vendedor').prefetch_related('vendedores_compartidos').order_by('-fecha_venta', '-id')[:5]
     ultimas_ventas_serializer = VentaSerializer(ultimas_ventas, many=True)
 
     data = {
@@ -374,6 +374,12 @@ def listar_pedidos(request):
         id_proveedor = request.GET.get('id_proveedor')
         if id_proveedor:
             pedidos = pedidos.filter(proveedor__id=id_proveedor)
+
+        es_exhibicion = request.GET.get('es_exhibicion')
+        if es_exhibicion == 'true':
+            pedidos = pedidos.filter(es_exhibicion=True)
+        elif es_exhibicion == 'false':
+            pedidos = pedidos.filter(es_exhibicion=False)
 
         pedidos = pedidos.order_by('-id')
 
@@ -1057,3 +1063,43 @@ def listar_transportadores(request):
 @permission_classes([])
 def test_view(request):
     return Response({"message": "Test successful"}, status=status.HTTP_200_OK)
+
+@api_view(['PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def editar_eliminar_observacion_venta(request, obs_id):
+    try:
+        observacion = ObservacionVenta.objects.get(id=obs_id)
+    except ObservacionVenta.DoesNotExist:
+        return Response({'error': 'Observación no encontrada.'}, status=404)
+
+    if request.method == 'PUT':
+        texto = request.data.get('texto')
+        if not texto:
+            return Response({'error': 'El texto de la observación no puede estar vacío.'}, status=400)
+        observacion.texto = texto
+        observacion.save()
+        return Response({'mensaje': 'Observación actualizada correctamente.'}, status=200)
+
+    elif request.method == 'DELETE':
+        observacion.delete()
+        return Response({'mensaje': 'Observación eliminada correctamente.'}, status=200)
+
+@api_view(['PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def editar_eliminar_observacion_cliente(request, obs_id):
+    try:
+        observacion = ObservacionCliente.objects.get(id=obs_id)
+    except ObservacionCliente.DoesNotExist:
+        return Response({'error': 'Observación no encontrada.'}, status=404)
+
+    if request.method == 'PUT':
+        texto = request.data.get('texto')
+        if not texto:
+            return Response({'error': 'El texto de la observación no puede estar vacío.'}, status=400)
+        observacion.texto = texto
+        observacion.save()
+        return Response({'mensaje': 'Observación actualizada correctamente.'}, status=200)
+
+    elif request.method == 'DELETE':
+        observacion.delete()
+        return Response({'mensaje': 'Observación eliminada correctamente.'}, status=200)
