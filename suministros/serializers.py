@@ -361,6 +361,7 @@ def _crear_item_inventario(prod_data, factura):
     tela_costo = float(prod_data.get('tela_costo_metro') or prod_data.get('telaCostoMetro') or 0)
     tela_cant = float(prod_data.get('tela_cantidad_metros') or prod_data.get('telaCantidadMetros') or 0)
     lleva_tela = bool(prod_data.get('lleva_tela')) or bool(tela_ref) or bool(tela_col) or bool(tela_costo > 0)
+    prefix = (categoria.nombre[:2].upper() if categoria else 'XX')
 
     for _ in range(cantidad):
         gen_id = f"{prefix}{random.randint(1000, 9999)}"

@@ -178,7 +178,6 @@ class FacturaProveedorViewSet(viewsets.ModelViewSet):
                 'items_inventario__categoria',
                 'items_inventario__subcategoria',
                 'items_inventario__venta',
-                'detalles',
             )
         return qs.all()
         
