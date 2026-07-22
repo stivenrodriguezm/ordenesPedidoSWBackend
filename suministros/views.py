@@ -169,7 +169,8 @@ class FacturaProveedorViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = FacturaProveedor.objects.select_related('proveedor')
-        if self.action != 'list':
+        full = self.request.query_params.get('full')
+        if self.action != 'list' or full == 'true':
             qs = qs.prefetch_related(
                 'items_inventario',
                 'items_inventario__referencia',
@@ -177,11 +178,13 @@ class FacturaProveedorViewSet(viewsets.ModelViewSet):
                 'items_inventario__categoria',
                 'items_inventario__subcategoria',
                 'items_inventario__venta',
+                'detalles',
             )
         return qs.all()
         
     def get_serializer_class(self):
-        if self.action == 'list':
+        full = self.request.query_params.get('full')
+        if self.action == 'list' and full != 'true':
             return FacturaProveedorListSerializer
         return FacturaProveedorSerializer
         

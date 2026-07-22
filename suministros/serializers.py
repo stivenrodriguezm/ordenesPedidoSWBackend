@@ -356,7 +356,11 @@ def _crear_item_inventario(prod_data, factura):
         except (ValueError, TypeError):
             grupo = None
 
-    prefix = (categoria.nombre[:2].upper() if categoria else 'XX')
+    tela_ref = (prod_data.get('tela_referencia') or prod_data.get('telaReferencia') or '').strip()
+    tela_col = (prod_data.get('tela_color') or prod_data.get('telaColor') or '').strip()
+    tela_costo = float(prod_data.get('tela_costo_metro') or prod_data.get('telaCostoMetro') or 0)
+    tela_cant = float(prod_data.get('tela_cantidad_metros') or prod_data.get('telaCantidadMetros') or 0)
+    lleva_tela = bool(prod_data.get('lleva_tela')) or bool(tela_ref) or bool(tela_col) or bool(tela_costo > 0)
 
     for _ in range(cantidad):
         gen_id = f"{prefix}{random.randint(1000, 9999)}"
@@ -379,11 +383,11 @@ def _crear_item_inventario(prod_data, factura):
             factura_manual=factura.id_manual,
             imagen=prod_data.get('imagen') or None,
             grupo=grupo,
-            lleva_tela=prod_data.get('lleva_tela', False),
-            tela_referencia=prod_data.get('tela_referencia') or None,
-            tela_color=prod_data.get('tela_color') or None,
-            tela_costo_metro=prod_data.get('tela_costo_metro', 0),
-            tela_cantidad_metros=prod_data.get('tela_cantidad_metros', 0),
+            lleva_tela=lleva_tela,
+            tela_referencia=tela_ref if tela_ref else None,
+            tela_color=tela_col if tela_col else None,
+            tela_costo_metro=tela_costo,
+            tela_cantidad_metros=tela_cant,
         )
 
 
