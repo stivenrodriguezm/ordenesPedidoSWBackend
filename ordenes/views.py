@@ -697,11 +697,17 @@ class ClientePagination(PageNumberPagination):
 
 class ClienteFilter(django_filters.FilterSet):
     query = django_filters.CharFilter(method='filter_by_query', label='Buscar')
+    search = django_filters.CharFilter(method='filter_by_query', label='Buscar')
+
     class Meta:
         model = Cliente
-        fields = ['query']
+        fields = ['query', 'search']
+
     def filter_by_query(self, queryset, name, value):
-        return queryset.filter(Q(id__icontains=value) | Q(nombre__icontains=value) | Q(cedula__icontains=value))
+        if not value or not str(value).strip():
+            return queryset
+        val = str(value).strip()
+        return queryset.filter(Q(id__icontains=val) | Q(nombre__icontains=val) | Q(cedula__icontains=val))
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_CLIENTES')])
