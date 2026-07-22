@@ -3,7 +3,8 @@ from rest_framework import serializers
 from .models import (
     Categoria, Subcategoria, Inventario,
     FacturaProveedor, DetalleFactura, RemisionSuministro,
-    GrupoInventario, GrupoInventarioComponente
+    GrupoInventario, GrupoInventarioComponente,
+    Sede, Zona, HistorialTraslado, CostoAdicionalInventario
 )
 from ordenes.models import Venta, Referencia
 
@@ -21,6 +22,21 @@ class SubcategoriaSerializer(serializers.ModelSerializer):
         model = Subcategoria
         fields = '__all__'
 
+
+# ---------------------------------------------------------------------------
+# Sede y Zona
+# ---------------------------------------------------------------------------
+class SedeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Sede
+        fields = '__all__'
+
+class ZonaSerializer(serializers.ModelSerializer):
+    sede_nombre = serializers.ReadOnlyField(source='sede.nombre')
+
+    class Meta:
+        model = Zona
+        fields = '__all__'
 
 # ---------------------------------------------------------------------------
 # GrupoInventario
@@ -105,6 +121,17 @@ class GrupoInventarioSerializer(serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
+# CostoAdicional
+# ---------------------------------------------------------------------------
+
+class CostoAdicionalInventarioSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CostoAdicionalInventario
+        fields = ['id', 'inventario', 'descripcion', 'valor', 'fecha']
+        read_only_fields = ['id']
+
+
+# ---------------------------------------------------------------------------
 # Inventario (tabla principal)
 # ---------------------------------------------------------------------------
 
@@ -120,6 +147,9 @@ class InventarioSerializer(serializers.ModelSerializer):
     venta_numero = serializers.SerializerMethodField()
     grupo_id = serializers.SerializerMethodField()
     grupo_nombre = serializers.SerializerMethodField()
+    zona_nombre = serializers.SerializerMethodField()
+    sede_nombre = serializers.SerializerMethodField()
+    costo_total = serializers.SerializerMethodField()
 
     class Meta:
         model = Inventario
@@ -127,7 +157,8 @@ class InventarioSerializer(serializers.ModelSerializer):
         extra_fields = ['producto_nombre', 'categoria_id', 'categoria_nombre',
                         'subcategoria_nombre', 'proveedor_id', 'proveedor_nombre',
                         'factura_id_manual', 'factura_id', 'venta_numero',
-                        'grupo_id', 'grupo_nombre']
+                        'grupo_id', 'grupo_nombre', 'zona_nombre', 'sede_nombre',
+                        'lleva_tela', 'tela_referencia', 'tela_color', 'tela_costo_metro', 'tela_cantidad_metros']
 
     def get_producto_nombre(self, obj):
         if obj.referencia:
@@ -182,6 +213,45 @@ class InventarioSerializer(serializers.ModelSerializer):
     def get_grupo_nombre(self, obj):
         return obj.grupo.nombre if obj.grupo else None
 
+    def get_zona_nombre(self, obj):
+        return obj.zona.nombre if obj.zona else None
+
+    def get_sede_nombre(self, obj):
+        return obj.zona.sede.nombre if obj.zona and obj.zona.sede else None
+
+    def get_costo_total(self, obj):
+        base = float(obj.costo_especifico or 0)
+        tela = 0
+        if getattr(obj, 'lleva_tela', False):
+            tela = float(obj.tela_costo_metro or 0) * float(obj.tela_cantidad_metros or 0)
+        adicionales = 0
+        try:
+            # Check if relation exists to avoid crashing before migration
+            adicionales = sum(float(c.valor) for c in obj.costos_adicionales.all())
+        except Exception:
+            pass
+        return round(base + tela + adicionales, 2)
+
+    def to_representation(self, instance):
+        # We manually add costos_adicionales here so it doesn't crash the whole serializer
+        # if the table hasn't been created yet.
+        data = super().to_representation(instance)
+        try:
+            data['costos_adicionales'] = CostoAdicionalInventarioSerializer(instance.costos_adicionales.all(), many=True).data
+        except Exception:
+            data['costos_adicionales'] = []
+        return data
+
+class HistorialTrasladoSerializer(serializers.ModelSerializer):
+    item_referencia = serializers.ReadOnlyField(source='item_inventario.id_referencia')
+    zona_origen_nombre = serializers.ReadOnlyField(source='zona_origen.nombre')
+    zona_destino_nombre = serializers.ReadOnlyField(source='zona_destino.nombre')
+    usuario_nombre = serializers.ReadOnlyField(source='usuario.username')
+
+    class Meta:
+        model = HistorialTraslado
+        fields = '__all__'
+
 
 # ---------------------------------------------------------------------------
 # Nested read-only serializer: items del inventario dentro de una factura
@@ -193,6 +263,8 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
     subcategoria_nombre = serializers.SerializerMethodField()
     venta_id = serializers.SerializerMethodField()
     grupo_nombre = serializers.SerializerMethodField()
+    grupo_categoria_nombre = serializers.SerializerMethodField()
+    grupo_subcategoria_nombre = serializers.SerializerMethodField()
 
     class Meta:
         model = Inventario
@@ -201,7 +273,8 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
             'categoria', 'categoria_nombre',
             'subcategoria', 'subcategoria_nombre',
             'variacion', 'costo_especifico', 'observacion',
-            'disponibilidad', 'venta', 'venta_id', 'imagen', 'fecha_ingreso', 'grupo_nombre'
+            'disponibilidad', 'venta', 'venta_id', 'imagen', 'fecha_ingreso', 'grupo_nombre',
+            'grupo_categoria_nombre', 'grupo_subcategoria_nombre'
         ]
 
     def get_referencia_nombre(self, obj):
@@ -218,6 +291,12 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
 
     def get_grupo_nombre(self, obj):
         return obj.grupo.nombre if obj.grupo else None
+
+    def get_grupo_categoria_nombre(self, obj):
+        return obj.grupo.categoria.nombre if obj.grupo and obj.grupo.categoria else None
+
+    def get_grupo_subcategoria_nombre(self, obj):
+        return obj.grupo.subcategoria.nombre if obj.grupo and obj.grupo.subcategoria else None
 
 
 # ---------------------------------------------------------------------------
@@ -292,17 +371,34 @@ def _crear_item_inventario(prod_data, factura):
             costo_especifico=prod_data.get('costo', 0),
             observacion=prod_data.get('observacion') or '',
             disponibilidad=prod_data.get('disponibilidad') or 'exhibicion',
+            estado_fisico=prod_data.get('estado_fisico') or 'buen_estado',
+            zona_id=prod_data.get('zona') or None,
             venta=venta,
             factura=factura,
             factura_manual=factura.id_manual,
             imagen=prod_data.get('imagen') or None,
             grupo=grupo,
+            lleva_tela=prod_data.get('lleva_tela', False),
+            tela_referencia=prod_data.get('tela_referencia') or None,
+            tela_color=prod_data.get('tela_color') or None,
+            tela_costo_metro=prod_data.get('tela_costo_metro', 0),
+            tela_cantidad_metros=prod_data.get('tela_cantidad_metros', 0),
         )
 
 
 # ---------------------------------------------------------------------------
 # FacturaProveedor
 # ---------------------------------------------------------------------------
+
+class FacturaProveedorListSerializer(serializers.ModelSerializer):
+    proveedor_nombre = serializers.ReadOnlyField(source='proveedor.nombre_empresa')
+
+    class Meta:
+        model = FacturaProveedor
+        fields = [
+            'id', 'id_manual', 'valor', 'fecha_factura', 'fecha_pago',
+            'estado', 'proveedor', 'proveedor_nombre', 'observaciones'
+        ]
 
 class FacturaProveedorSerializer(serializers.ModelSerializer):
     # Write-only: lista de productos recibidos al crear la factura
@@ -422,6 +518,9 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
                 'subcategoria_nombre': item.subcategoria.nombre if item.subcategoria else '',
                 'proveedor_nombre': (ref.proveedor.nombre_empresa if ref and ref.proveedor else ''),
                 'imagen': item.imagen,
+                'grupo_id': item.grupo.id if item.grupo else None,
+                'grupo_nombre': item.grupo.nombre if item.grupo else '',
+                'grupo_observacion': item.grupo.observacion if item.grupo else '',
             })
         representation['inventario_items_detalle'] = items_data
         return representation

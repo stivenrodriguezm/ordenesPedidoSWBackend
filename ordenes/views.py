@@ -271,9 +271,12 @@ def cambiar_contrasena(request):
     return Response({"message": "Contraseña actualizada correctamente."}, status=status.HTTP_200_OK)
 
 class ReferenciaViewSet(viewsets.ModelViewSet):
+    def get_permissions(self):
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), check_feature_permission('ADMINISTRAR_BASES')()]
+        return [IsAuthenticated()]
     queryset = Referencia.objects.select_related('proveedor').prefetch_related('categorias', 'subcategorias').all()
     serializer_class = ReferenciaSerializer
-    permission_classes = [IsAuthenticated, check_feature_permission('VER_REFERENCIAS')]
     # pagination_class = StandardResultsSetPagination
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -283,15 +286,21 @@ class ReferenciaViewSet(viewsets.ModelViewSet):
         return queryset
 
 class ProveedorViewSet(viewsets.ModelViewSet):
+    def get_permissions(self):
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), check_feature_permission('ADMINISTRAR_BASES')()]
+        return [IsAuthenticated()]
     queryset = Proveedor.objects.all()
     serializer_class = ProveedorSerializer
-    permission_classes = [IsAuthenticated, check_feature_permission('VER_PROVEEDORES')]
     pagination_class = StandardResultsSetPagination
 
 class UserViewSet(viewsets.ModelViewSet):
+    def get_permissions(self):
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), check_feature_permission('ADMINISTRAR_USUARIOS')()]
+        return [IsAuthenticated(), check_feature_permission('VER_USUARIOS')()]
     queryset = CustomUser.objects.all().order_by('-is_active', 'first_name', 'last_name')
     serializer_class = UserManageSerializer
-    permission_classes = [IsAuthenticated, IsAdministradorRole]
     pagination_class = StandardResultsSetPagination
 
 # ==============================================================================
@@ -306,8 +315,23 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
     
     def get_permissions(self):
         from .permissions import check_feature_permission
-        if self.action in ['create', 'update', 'partial_update', 'destroy']:
-            return [IsAuthenticated(), check_feature_permission('CREAR_ORDEN')()]
+        from rest_framework.permissions import BasePermission
+        if self.action in ['create']:
+            class DynamicCreateOrderPermission(BasePermission):
+                def has_permission(self, request, view):
+                    if not request.user or not request.user.is_authenticated:
+                        return False
+                    if request.user.role == 'administrador':
+                        return True
+                    from .models import RolePermission
+                    rp = RolePermission.objects.filter(role=request.user.role).first()
+                    if rp:
+                        p = rp.permissions
+                        return ('CREAR_ORDEN' in p or 'CREAR_PROPIAS_ORDENES' in p or 'CREAR_ORDENES_OTROS' in p)
+                    return False
+            return [IsAuthenticated(), DynamicCreateOrderPermission()]
+        elif self.action in ['update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), check_feature_permission('EDITAR_ESTADO_ORDEN')()]
         return [IsAuthenticated(), check_feature_permission('VER_ORDENES')()]
     http_method_names = ['get', 'post', 'put', 'patch', 'delete']
     pagination_class = StandardResultsSetPagination
@@ -318,12 +342,37 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
             'proveedor', 'usuario', 'venta'
         ).prefetch_related('detalles').all()
         
-        if self.request.user.role in ["administrador", "auxiliar"]:
+        from .permissions import check_feature_permission
+        if check_feature_permission('VER_TODAS_ORDENES')().has_permission(self.request, None):
             return base_queryset
-        return base_queryset.filter(usuario=self.request.user)
+        elif check_feature_permission('VER_PROPIAS_ORDENES')().has_permission(self.request, None):
+            return base_queryset.filter(usuario=self.request.user)
+        else:
+            return base_queryset.none()
 
     def perform_create(self, serializer):
-        serializer.save(usuario=self.request.user)
+        user = self.request.user
+        vendedor_id = self.request.data.get('vendedor') or self.request.data.get('usuario')
+        
+        can_create_others = False
+        if user.role == 'administrador':
+            can_create_others = True
+        else:
+            from .models import RolePermission
+            rp = RolePermission.objects.filter(role=user.role).first()
+            if rp and ('CREAR_ORDENES_OTROS' in rp.permissions or 'CREAR_ORDEN' in rp.permissions):
+                can_create_others = True
+                
+        if can_create_others and vendedor_id:
+            from .models import CustomUser
+            try:
+                target_user = CustomUser.objects.get(id=vendedor_id)
+                serializer.save(usuario=target_user)
+                return
+            except CustomUser.DoesNotExist:
+                pass
+                
+        serializer.save(usuario=user)
     
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -380,6 +429,10 @@ def listar_pedidos(request):
             pedidos = pedidos.filter(es_exhibicion=True)
         elif es_exhibicion == 'false':
             pedidos = pedidos.filter(es_exhibicion=False)
+
+        tela = request.GET.get('tela')
+        if tela:
+            pedidos = pedidos.filter(tela=tela)
 
         pedidos = pedidos.order_by('-id')
 
@@ -443,7 +496,7 @@ def detalles_pedido(request, orden_id):
         return Response({"error": "Ocurrió un error inesperado al cargar los detalles."}, status=500)
 
 class CrearVentaClienteView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, check_feature_permission('CREAR_VENTA')]
     @transaction.atomic
     def post(self, request):
         cliente_nuevo = request.data.get('cliente_nuevo', False)
@@ -482,19 +535,28 @@ class EditarVentaClienteView(APIView):
     def put(self, request, id):
         user = request.user
 
-        if user.role == 'vendedor':
-            return Response({"error": "No tienes permiso para realizar esta acción."}, status=status.HTTP_403_FORBIDDEN)
+        # Both EDITAR_VENTA (full) and EDITAR_ESTADO_VENTA/EDITAR_ESTADO_PEDIDOS_VENTA uses this endpoint, 
+        # so we will check internally based on payload
+        has_full = check_feature_permission('EDITAR_VENTA')().has_permission(request, self)
+        has_estado = check_feature_permission('EDITAR_ESTADO_VENTA')().has_permission(request, self)
+        has_pedidos = check_feature_permission('EDITAR_ESTADO_PEDIDOS_VENTA')().has_permission(request, self)
+
+        if not (has_full or has_estado or has_pedidos):
+            return Response({"error": "No tienes permiso para editar ventas."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             venta = Venta.objects.get(id=id)
             cliente_data = request.data.get('cliente', {})
             venta_data = request.data.get('venta', {})
 
-            if user.role == 'auxiliar':
-                allowed_keys = {'estado', 'estado_pedidos'}
+            if not has_full and (has_estado or has_pedidos):
+                allowed_keys = set()
+                if has_estado: allowed_keys.add('estado')
+                if has_pedidos: allowed_keys.add('estado_pedidos')
+                
                 submitted_keys = set(venta_data.keys())
                 if not submitted_keys.issubset(allowed_keys):
-                    return Response({"error": "Como auxiliar, solo puedes modificar el estado y el estado de los pedidos."}, status=status.HTTP_403_FORBIDDEN)
+                    return Response({"error": "Solo tienes permiso para modificar los estados autorizados."}, status=status.HTTP_403_FORBIDDEN)
 
             cliente_serializer = ClienteSerializer(venta.cliente, data=cliente_data, partial=True)
             cliente_serializer.is_valid(raise_exception=True)
@@ -565,7 +627,7 @@ def listar_ventas(request):
         if sede_param:
             ventas = ventas.filter(sede=sede_param)
 
-    ventas = ventas.order_by('-fecha_venta', '-id')
+    ventas = ventas.order_by('-id')
     serializer = VentaSerializer(ventas, many=True)
     return Response(serializer.data)
 
@@ -655,15 +717,21 @@ def listar_clientes(request):
 def obtener_cliente(request, id):
     try:
         cliente = Cliente.objects.get(id=id)
-        if request.method == 'GET':
-            return Response(ClienteSerializer(cliente).data)
-        elif request.method == 'PUT':
-            serializer = ClienteSerializer(cliente, data=request.data, partial=True)
-            serializer.is_valid(raise_exception=True)
-            serializer.save()
-            return Response(serializer.data)
     except Cliente.DoesNotExist:
-        return Response({"error": "Cliente no encontrado."}, status=404)
+        return Response({"error": "Cliente no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+        
+    if request.method == 'GET':
+        if not check_feature_permission('VER_CLIENTES')().has_permission(request, None):
+            return Response({"error": "No tienes permiso para ver clientes."}, status=status.HTTP_403_FORBIDDEN)
+        return Response(ClienteSerializer(cliente).data)
+        
+    elif request.method == 'PUT':
+        if not check_feature_permission('EDITAR_CLIENTE')().has_permission(request, None):
+            return Response({"error": "No tienes permiso para editar clientes."}, status=status.HTTP_403_FORBIDDEN)
+        serializer = ClienteSerializer(cliente, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -752,6 +820,13 @@ def caja_view(request):
         return Response(data)
 
     elif request.method == 'POST':
+        from ordenes.permissions import check_feature_permission
+        tipo = request.data.get('tipo')
+        if tipo == 'ingreso' and not check_feature_permission('CREAR_INGRESO_CAJA')().has_permission(request, None):
+            return Response({'error': 'No tienes permiso para crear ingresos.'}, status=403)
+        if tipo == 'egreso' and not check_feature_permission('CREAR_EGRESO_CAJA')().has_permission(request, None):
+            return Response({'error': 'No tienes permiso para crear egresos.'}, status=403)
+        
         serializer = CajaSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             serializer.save()
@@ -764,7 +839,7 @@ class ReciboCajaPagination(PageNumberPagination):
     max_page_size = 100
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, check_feature_permission('VER_CAJA')])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_RECIBOS')])
 def listar_recibos_caja(request):
     # OPTIMIZACIÓN: Cargar datos del cliente relacionados en una sola consulta
     recibos = ReciboCaja.objects.select_related('venta__cliente').order_by('-fecha', '-id')
@@ -804,7 +879,7 @@ class ComprobanteEgresoPagination(PageNumberPagination):
     max_page_size = 100
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, check_feature_permission('VER_CAJA')])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_COMPROBANTES_EGRESO')])
 def listar_comprobantes_egreso(request):
     # OPTIMIZACIÓN: Cargar datos del proveedor relacionados en una sola consulta
     egresos = ComprobanteEgreso.objects.select_related('proveedor').order_by('-fecha', '-id')
@@ -831,17 +906,43 @@ def listar_comprobantes_egreso(request):
     return paginator.get_paginated_response(ComprobanteEgresoSerializer(page, many=True).data)
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, check_feature_permission('VER_CAJA')])
+@permission_classes([IsAuthenticated, check_feature_permission('CREAR_COMPROBANTE_EGRESO')])
 @transaction.atomic
 def crear_comprobante_egreso(request):
+    from suministros.models import FacturaProveedor
     logger.info(f"Received data for crear_comprobante_egreso: {request.data}")
     try:
-        serializer = ComprobanteEgresoSerializer(data=request.data)
+        facturas_ids = request.data.get('facturas_ids', [])
+        
+        # Build payload for serializer (exclude facturas_ids)
+        data = {k: v for k, v in request.data.items() if k != 'facturas_ids'}
+        
+        # Auto-generate concepto if facturas selected
+        if facturas_ids:
+            facturas = FacturaProveedor.objects.filter(id__in=facturas_ids)
+            ids_str = ', '.join(str(f.id_manual) for f in facturas)
+            data['concepto'] = f"Pago fact. {ids_str}"
+        
+        serializer = ComprobanteEgresoSerializer(data=data)
         serializer.is_valid(raise_exception=True)
         egreso = serializer.save()
+        
+        # Mark facturas as paid
+        if facturas_ids:
+            today = date.today()
+            FacturaProveedor.objects.filter(id__in=facturas_ids).update(
+                estado='pagada',
+                fecha_pago=today
+            )
+        
         if egreso.medio_pago == 'Efectivo':
-            # Lógica de caja
-            concepto_caja = f"Pago a {egreso.proveedor.nombre_empresa}, CE. {egreso.id}"
+            proveedor_nombre = egreso.proveedor.nombre_empresa
+            if facturas_ids:
+                facturas = FacturaProveedor.objects.filter(id__in=facturas_ids)
+                ids_str = ', '.join(str(f.id_manual) for f in facturas)
+                concepto_caja = f"Pago a {proveedor_nombre}, Fact. {ids_str}"
+            else:
+                concepto_caja = f"Pago a {proveedor_nombre}, CE. {egreso.id}"
             caja_data = {
                 'concepto': concepto_caja,
                 'valor': egreso.valor,
@@ -855,8 +956,9 @@ def crear_comprobante_egreso(request):
         logger.error(f"Error creating comprobante de egreso: {e}", exc_info=True)
         return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, check_feature_permission('VER_CAJA')])
+@permission_classes([IsAuthenticated, check_feature_permission('CREAR_RECIBO')])
 @transaction.atomic
 def crear_recibo_caja(request):
     serializer = ReciboCajaSerializer(data=request.data)
@@ -888,32 +990,64 @@ def crear_recibo_caja(request):
         venta.saldo = F('saldo') - recibo.valor
         venta.save(update_fields=['abono', 'saldo'])
         
-    return Response(serializer.data, status=status.HTTP_201_CREATED)
+        # Crear movimiento de caja (ingreso)
+        caja_data = {
+            'concepto': f"OC. {venta.id}, RC. {recibo.id}",
+            'valor': recibo.valor,
+            'tipo': 'ingreso',
+        }
+        caja_serializer = CajaSerializer(data=caja_data, context={'request': request})
+        caja_serializer.is_valid(raise_exception=True)
+        caja_serializer.save()
+    else:
+        recibo = serializer.save(estado='Pendiente', fecha=fecha_creacion)
+        
+    return Response(ReciboCajaSerializer(recibo).data, status=status.HTTP_201_CREATED)
 
 class ProveedorTelaViewSet(viewsets.ModelViewSet):
+    def get_permissions(self):
+        from .permissions import check_feature_permission
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), check_feature_permission('ADMINISTRAR_PROVEEDORES_TELA')()]
+        return [IsAuthenticated()]
     queryset = ProveedorTela.objects.all()
     serializer_class = ProveedorTelaSerializer
-    permission_classes = [IsAuthenticated, check_feature_permission('VER_TELAS')]
     pagination_class = StandardResultsSetPagination
 
 class DireccionEntregaViewSet(viewsets.ModelViewSet):
+    def get_permissions(self):
+        from .permissions import check_feature_permission
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), check_feature_permission('ADMINISTRAR_DIRECCIONES_TELA')()]
+        return [IsAuthenticated()]
     queryset = DireccionEntrega.objects.all()
     serializer_class = DireccionEntregaSerializer
-    permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
 
 class PedidoTelaViewSet(viewsets.ModelViewSet):
+    def get_permissions(self):
+        from .permissions import check_feature_permission
+        if self.action in ['update', 'partial_update']:
+            return [IsAuthenticated(), check_feature_permission('EDITAR_ESTADO_TELA_ORDEN')()]
+        elif self.action in ['create']:
+            return [IsAuthenticated(), check_feature_permission('CREAR_PEDIDO_TELA')()]
+        elif self.action in ['destroy']:
+            return [IsAuthenticated(), check_feature_permission('ELIMINAR_PEDIDO_TELA')()]
+        return [IsAuthenticated(), check_feature_permission('VER_PEDIDOS_TELAS')()]
     queryset = PedidoTela.objects.all()
     serializer_class = PedidoTelaSerializer
-    permission_classes = [IsAuthenticated, check_feature_permission('VER_TELAS')]
     pagination_class = StandardResultsSetPagination
 
     def get_queryset(self):
         queryset = PedidoTela.objects.select_related('proveedor', 'usuario', 'orden_asociada').prefetch_related('detalles').all().order_by('-id')
 
-        # Vendedores can only see their own pedidos de tela
-        if self.request.user.role == 'vendedor':
+        from .permissions import check_feature_permission
+        if check_feature_permission('VER_TODOS_PEDIDOS_TELAS')().has_permission(self.request, None):
+            pass # Keep all
+        elif check_feature_permission('VER_PROPIOS_PEDIDOS_TELAS')().has_permission(self.request, None):
             queryset = queryset.filter(usuario=self.request.user)
+        else:
+            queryset = queryset.none()
 
         # Filter by provider
         proveedor_id = self.request.query_params.get('proveedor')
@@ -959,7 +1093,7 @@ class DetallePedidoTelaViewSet(viewsets.ModelViewSet):
 
 
 @api_view(['PATCH'])
-@permission_classes([IsAdmin])
+@permission_classes([IsAuthenticated, check_feature_permission('APROBAR_RECIBO')])
 @transaction.atomic
 def confirmar_recibo(request, id):
     try:
@@ -1038,17 +1172,26 @@ def vendedor_recent_activity(request):
     return Response(data)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, check_feature_permission('VER_VENTAS')])
+@permission_classes([IsAuthenticated])
 def listar_ventas_pendientes_ids(request):
     user = request.user
-    # Only show ventas with estado='pendiente' (case insensitive)
-    ventas = Venta.objects.filter(estado__iexact='pendiente')
+    # Se filtran solo las ventas en estado pendiente que no hayan finalizado pedidos
+    ventas = Venta.objects.filter(estado__iexact='pendiente', estado_pedidos=False)
     
-    # Vendor filter removed as per user request to show ALL pending sales
-    # if user.role == 'vendedor':
-    #     ventas = ventas.filter(vendedor=user)
+    can_see_all = False
+    if user.role == 'administrador':
+        can_see_all = True
+    else:
+        from .models import RolePermission
+        rp = RolePermission.objects.filter(role=user.role).first()
+        if rp:
+            p = rp.permissions
+            if 'CREAR_ORDENES_OTROS' in p or 'VER_TODAS_VENTAS' in p or 'VER_TODAS_ORDENES' in p or 'ALL' in p:
+                can_see_all = True
+                
+    if not can_see_all:
+        ventas = ventas.filter(Q(vendedor=user) | Q(vendedores_compartidos=user)).distinct()
         
-    logging.info(f"Filtered ventas pendientes: {[venta.id for venta in ventas]}")
     ids = ventas.order_by('-id').values_list('id', flat=True)
     return Response(list(ids))
 

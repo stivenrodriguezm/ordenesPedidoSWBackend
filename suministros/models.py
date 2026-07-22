@@ -1,5 +1,6 @@
 from django.db import models
 from django.utils import timezone
+import uuid
 from ordenes.models import Proveedor, CustomUser, Venta, OrdenPedido, Referencia
 
 class Categoria(models.Model):
@@ -41,14 +42,36 @@ class GrupoInventarioComponente(models.Model):
         return f"{self.cantidad}x {self.referencia.nombre} en {self.grupo.nombre}"
 
 
+class Sede(models.Model):
+    nombre = models.CharField(max_length=100, unique=True)
+    descripcion = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return self.nombre
+
+class Zona(models.Model):
+    sede = models.ForeignKey(Sede, on_delete=models.CASCADE, related_name='zonas')
+    nombre = models.CharField(max_length=100) # e.g., 'Piso 1', 'Bodega 1'
+    descripcion = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.nombre} ({self.sede.nombre})"
+
 class Inventario(models.Model):
     DISPONIBILIDAD_CHOICES = [
-        ('cliente', 'Cliente'),
         ('exhibicion', 'Exhibición'),
-        ('consignacion', 'Consignación'),
+        ('cliente', 'Cliente'),
         ('por_despachar', 'Por Despachar'),
-        ('no_venta', 'No Venta'),
-        ('venta', 'Venta'),
+        ('despachado', 'Despachado'),
+        ('entregado', 'Entregado'),
+        ('por_reparar', 'Por Reparar'),
+        ('consignacion', 'Consignación'),
+        ('no_venta', 'No a la venta'),
+    ]
+    ESTADO_FISICO_CHOICES = [
+        ('buen_estado', 'Buen estado'),
+        ('por_reparar', 'Por reparar'),
+        ('por_modificar', 'Por modificar'),
     ]
     id_referencia = models.CharField(max_length=50, primary_key=True)
     referencia = models.ForeignKey(Referencia, on_delete=models.CASCADE, related_name='items_inventario_sum', null=True)
@@ -58,6 +81,9 @@ class Inventario(models.Model):
     costo_especifico = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     observacion = models.TextField(blank=True, null=True)
     disponibilidad = models.CharField(max_length=50, choices=DISPONIBILIDAD_CHOICES, default='cliente')
+    estado_fisico = models.CharField(max_length=50, choices=ESTADO_FISICO_CHOICES, default='buen_estado')
+    zona = models.ForeignKey(Zona, on_delete=models.SET_NULL, null=True, blank=True, related_name='items_inventario')
+    qr_uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True, null=True)
     
     venta = models.ForeignKey(Venta, on_delete=models.SET_NULL, null=True, blank=True, related_name='items_inventario')
     pedido = models.ForeignKey(OrdenPedido, on_delete=models.SET_NULL, null=True, blank=True, related_name='items_inventario')
@@ -69,10 +95,34 @@ class Inventario(models.Model):
     fecha_ingreso = models.DateField(default=timezone.localdate)
     imagen = models.URLField(max_length=500, blank=True, null=True)
 
+    # Tracking de tela
+    lleva_tela = models.BooleanField(default=False)
+    tela_referencia = models.CharField(max_length=100, blank=True, null=True)
+    tela_color = models.CharField(max_length=50, blank=True, null=True)
+    tela_costo_metro = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    tela_cantidad_metros = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+
     def __str__(self):
         if self.referencia:
             return f"{self.id_referencia} - {self.referencia.nombre}"
         return self.id_referencia
+
+class CostoAdicionalInventario(models.Model):
+    """Costos adicionales por ítem (tela, mano de obra, herrajes, etc.)
+    No altera el costo_especifico original proveniente de la factura del proveedor."""
+    inventario = models.ForeignKey(
+        Inventario, on_delete=models.CASCADE, related_name='costos_adicionales'
+    )
+    descripcion = models.CharField(max_length=200)  # Ej: "Tela microfibra", "Mano de obra tapizado"
+    valor = models.DecimalField(max_digits=12, decimal_places=2)
+    fecha = models.DateField(default=timezone.localdate)
+
+    class Meta:
+        ordering = ['fecha', 'id']
+
+    def __str__(self):
+        return f"{self.descripcion} (${self.valor}) — {self.inventario.id_referencia}"
+
 
 class FacturaProveedor(models.Model):
     ESTADO_CHOICES = [
@@ -100,11 +150,31 @@ class DetalleFactura(models.Model):
     costo = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     observacion = models.TextField(blank=True, null=True)
     disponibilidad = models.CharField(max_length=50, blank=True, null=True)
+    estado_fisico = models.CharField(max_length=50, blank=True, null=True, default='nuevo')
+    zona = models.ForeignKey(Zona, on_delete=models.SET_NULL, null=True, blank=True)
     venta_id = models.CharField(max_length=50, blank=True, null=True)
     imagen = models.URLField(max_length=500, blank=True, null=True)
 
+    # Tracking de tela
+    lleva_tela = models.BooleanField(default=False)
+    tela_referencia = models.CharField(max_length=100, blank=True, null=True)
+    tela_color = models.CharField(max_length=50, blank=True, null=True)
+    tela_costo_metro = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    tela_cantidad_metros = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+
     def __str__(self):
         return f"Detalle de Factura {self.factura.id_manual}"
+
+class HistorialTraslado(models.Model):
+    item_inventario = models.ForeignKey(Inventario, on_delete=models.CASCADE, related_name='historial_traslados')
+    zona_origen = models.ForeignKey(Zona, on_delete=models.SET_NULL, null=True, blank=True, related_name='traslados_origen')
+    zona_destino = models.ForeignKey(Zona, on_delete=models.SET_NULL, null=True, blank=True, related_name='traslados_destino')
+    usuario = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
+    fecha = models.DateTimeField(default=timezone.now)
+    observacion = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"Traslado de {self.item_inventario.id_referencia} a {self.zona_destino}"
 
 class RemisionSuministro(models.Model):
     ESTADO_CHOICES = [

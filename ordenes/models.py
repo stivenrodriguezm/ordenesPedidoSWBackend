@@ -48,6 +48,7 @@ class Cliente(models.Model):
     cedula = models.CharField(max_length=20, unique=True, db_index=True)
     correo = models.EmailField(blank=True, null=True)
     direccion = models.CharField(max_length=255, blank=True, null=True)
+    barrio = models.CharField(max_length=100, blank=True, null=True)
     ciudad = models.CharField(max_length=100, blank=True, null=True)
     telefono1 = models.CharField(max_length=20)
     telefono2 = models.CharField(max_length=20, blank=True, null=True)
@@ -168,6 +169,7 @@ class ComprobanteEgreso(models.Model):
     MEDIO_PAGO_CHOICES = [
         ('Efectivo', 'Efectivo'),
         ('Transferencia', 'Transferencia'),
+        ('Otro', 'Otro'),
     ]
     proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE)
     fecha = models.DateField(default=timezone.now, db_index=True)
