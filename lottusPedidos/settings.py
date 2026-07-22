@@ -1,5 +1,13 @@
 from pathlib import Path
 from datetime import timedelta
+import os
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 import pymysql
 pymysql.version_info = (1, 4, 3, "final", 0)
 pymysql.install_as_MySQLdb()
@@ -26,30 +34,31 @@ django.utils.timezone.make_aware = _make_aware_safe
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
-
-import os
-
 # SECURITY WARNING: keep the secret key used in production secret!
-# It is recommended to set the DJANGO_SECRET_KEY environment variable.
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-9k362@l)2sf4x1pstt7f=js1!y5u8*+ck*z77x=3x#k24j%r)-')
 
-# SECURITY WARNING: don't run with debug turned on in production!
-# DEBUG = False  # Producción
-DEBUG = True  # Desarrollo local
+# DEBUG: False in production, True in local development
+DEBUG = os.environ.get('DJANGO_DEBUG', 'True').lower() in ('true', '1', 't')
 
 AUTH_USER_MODEL = 'ordenes.CustomUser'
 
-ALLOWED_HOSTS = ['api.muebleslottus.com', 'app.muebleslottus.com', 'localhost', '127.0.0.1']
+# Allowed hosts configuration
+raw_allowed_hosts = os.environ.get(
+    'ALLOWED_HOSTS',
+    'api.muebleslottus.com, app.muebleslottus.com, localhost, 127.0.0.1'
+)
+ALLOWED_HOSTS = [host.strip() for host in raw_allowed_hosts.split(',') if host.strip()]
 
 # CORS configuration
 CORS_ALLOW_ALL_ORIGINS = False
 
 CORS_ALLOWED_ORIGINS = [
-    'https://app.muebleslottus.com',  # Producción
+    'https://app.muebleslottus.com',   # Producción Frontend HTTPS
+    'https://api.muebleslottus.com',   # Producción Backend HTTPS
+    'http://app.muebleslottus.com',    # Producción Frontend HTTP
     'http://localhost:3000',           # Desarrollo local
     'http://127.0.0.1:3000',          # Desarrollo local (alt)
+    'http://localhost:5173',           # Vite dev
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -71,22 +80,25 @@ CORS_ALLOW_HEADERS = [
 ]
 
 CSRF_TRUSTED_ORIGINS = [
-    'https://app.muebleslottus.com',  # Producción
+    'https://app.muebleslottus.com',   # Producción Frontend
+    'https://api.muebleslottus.com',   # Producción Backend
+    'http://app.muebleslottus.com',
     'http://localhost:3000',           # Desarrollo local
     'http://127.0.0.1:3000',          # Desarrollo local (alt)
     'http://localhost:8000',           # Django admin local
 ]
 
-# Settings for proxy (solo en producción)
-# USE_X_FORWARDED_HOST = True
-# SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-USE_X_FORWARDED_HOST = False
+# Configuración de Reverse Proxy Nginx & SSL en Producción
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
 
-# Cookies seguras: True en producción, False en desarrollo local (HTTP)
-# CSRF_COOKIE_SECURE = True    # Producción
-# SESSION_COOKIE_SECURE = True  # Producción
-CSRF_COOKIE_SECURE = False
-SESSION_COOKIE_SECURE = False
+# Cookies seguras en producción
+if not DEBUG:
+    CSRF_COOKIE_SECURE = True
+    SESSION_COOKIE_SECURE = True
+else:
+    CSRF_COOKIE_SECURE = False
+    SESSION_COOKIE_SECURE = False
 
 # Application definition
 INSTALLED_APPS = [
@@ -145,11 +157,11 @@ WSGI_APPLICATION = 'lottusPedidos.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'u756180748_pruebasv3',
-        'USER': 'u756180748_root',
-        'PASSWORD': 'Lottus123',
-        'HOST': '195.35.61.108',
-        'PORT': '3306',
+        'NAME': os.environ.get('DB_NAME', 'u756180748_pruebasv3'),
+        'USER': os.environ.get('DB_USER', 'u756180748_root'),
+        'PASSWORD': os.environ.get('DB_PASSWORD', 'Lottus123'),
+        'HOST': os.environ.get('DB_HOST', '195.35.61.108'),
+        'PORT': os.environ.get('DB_PORT', '3306'),
         'OPTIONS': {
             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
             'connect_timeout': 10,
@@ -158,6 +170,7 @@ DATABASES = {
         'CONN_MAX_AGE': 0, # Close connection after each request to avoid timeout disconnects
     }
 }
+
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -175,14 +188,18 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 # Internationalization
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'es-co'
 TIME_ZONE = 'America/Bogota'
 USE_I18N = True
 USE_TZ = True
 
 # Static files (CSS, JavaScript, Images)
-STATIC_URL = 'static/'
-STATIC_ROOT = os.path.join(BASE_DIR, 'static')
+STATIC_URL = '/static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+# Media files (user uploads)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
