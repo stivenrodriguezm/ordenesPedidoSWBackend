@@ -273,8 +273,9 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
             'categoria', 'categoria_nombre',
             'subcategoria', 'subcategoria_nombre',
             'variacion', 'costo_especifico', 'observacion',
-            'disponibilidad', 'venta', 'venta_id', 'imagen', 'fecha_ingreso', 'grupo_nombre',
-            'grupo_categoria_nombre', 'grupo_subcategoria_nombre'
+            'disponibilidad', 'estado_fisico', 'venta', 'venta_id', 'imagen', 'fecha_ingreso', 'grupo_nombre',
+            'grupo_categoria_nombre', 'grupo_subcategoria_nombre',
+            'lleva_tela', 'tela_referencia', 'tela_color', 'tela_costo_metro', 'tela_cantidad_metros'
         ]
 
     def get_referencia_nombre(self, obj):
@@ -410,6 +411,7 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
     )
     # Read-only: items del inventario vinculados a esta factura
     items_inventario = FacturasInventarioReadSerializer(many=True, read_only=True)
+    detalles = DetalleFacturaSerializer(many=True, read_only=True)
     proveedor_nombre = serializers.ReadOnlyField(source='proveedor.nombre_empresa')
 
     class Meta:
@@ -419,6 +421,7 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
             'estado', 'proveedor', 'proveedor_nombre', 'observaciones',
             'productos',        # write-only (entrada)
             'items_inventario', # read-only (salida)
+            'detalles',         # read-only fallback (salida histórica)
         ]
 
     def create(self, validated_data):
