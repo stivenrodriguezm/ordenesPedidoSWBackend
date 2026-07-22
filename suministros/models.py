@@ -95,7 +95,7 @@ class Inventario(models.Model):
     fecha_ingreso = models.DateField(default=timezone.localdate)
     imagen = models.URLField(max_length=500, blank=True, null=True)
 
-    # Tracking de tela
+    # Tracking de tela (legacy)
     lleva_tela = models.BooleanField(default=False)
     tela_referencia = models.CharField(max_length=100, blank=True, null=True)
     tela_color = models.CharField(max_length=50, blank=True, null=True)
@@ -106,6 +106,65 @@ class Inventario(models.Model):
         if self.referencia:
             return f"{self.id_referencia} - {self.referencia.nombre}"
         return self.id_referencia
+
+
+class ItemInventarioTelaCuero(models.Model):
+    """Soporta múltiples telas y/o cueros por ítem de inventario con metraje (m) o decimetraje (dm)."""
+    TIPO_CHOICES = [
+        ('tela', 'Tela'),
+        ('cuero', 'Cuero'),
+    ]
+    UNIDAD_CHOICES = [
+        ('metro', 'Metro (m)'),
+        ('decimetro', 'Decímetro (dm)'),
+    ]
+    inventario = models.ForeignKey(
+        Inventario, on_delete=models.CASCADE, related_name='telas_cueros'
+    )
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES, default='tela')
+    referencia = models.CharField(max_length=100, blank=True, null=True)
+    color = models.CharField(max_length=50, blank=True, null=True)
+    unidad_medida = models.CharField(max_length=20, choices=UNIDAD_CHOICES, default='metro')
+    costo_unidad = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    cantidad = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    class Meta:
+        ordering = ['id']
+
+    @property
+    def costo_total(self):
+        return float(self.costo_unidad or 0) * float(self.cantidad or 0)
+
+    def __str__(self):
+        return f"[{self.get_tipo_display()}] {self.referencia or 'Sin ref'} ({self.color or 'Sin color'}) — {self.cantidad}{self.unidad_medida}"
+
+
+def _ensure_telas_cueros_table():
+    from django.db import connection
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS `suministros_iteminventariotelacuero` (
+                  `id` bigint NOT NULL AUTO_INCREMENT,
+                  `tipo` varchar(20) NOT NULL DEFAULT 'tela',
+                  `referencia` varchar(100) DEFAULT NULL,
+                  `color` varchar(50) DEFAULT NULL,
+                  `unidad_medida` varchar(20) NOT NULL DEFAULT 'metro',
+                  `costo_unidad` decimal(12,2) NOT NULL DEFAULT '0.00',
+                  `cantidad` decimal(10,2) NOT NULL DEFAULT '0.00',
+                  `inventario_id` varchar(255) NOT NULL,
+                  PRIMARY KEY (`id`),
+                  KEY `suministros_iteminve_inventario_id_idx` (`inventario_id`),
+                  CONSTRAINT `fk_suministros_iteminve_inventario` FOREIGN KEY (`inventario_id`) REFERENCES `suministros_inventario` (`id_referencia`) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+    except Exception as e:
+        pass
+
+try:
+    _ensure_telas_cueros_table()
+except Exception:
+    pass
 
 class CostoAdicionalInventario(models.Model):
     """Costos adicionales por ítem (tela, mano de obra, herrajes, etc.)

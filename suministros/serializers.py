@@ -4,7 +4,8 @@ from .models import (
     Categoria, Subcategoria, Inventario,
     FacturaProveedor, DetalleFactura, RemisionSuministro,
     GrupoInventario, GrupoInventarioComponente,
-    Sede, Zona, HistorialTraslado, CostoAdicionalInventario
+    Sede, Zona, HistorialTraslado, CostoAdicionalInventario,
+    ItemInventarioTelaCuero
 )
 from ordenes.models import Venta, Referencia
 
@@ -131,6 +132,15 @@ class CostoAdicionalInventarioSerializer(serializers.ModelSerializer):
         read_only_fields = ['id']
 
 
+class ItemInventarioTelaCueroSerializer(serializers.ModelSerializer):
+    costo_total = serializers.ReadOnlyField()
+
+    class Meta:
+        model = ItemInventarioTelaCuero
+        fields = ['id', 'inventario', 'tipo', 'referencia', 'color', 'unidad_medida', 'costo_unidad', 'cantidad', 'costo_total']
+        read_only_fields = ['id', 'costo_total']
+
+
 # ---------------------------------------------------------------------------
 # Inventario (tabla principal)
 # ---------------------------------------------------------------------------
@@ -233,13 +243,15 @@ class InventarioSerializer(serializers.ModelSerializer):
         return round(base + tela + adicionales, 2)
 
     def to_representation(self, instance):
-        # We manually add costos_adicionales here so it doesn't crash the whole serializer
-        # if the table hasn't been created yet.
         data = super().to_representation(instance)
         try:
             data['costos_adicionales'] = CostoAdicionalInventarioSerializer(instance.costos_adicionales.all(), many=True).data
         except Exception:
             data['costos_adicionales'] = []
+        try:
+            data['telas_cueros'] = ItemInventarioTelaCueroSerializer(instance.telas_cueros.all(), many=True).data
+        except Exception:
+            data['telas_cueros'] = []
         return data
 
 class HistorialTrasladoSerializer(serializers.ModelSerializer):
@@ -298,6 +310,14 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
 
     def get_grupo_subcategoria_nombre(self, obj):
         return obj.grupo.subcategoria.nombre if obj.grupo and obj.grupo.subcategoria else None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        try:
+            data['telas_cueros'] = ItemInventarioTelaCueroSerializer(instance.telas_cueros.all(), many=True).data
+        except Exception:
+            data['telas_cueros'] = []
+        return data
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +412,7 @@ def _crear_item_inventario(prod_data, factura):
         while Inventario.objects.filter(id_referencia=gen_id).exists():
             gen_id = f"{prefix}{random.randint(1000, 9999)}"
 
-        Inventario.objects.create(
+        inv_item = Inventario.objects.create(
             id_referencia=gen_id,
             referencia=referencia,
             categoria=categoria,
@@ -414,6 +434,30 @@ def _crear_item_inventario(prod_data, factura):
             tela_costo_metro=tela_costo,
             tela_cantidad_metros=tela_cant,
         )
+
+        telas_cueros_list = prod_data.get('telas_cueros') or prod_data.get('telasCueros') or []
+        if isinstance(telas_cueros_list, list) and len(telas_cueros_list) > 0:
+            for tc in telas_cueros_list:
+                if isinstance(tc, dict):
+                    ItemInventarioTelaCuero.objects.create(
+                        inventario=inv_item,
+                        tipo=str(tc.get('tipo') or 'tela'),
+                        referencia=str(tc.get('referencia') or '').strip(),
+                        color=str(tc.get('color') or '').strip(),
+                        unidad_medida=str(tc.get('unidad_medida') or ('metro' if tc.get('tipo') == 'tela' else 'decimetro')),
+                        costo_unidad=float(tc.get('costo_unidad') or tc.get('costoUnidad') or 0),
+                        cantidad=float(tc.get('cantidad') or 0),
+                    )
+        elif lleva_tela and (tela_ref or tela_col or tela_costo > 0):
+            ItemInventarioTelaCuero.objects.create(
+                inventario=inv_item,
+                tipo='tela',
+                referencia=tela_ref,
+                color=tela_col,
+                unidad_medida='metro',
+                costo_unidad=tela_costo,
+                cantidad=tela_cant,
+            )
 
 
 # ---------------------------------------------------------------------------

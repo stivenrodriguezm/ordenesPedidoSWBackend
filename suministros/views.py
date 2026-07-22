@@ -7,14 +7,14 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from .models import (
     Categoria, Subcategoria, Inventario,
     FacturaProveedor, DetalleFactura, RemisionSuministro,
-    GrupoInventario, Sede, Zona, HistorialTraslado, CostoAdicionalInventario
+    GrupoInventario, Sede, Zona, HistorialTraslado, CostoAdicionalInventario, ItemInventarioTelaCuero
 )
 from .serializers import (
     CategoriaSerializer, SubcategoriaSerializer,
     InventarioSerializer, FacturaProveedorSerializer, FacturaProveedorListSerializer,
     DetalleFacturaSerializer, RemisionSuministroSerializer, GrupoInventarioSerializer,
     SedeSerializer, ZonaSerializer, HistorialTrasladoSerializer,
-    CostoAdicionalInventarioSerializer
+    CostoAdicionalInventarioSerializer, ItemInventarioTelaCueroSerializer
 )
 from rest_framework.permissions import IsAuthenticated
 from ordenes.permissions import check_feature_permission
@@ -156,6 +156,20 @@ class CostoAdicionalInventarioViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return CostoAdicionalInventario.objects.all()
+
+
+class ItemInventarioTelaCueroViewSet(viewsets.ModelViewSet):
+    """CRUD de telas y cueros asociadas a ítems de inventario."""
+    def get_permissions(self):
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), check_feature_permission('EDITAR_ITEM_INVENTARIO')()]
+        return [IsAuthenticated(), check_feature_permission('VER_COSTOS_INVENTARIO')()]
+    serializer_class = ItemInventarioTelaCueroSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['inventario', 'tipo']
+
+    def get_queryset(self):
+        return ItemInventarioTelaCuero.objects.all()
 
 class FacturaProveedorViewSet(viewsets.ModelViewSet):
     def get_permissions(self):

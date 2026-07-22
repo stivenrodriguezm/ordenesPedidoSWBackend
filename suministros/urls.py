@@ -4,7 +4,8 @@ from .views import (
     CategoriaViewSet, SubcategoriaViewSet,
     InventarioViewSet, FacturaProveedorViewSet, DetalleFacturaViewSet,
     RemisionSuministroViewSet, GrupoInventarioViewSet,
-    SedeViewSet, ZonaViewSet, HistorialTrasladoViewSet, CostoAdicionalInventarioViewSet
+    SedeViewSet, ZonaViewSet, HistorialTrasladoViewSet, CostoAdicionalInventarioViewSet,
+    ItemInventarioTelaCueroViewSet
 )
 
 router = DefaultRouter()
@@ -19,6 +20,7 @@ router.register(r'sedes', SedeViewSet)
 router.register(r'zonas', ZonaViewSet)
 router.register(r'historial-traslados', HistorialTrasladoViewSet)
 router.register(r'costos-adicionales', CostoAdicionalInventarioViewSet, basename='costos-adicionales')
+router.register(r'telas-cueros', ItemInventarioTelaCueroViewSet, basename='telas-cueros')
 
 urlpatterns = [
     path('', include(router.urls)),

@@ -35,6 +35,16 @@ django.utils.timezone.make_aware = _make_aware_safe
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Cargar variables de entorno desde .env directamente (sin depender de python-dotenv)
+_env_file = BASE_DIR / '.env'
+if _env_file.exists():
+    with open(_env_file, 'r', encoding='utf-8') as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith('#') and '=' in _line:
+                _k, _v = _line.split('=', 1)
+                os.environ[_k.strip()] = _v.strip().strip("'\"")
+
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-9k362@l)2sf4x1pstt7f=js1!y5u8*+ck*z77x=3x#k24j%r)-')
 
@@ -53,20 +63,10 @@ CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     'https://app.muebleslottus.com',   # Producción Frontend HTTPS
     'https://api.muebleslottus.com',   # Producción Backend HTTPS
-    'http://app.muebleslottus.com',    # Producción Frontend HTTP
-    'http://localhost:3000',           # Desarrollo local
-    'http://127.0.0.1:3000',          # Desarrollo local (alt)
-    'http://localhost:5173',           # Vite dev
-    'http://127.0.0.1:5173',          # Vite dev (alt)
-    'http://localhost:8000',           # Django admin local
-    'http://127.0.0.1:8000',          # Django admin local (alt)
 ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https://.*\.muebleslottus\.com$",
-    r"^http://.*\.muebleslottus\.com$",
-    r"^http://localhost:[0-9]+$",
-    r"^http://127\.0\.0\.1:[0-9]+$",
 ]
 
 CORS_ALLOW_METHODS = [
@@ -88,13 +88,6 @@ CORS_ALLOW_HEADERS = [
 CSRF_TRUSTED_ORIGINS = [
     'https://app.muebleslottus.com',   # Producción Frontend
     'https://api.muebleslottus.com',   # Producción Backend
-    'http://app.muebleslottus.com',
-    'http://localhost:3000',           # Desarrollo local
-    'http://127.0.0.1:3000',          # Desarrollo local (alt)
-    'http://localhost:5173',           # Vite dev
-    'http://127.0.0.1:5173',          # Vite dev (alt)
-    'http://localhost:8000',           # Django admin local
-    'http://127.0.0.1:8000',          # Django admin local (alt)
 ]
 
 # Configuración de Reverse Proxy Nginx & SSL en Producción
