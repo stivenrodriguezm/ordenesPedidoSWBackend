@@ -24,7 +24,7 @@ router.register(r'pedidos-telas', PedidoTelaViewSet)
 router.register(r'detalles-pedido-tela', DetallePedidoTelaViewSet)
 router.register(r'direcciones-entrega', DireccionEntregaViewSet)
 router.register(r'usuarios', UserViewSet)
-router.register(r'role-permissions', RolePermissionViewSet)
+router.register(r'role-permissions', RolePermissionViewSet, basename='role-permissions')
 
 urlpatterns = [
     path('', include(router.urls)),

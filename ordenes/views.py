@@ -251,13 +251,18 @@ class UserDetailView(APIView):
         })
 
 class RolePermissionViewSet(viewsets.ModelViewSet):
+    from .models import RolePermission
+    queryset = RolePermission.objects.all()
     permission_classes = [IsAuthenticated, IsAdministradorRole]
     
     def get_queryset(self):
         from .models import RolePermission
         default_roles = ['vendedor', 'administrador', 'auxiliar', 'transportador']
-        for role_code in default_roles:
-            RolePermission.objects.get_or_create(role=role_code, defaults={'permissions': []})
+        try:
+            for role_code in default_roles:
+                RolePermission.objects.get_or_create(role=role_code, defaults={'permissions': []})
+        except Exception:
+            pass
         return RolePermission.objects.all().order_by('id')
 
     def get_serializer_class(self):
