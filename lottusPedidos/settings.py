@@ -44,14 +44,10 @@ DEBUG = os.environ.get('DJANGO_DEBUG', 'True').lower() in ('true', '1', 't')
 AUTH_USER_MODEL = 'ordenes.CustomUser'
 
 # Allowed hosts configuration
-raw_allowed_hosts = os.environ.get(
-    'ALLOWED_HOSTS',
-    'api.muebleslottus.com, app.muebleslottus.com, localhost, 127.0.0.1'
-)
-ALLOWED_HOSTS = [host.strip() for host in raw_allowed_hosts.split(',') if host.strip()]
+ALLOWED_HOSTS = ['*']
 
 # CORS configuration
-CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOW_ALL_ORIGINS = True
 
 CORS_ALLOWED_ORIGINS = [
     'https://app.muebleslottus.com',   # Producción Frontend HTTPS

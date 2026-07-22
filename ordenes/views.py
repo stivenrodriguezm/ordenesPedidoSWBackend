@@ -229,17 +229,25 @@ class UserDetailView(APIView):
         if user.role == 'administrador':
             perms = ['ALL']
         else:
-            from .models import RolePermission
-            rp = RolePermission.objects.filter(role=user.role).first()
-            if rp:
-                perms = rp.permissions
-            elif user.role == 'transportador':
-                # Permisos mínimos por defecto para transportadores sin reglas configuradas
-                perms = ['VER_REMISIONES']
+            try:
+                from .models import RolePermission
+                rp = RolePermission.objects.filter(role=user.role).first()
+                if rp and isinstance(rp.permissions, list):
+                    perms = rp.permissions
+                elif user.role == 'transportador':
+                    perms = ['VER_REMISIONES']
+            except Exception as e:
+                print(f"Error cargando permisos de rol para {user.username}: {e}")
+                if user.role == 'transportador':
+                    perms = ['VER_REMISIONES']
 
         return Response({
-            "id": user.id, "username": user.username, "first_name": user.first_name,
-            "last_name": user.last_name, "role": user.role, "permissions": perms
+            "id": user.id,
+            "username": user.username,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "role": user.role,
+            "permissions": perms
         })
 
 class RolePermissionViewSet(viewsets.ModelViewSet):
