@@ -37,10 +37,13 @@ def check_feature_permission(feature_code):
                 return True
                 
             # For other roles (e.g. vendedor, auxiliar, etc.), look up their dynamic permissions
-            from .models import RolePermission
-            rp = RolePermission.objects.filter(role=request.user.role).first()
-            if rp and feature_code in rp.permissions:
-                return True
+            try:
+                from .models import RolePermission
+                rp = RolePermission.objects.filter(role=request.user.role).first()
+                if rp and feature_code in rp.permissions:
+                    return True
+            except Exception:
+                pass
                 
             return False
             
