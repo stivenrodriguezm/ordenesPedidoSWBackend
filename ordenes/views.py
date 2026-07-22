@@ -243,12 +243,15 @@ class UserDetailView(APIView):
         })
 
 class RolePermissionViewSet(viewsets.ModelViewSet):
-    from .models import RolePermission
-    queryset = RolePermission.objects.all()
-    # No standard serializer class defined yet, let's use a quick inline or explicit class
-    # To keep it completely in views.py, I'll use a local serializer for simplicity
     permission_classes = [IsAuthenticated, IsAdministradorRole]
     
+    def get_queryset(self):
+        from .models import RolePermission
+        default_roles = ['vendedor', 'administrador', 'auxiliar', 'transportador']
+        for role_code in default_roles:
+            RolePermission.objects.get_or_create(role=role_code, defaults={'permissions': []})
+        return RolePermission.objects.all().order_by('id')
+
     def get_serializer_class(self):
         from rest_framework import serializers
         from .models import RolePermission

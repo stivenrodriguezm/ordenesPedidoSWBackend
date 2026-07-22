@@ -3,6 +3,7 @@ from datetime import timedelta
 import os
 
 try:
+    # pyrefly: ignore [missing-import]
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
@@ -157,8 +158,8 @@ WSGI_APPLICATION = 'lottusPedidos.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': os.environ.get('DB_NAME', 'u756180748_pruebasv3'),
-        'USER': os.environ.get('DB_USER', 'u756180748_root'),
+        'NAME': os.environ.get('DB_NAME', 'u756180748_lottus'),
+        'USER': os.environ.get('DB_USER', 'u756180748_lottus'),
         'PASSWORD': os.environ.get('DB_PASSWORD', 'Lottus123'),
         'HOST': os.environ.get('DB_HOST', '195.35.61.108'),
         'PORT': os.environ.get('DB_PORT', '3306'),

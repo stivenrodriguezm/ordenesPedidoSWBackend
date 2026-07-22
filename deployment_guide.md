@@ -1,152 +1,105 @@
-# Guía de Despliegue en Producción - Backend Django (`api.muebleslottus.com`)
+# Guía de Despliegue en Producción - Hostinger VPS & MySQL (`api.muebleslottus.com`)
 
-Esta guía describe el procedimiento oficial para desplegar el backend de **Lottus** en un servidor **Ubuntu** vía SSH, sirviendo la API desde `https://api.muebleslottus.com` para el cliente en `https://app.muebleslottus.com`.
+Esta guía describe el procedimiento oficial para ejecutar las migraciones y desplegar el backend en el servidor **Hostinger VPS** usando la base de datos MySQL en Hostinger (`u756180748_lottus`).
 
 ---
 
-## 1. Requisitos Previos en el Servidor Ubuntu
+## 1. Respaldo de Seguridad de la Base de Datos Real (phpMyAdmin / SSH)
 
-Conéctate al servidor vía SSH e instala las dependencias base del sistema:
+Antes de hacer las migraciones, realiza una copia de seguridad de la base de datos de producción `u756180748_lottus`:
 
+### Opción A (Desde el panel phpMyAdmin de Hostinger):
+1. Entra al panel de **Hostinger -> Bases de Datos MySQL -> phpMyAdmin**.
+2. Selecciona la base de datos `u756180748_lottus`.
+3. Haz clic en la pestaña **Exportar**.
+4. Selecciona el formato **SQL** y haz clic en **Exportar** para descargar la copia en tu equipo.
+
+### Opción B (Desde la terminal del VPS Hostinger):
 ```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y python3-pip python3-venv git nginx certbot python3-certbot-nginx libmysqlclient-dev
+mysqldump -h 195.35.61.108 -u u756180748_lottus -p'Lottus123' u756180748_lottus > backup_lottus_real_$(date +%F_%H%M%S).sql
 ```
 
 ---
 
-## 2. Clonar y Configurar el Proyecto
+## 2. Instalación de Paquetes en Hostinger VPS (Sin Entorno Virtual)
 
-1. **Ubicar e ingresar al directorio:**
-   ```bash
-   cd /var/www
-   sudo git clone https://github.com/stivenrodriguezm/ordenesPedidoSWBackend.git backend
-   sudo chown -R $USER:$USER /var/www/backend
-   cd /var/www/backend
-   ```
+En tu VPS de Hostinger, instala las dependencias directamente en Python global de la máquina:
 
-2. **Crear y activar entorno virtual:**
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install --upgrade pip
-   pip install -r requirements.txt
-   ```
+```bash
+# Actualizar el sistema e instalar dependencias
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y python3-pip git nginx certbot python3-certbot-nginx libmysqlclient-dev
 
-3. **Configurar el archivo `.env` de producción:**
-   ```bash
-   cp .env.example .env
-   nano .env
-   ```
-   *Asegúrate de configurar `DJANGO_DEBUG=False` y ajustar la clave `DJANGO_SECRET_KEY`.*
-
-4. **Ejecutar migraciones y recolectar archivos estáticos:**
-   ```bash
-   python manage.py migrate
-   python manage.py collectstatic --noinput
-   ```
+# Instalar los paquetes del proyecto directamente
+cd /var/www/backend  # O la ruta donde tengas clonado el repositorio en Hostinger VPS
+pip3 install -r requirements.txt
+```
 
 ---
 
-## 3. Configurar Gunicorn como Servicio Systemd
+## 3. Ejecución Directa de Migraciones en Producción
 
-Crea el archivo de servicio para que Gunicorn se ejecute automáticamente en segundo plano:
+Con los accesos de la base de datos `u756180748_lottus` configurados en `settings.py` o `.env`:
+
+```bash
+cd /var/www/backend
+
+# 1. Comprobar las migraciones registradas
+python3 manage.py showmigrations
+
+# 2. Generar posibles migraciones de modelos
+python3 manage.py makemigrations
+
+# 3. Aplicar las migraciones a la base de datos real en Hostinger
+python3 manage.py migrate
+
+# 4. Recolectar archivos estáticos
+python3 manage.py collectstatic --noinput
+```
+
+---
+
+## 4. Configurar Gunicorn en Systemd (Directo con Python3)
+
+Crea el archivo de servicio para Gunicorn:
 
 ```bash
 sudo nano /etc/systemd/system/gunicorn.service
 ```
 
-Pega el siguiente contenido (ajustando la ruta si es necesario):
+Pega la siguiente configuración:
 
 ```ini
 [Unit]
-Description=Gunicorn daemon for Lottus Backend API
+Description=Gunicorn daemon for Lottus Backend API (Hostinger VPS)
 After=network.target
 
 [Service]
-User=ubuntu
-Group=www-data
+User=root
 WorkingDirectory=/var/www/backend
-ExecStart=/var/www/backend/venv/bin/gunicorn --workers 3 --bind 127.0.0.1:8000 lottusPedidos.wsgi:application
+ExecStart=/usr/local/bin/gunicorn --workers 3 --bind 127.0.0.1:8000 lottusPedidos.wsgi:application
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Inicia y habilita el servicio:
+*Nota: Si `gunicorn` fue instalado en `/usr/bin/gunicorn`, ajusta el `ExecStart` ejecutando previamente `which gunicorn`.*
+
+Reinicia el servicio:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl start gunicorn
+sudo systemctl restart gunicorn
 sudo systemctl enable gunicorn
-sudo systemctl status gunicorn
 ```
 
 ---
 
-## 4. Configurar Nginx como Reverse Proxy con SSL (HTTPS)
+## 5. Nginx & Certificado SSL (HTTPS)
 
-Crea el archivo de configuración para el sitio `api.muebleslottus.com`:
-
-```bash
-sudo nano /etc/nginx/sites-available/api.muebleslottus.com
-```
-
-Pega la siguiente configuración:
-
-```nginx
-server {
-    server_name api.muebleslottus.com;
-
-    client_max_body_size 20M;
-
-    location /static/ {
-        alias /var/www/backend/staticfiles/;
-    }
-
-    location /media/ {
-        alias /var/www/backend/media/;
-    }
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-Habilita el sitio en Nginx y verifica la sintaxis:
-
-```bash
-sudo ln -s /etc/nginx/sites-available/api.muebleslottus.com /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl restart nginx
-```
-
----
-
-## 5. Habilitar Certificado SSL Gratuito con Let's Encrypt (HTTPS)
-
-Ejecuta Certbot para obtener e instalar el certificado de forma automática:
+Asegúrate de que Nginx redirija las peticiones a `api.muebleslottus.com` y activa el certificado SSL:
 
 ```bash
 sudo certbot --nginx -d api.muebleslottus.com
 ```
-
-Certbot actualizará automáticamente la configuración de Nginx redirigiendo HTTP a HTTPS en `https://api.muebleslottus.com`.
-
----
-
-## 6. Verificación Final de CORS
-
-Prueba la conexión desde `https://app.muebleslottus.com` hacia `https://api.muebleslottus.com/api/token/`. 
-Las cabeceras CORS pre-configuradas responderán:
-
-- `Access-Control-Allow-Origin: https://app.muebleslottus.com`
-- `Access-Control-Allow-Credentials: true`
-
-¡El backend estará listo y operativo en producción!
