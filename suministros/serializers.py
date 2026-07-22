@@ -331,15 +331,19 @@ class DetalleFacturaSerializer(serializers.ModelSerializer):
 def _crear_item_inventario(prod_data, factura):
     """
     Crea uno o más items de Inventario desde los datos del producto
-    recibido en el form de Nueva Factura. No usa DetalleFactura.
+    recibido en el form de Nueva o Editar Factura. No usa DetalleFactura.
     Soporta 'cantidad' (crea N unidades) y 'grupo_id' (asigna al grupo).
     """
     ref_id = prod_data.get('referencia')
     cat_id = prod_data.get('categoria')
     subcat_id = prod_data.get('subcategoria')
-    venta_id_str = str(prod_data.get('venta_id') or '')
+    venta_id_str = str(prod_data.get('venta_id') or prod_data.get('venta') or '')
     grupo_id = prod_data.get('grupo_id') or prod_data.get('grupo')
-    cantidad = int(prod_data.get('cantidad') or 1)
+
+    try:
+        cantidad = int(prod_data.get('cantidad') or 1)
+    except (ValueError, TypeError):
+        cantidad = 1
     if cantidad < 1:
         cantidad = 1
 
@@ -356,12 +360,32 @@ def _crear_item_inventario(prod_data, factura):
         except (ValueError, TypeError):
             grupo = None
 
-    tela_ref = (prod_data.get('tela_referencia') or prod_data.get('telaReferencia') or '').strip()
-    tela_col = (prod_data.get('tela_color') or prod_data.get('telaColor') or '').strip()
-    tela_costo = float(prod_data.get('tela_costo_metro') or prod_data.get('telaCostoMetro') or 0)
-    tela_cant = float(prod_data.get('tela_cantidad_metros') or prod_data.get('telaCantidadMetros') or 0)
+    try:
+        costo_spec = float(prod_data.get('costo') or 0)
+    except (ValueError, TypeError):
+        costo_spec = 0.0
+
+    raw_zona = prod_data.get('zona') or prod_data.get('zona_id')
+    try:
+        zona_id = int(raw_zona) if raw_zona else None
+    except (ValueError, TypeError):
+        zona_id = None
+
+    tela_ref = str(prod_data.get('tela_referencia') or prod_data.get('telaReferencia') or '').strip()
+    tela_col = str(prod_data.get('tela_color') or prod_data.get('telaColor') or '').strip()
+
+    try:
+        tela_costo = float(prod_data.get('tela_costo_metro') or prod_data.get('telaCostoMetro') or 0)
+    except (ValueError, TypeError):
+        tela_costo = 0.0
+
+    try:
+        tela_cant = float(prod_data.get('tela_cantidad_metros') or prod_data.get('telaCantidadMetros') or 0)
+    except (ValueError, TypeError):
+        tela_cant = 0.0
+
     lleva_tela = bool(prod_data.get('lleva_tela')) or bool(tela_ref) or bool(tela_col) or bool(tela_costo > 0)
-    prefix = (categoria.nombre[:2].upper() if categoria else 'XX')
+    prefix = (categoria.nombre[:2].upper() if (categoria and getattr(categoria, 'nombre', None)) else 'XX')
 
     for _ in range(cantidad):
         gen_id = f"{prefix}{random.randint(1000, 9999)}"
@@ -373,15 +397,15 @@ def _crear_item_inventario(prod_data, factura):
             referencia=referencia,
             categoria=categoria,
             subcategoria=subcategoria,
-            variacion=prod_data.get('variacion', ''),
-            costo_especifico=prod_data.get('costo', 0),
-            observacion=prod_data.get('observacion') or '',
-            disponibilidad=prod_data.get('disponibilidad') or 'exhibicion',
-            estado_fisico=prod_data.get('estado_fisico') or 'buen_estado',
-            zona_id=prod_data.get('zona') or None,
+            variacion=str(prod_data.get('variacion') or ''),
+            costo_especifico=costo_spec,
+            observacion=str(prod_data.get('observacion') or ''),
+            disponibilidad=str(prod_data.get('disponibilidad') or 'exhibicion'),
+            estado_fisico=str(prod_data.get('estado_fisico') or 'buen_estado'),
+            zona_id=zona_id,
             venta=venta,
             factura=factura,
-            factura_manual=factura.id_manual,
+            factura_manual=factura.id_manual if (factura and getattr(factura, 'id_manual', None)) else '',
             imagen=prod_data.get('imagen') or None,
             grupo=grupo,
             lleva_tela=lleva_tela,
