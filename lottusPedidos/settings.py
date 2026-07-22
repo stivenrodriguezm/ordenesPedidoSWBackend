@@ -47,7 +47,8 @@ AUTH_USER_MODEL = 'ordenes.CustomUser'
 ALLOWED_HOSTS = ['*']
 
 # CORS configuration
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOWED_ORIGINS = [
     'https://app.muebleslottus.com',   # Producción Frontend HTTPS
@@ -58,7 +59,10 @@ CORS_ALLOWED_ORIGINS = [
     'http://localhost:5173',           # Vite dev
 ]
 
-CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https://.*\.muebleslottus\.com$",
+    r"^http://.*\.muebleslottus\.com$",
+]
 
 CORS_ALLOW_METHODS = [
     'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS',
@@ -209,6 +213,7 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
+    'EXCEPTION_HANDLER': 'lottusPedidos.settings.custom_exception_handler',
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle'
@@ -224,3 +229,18 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
+
+def custom_exception_handler(exc, context):
+    from rest_framework.views import exception_handler
+    from rest_framework.response import Response
+    from rest_framework import status
+
+    response = exception_handler(exc, context)
+
+    if response is None:
+        return Response(
+            {"detail": f"Error interno del servidor: {str(exc)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+    return response
