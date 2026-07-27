@@ -63,10 +63,20 @@ CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     'https://app.muebleslottus.com',   # Producción Frontend HTTPS
     'https://api.muebleslottus.com',   # Producción Backend HTTPS
+    'http://app.muebleslottus.com',    # Producción Frontend HTTP
+    'http://localhost:3000',           # Desarrollo local
+    'http://127.0.0.1:3000',          # Desarrollo local (alt)
+    'http://localhost:5173',           # Vite dev
+    'http://127.0.0.1:5173',          # Vite dev (alt)
+    'http://localhost:8000',           # Django admin local
+    'http://127.0.0.1:8000',          # Django admin local (alt)
 ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https://.*\.muebleslottus\.com$",
+    r"^http://.*\.muebleslottus\.com$",
+    r"^http://localhost:[0-9]+$",
+    r"^http://127\.0\.0\.1:[0-9]+$",
 ]
 
 CORS_ALLOW_METHODS = [
@@ -88,6 +98,13 @@ CORS_ALLOW_HEADERS = [
 CSRF_TRUSTED_ORIGINS = [
     'https://app.muebleslottus.com',   # Producción Frontend
     'https://api.muebleslottus.com',   # Producción Backend
+    'http://app.muebleslottus.com',
+    'http://localhost:3000',           # Desarrollo local
+    'http://127.0.0.1:3000',          # Desarrollo local (alt)
+    'http://localhost:5173',           # Vite dev
+    'http://127.0.0.1:5173',          # Vite dev (alt)
+    'http://localhost:8000',           # Django admin local
+    'http://127.0.0.1:8000',          # Django admin local (alt)
 ]
 
 # Configuración de Reverse Proxy Nginx & SSL en Producción

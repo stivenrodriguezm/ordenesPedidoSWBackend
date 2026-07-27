@@ -22,7 +22,7 @@ from .serializers import (
 )
 from .permissions import IsAdmin, IsAdministradorRole, check_feature_permission
 from django.db import transaction
-from django.db.models import Q, F, Sum, Sum
+from django.db.models import Q, F, Sum, Case, When, Value, IntegerField
 from decimal import Decimal, InvalidOperation
 from rest_framework.exceptions import ValidationError
 from datetime import date, timedelta, time, datetime
@@ -77,8 +77,12 @@ def dashboard_stats(request):
         # Vendor stat 2: Pedidos Pendientes - count of their ventas with estado_pedidos=False
         pedidos_pendientes = ventas.filter(estado_pedidos=False).count()
 
-        # Filter orders by vendor
-        ordenes = OrdenPedido.objects.filter(usuario=user)
+        # Filter orders by vendor (created by vendor OR associated with vendor's sale)
+        ordenes = OrdenPedido.objects.filter(
+            Q(usuario=user) |
+            Q(venta__vendedor=user) |
+            Q(venta__vendedores_compartidos=user)
+        ).distinct()
         
         # Vendor stat 3: Órdenes Atrasadas - count of their overdue orders
         today = date.today()
@@ -361,8 +365,13 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
         from .permissions import check_feature_permission
         if check_feature_permission('VER_TODAS_ORDENES')().has_permission(self.request, None):
             return base_queryset
-        elif check_feature_permission('VER_PROPIAS_ORDENES')().has_permission(self.request, None):
-            return base_queryset.filter(usuario=self.request.user)
+        elif check_feature_permission('VER_PROPIAS_ORDENES')().has_permission(self.request, None) or self.request.user.role == 'vendedor':
+            user = self.request.user
+            return base_queryset.filter(
+                Q(usuario=user) |
+                Q(venta__vendedor=user) |
+                Q(venta__vendedores_compartidos=user)
+            ).distinct()
         else:
             return base_queryset.none()
 
@@ -419,32 +428,60 @@ def listar_pedidos(request):
     try:
         pedidos = OrdenPedido.objects.select_related('proveedor', 'usuario', 'venta').all()
 
-        # If user is a vendedor, they can only see their own orders
+        # If user is a vendedor, they can see their own orders OR orders tied to their sales
         if request.user.role == 'vendedor':
-            pedidos = pedidos.filter(usuario=request.user)
+            pedidos = pedidos.filter(
+                Q(usuario=request.user) |
+                Q(venta__vendedor=request.user) |
+                Q(venta__vendedores_compartidos=request.user)
+            ).distinct()
         else:
-            # If admin or auxiliar, they can filter by vendedor
+        # If admin or auxiliar, they can filter by vendedor
             id_vendedor = request.GET.get('id_vendedor')
             if id_vendedor:
-                pedidos = pedidos.filter(usuario__id=id_vendedor)
+                if id_vendedor == '-1':
+                    pedidos = pedidos.none()
+                elif ',' in id_vendedor:
+                    vendedores_list = [v.strip() for v in id_vendedor.split(',') if v.strip()]
+                    pedidos = pedidos.filter(usuario__id__in=vendedores_list)
+                else:
+                    pedidos = pedidos.filter(usuario__id=id_vendedor)
 
         # Other filters
         estado = request.GET.get('estado')
         if estado:
-            if estado == 'en_proceso':
-                pedidos = pedidos.filter(estado__in=['en_proceso', 'pendiente'])
+            if estado == 'ninguno_imposible':
+                pedidos = pedidos.none()
+            elif ',' in estado:
+                estados_list = [e.strip() for e in estado.split(',') if e.strip()]
+                if 'en_proceso' in estados_list and 'pendiente' not in estados_list:
+                    estados_list.append('pendiente')
+                pedidos = pedidos.filter(estado__in=estados_list)
             else:
-                pedidos = pedidos.filter(estado=estado)
+                if estado == 'en_proceso':
+                    pedidos = pedidos.filter(estado__in=['en_proceso', 'pendiente'])
+                else:
+                    pedidos = pedidos.filter(estado=estado)
         
         id_proveedor = request.GET.get('id_proveedor')
         if id_proveedor:
-            pedidos = pedidos.filter(proveedor__id=id_proveedor)
+            if id_proveedor == 'ninguno_imposible':
+                pedidos = pedidos.none()
+            elif ',' in id_proveedor:
+                proveedores_list = [p.strip() for p in id_proveedor.split(',') if p.strip()]
+                pedidos = pedidos.filter(proveedor__id__in=proveedores_list)
+            else:
+                pedidos = pedidos.filter(proveedor__id=id_proveedor)
 
         es_exhibicion = request.GET.get('es_exhibicion')
-        if es_exhibicion == 'true':
-            pedidos = pedidos.filter(es_exhibicion=True)
-        elif es_exhibicion == 'false':
-            pedidos = pedidos.filter(es_exhibicion=False)
+        if es_exhibicion:
+            if ',' in es_exhibicion:
+                # If they pass "true,false", we just don't filter (show both)
+                pass
+            elif es_exhibicion == 'true':
+                pedidos = pedidos.filter(es_exhibicion=True)
+            elif es_exhibicion == 'false':
+                pedidos = pedidos.filter(es_exhibicion=False)
 
         tela = request.GET.get('tela')
         if tela:
@@ -604,13 +641,55 @@ def listar_ventas(request):
         ventas = ventas.filter(Q(cliente__nombre__icontains=search_query) | Q(id__icontains=search_query))
     else:
         # ... (lógica de filtrado por fecha, estado, etc. se mantiene igual)
+        periods_param = request.GET.get('periods')
+        start_date_param = request.GET.get('start_date')
+        end_date_param = request.GET.get('end_date')
+        
+        # Backward compatibility for old fetch endpoints (e.g. reportSales if not updated yet)
         month_param = request.GET.get('month')
         year_param = request.GET.get('year')
+
         estado = request.GET.get('estado')
         vendedor_id_param = request.GET.get('vendedor')
         sede_param = request.GET.get('sede')
 
-        if month_param and year_param:
+        if periods_param:
+            periods = [p.strip() for p in periods_param.split(',') if p.strip()]
+            q_objects = Q()
+            try:
+                for period in periods:
+                    parts = period.split('-')
+                    if len(parts) == 2:
+                        month = int(parts[0])
+                        year = int(parts[1])
+                        
+                        start_day = 6
+                        end_day = 5
+                        
+                        period_start = date(year, month, start_day)
+                        
+                        if month == 12:
+                            period_end = date(year + 1, 1, end_day)
+                        else:
+                            period_end = date(year, month + 1, end_day)
+                        
+                        q_objects |= Q(fecha_venta__gte=period_start, fecha_venta__lte=period_end)
+                
+                if q_objects:
+                    ventas = ventas.filter(q_objects)
+                    
+            except ValueError:
+                return Response({"error": "Parámetros de mes o año inválidos en periods."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        elif start_date_param and end_date_param:
+            try:
+                start_date = date.fromisoformat(start_date_param)
+                end_date = date.fromisoformat(end_date_param)
+                ventas = ventas.filter(fecha_venta__gte=start_date, fecha_venta__lte=end_date)
+            except ValueError:
+                return Response({"error": "Formato de fecha inválido."}, status=status.HTTP_400_BAD_REQUEST)
+                
+        elif month_param and year_param:
             try:
                 month = int(month_param)
                 year = int(year_param)
@@ -631,17 +710,29 @@ def listar_ventas(request):
                 return Response({"error": "Parámetros de mes o año inválidos."}, status=status.HTTP_400_BAD_REQUEST)
 
         if estado:
-            ventas = ventas.filter(estado=estado)
+            if ',' in estado:
+                estados_list = [e.strip() for e in estado.split(',') if e.strip()]
+                ventas = ventas.filter(estado__in=estados_list)
+            else:
+                ventas = ventas.filter(estado=estado)
         
         if vendedor_id_param:
             try:
-                vendedor_id = int(vendedor_id_param)
-                ventas = ventas.filter(Q(vendedor_id=vendedor_id) | Q(vendedores_compartidos__id=vendedor_id)).distinct()
+                if ',' in str(vendedor_id_param):
+                    vendedores_list = [int(v.strip()) for v in str(vendedor_id_param).split(',') if v.strip()]
+                    ventas = ventas.filter(Q(vendedor_id__in=vendedores_list) | Q(vendedores_compartidos__id__in=vendedores_list)).distinct()
+                else:
+                    vendedor_id = int(vendedor_id_param)
+                    ventas = ventas.filter(Q(vendedor_id=vendedor_id) | Q(vendedores_compartidos__id=vendedor_id)).distinct()
             except ValueError:
                 return Response({"error": "ID de vendedor inválido."}, status=status.HTTP_400_BAD_REQUEST)
                 
         if sede_param:
-            ventas = ventas.filter(sede=sede_param)
+            if ',' in str(sede_param):
+                sedes_list = [s.strip() for s in str(sede_param).split(',') if s.strip()]
+                ventas = ventas.filter(sede__in=sedes_list)
+            else:
+                ventas = ventas.filter(sede=sede_param)
 
     ventas = ventas.order_by('-id')
     serializer = VentaSerializer(ventas, many=True)
@@ -863,8 +954,14 @@ class ReciboCajaPagination(PageNumberPagination):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_RECIBOS')])
 def listar_recibos_caja(request):
-    # OPTIMIZACIÓN: Cargar datos del cliente relacionados en una sola consulta
-    recibos = ReciboCaja.objects.select_related('venta__cliente').order_by('-fecha', '-id')
+    # OPTIMIZACIÓN: Cargar datos del cliente y priorizar los recibos no confirmados ('Pendiente') primero
+    recibos = ReciboCaja.objects.select_related('venta__cliente').annotate(
+        orden_estado=Case(
+            When(estado='Pendiente', then=Value(0)),
+            default=Value(1),
+            output_field=IntegerField(),
+        )
+    ).order_by('orden_estado', '-fecha', '-id')
     
     fecha_inicio = request.GET.get('fecha_inicio')
     fecha_fin = request.GET.get('fecha_fin')
@@ -1066,20 +1163,38 @@ class PedidoTelaViewSet(viewsets.ModelViewSet):
         from .permissions import check_feature_permission
         if check_feature_permission('VER_TODOS_PEDIDOS_TELAS')().has_permission(self.request, None):
             pass # Keep all
-        elif check_feature_permission('VER_PROPIOS_PEDIDOS_TELAS')().has_permission(self.request, None):
-            queryset = queryset.filter(usuario=self.request.user)
+        elif check_feature_permission('VER_PROPIOS_PEDIDOS_TELAS')().has_permission(self.request, None) or self.request.user.role == 'vendedor':
+            user = self.request.user
+            queryset = queryset.filter(
+                Q(usuario=user) |
+                Q(orden_asociada__usuario=user) |
+                Q(orden_asociada__venta__vendedor=user) |
+                Q(orden_asociada__venta__vendedores_compartidos=user)
+            ).distinct()
         else:
             queryset = queryset.none()
 
         # Filter by provider
         proveedor_id = self.request.query_params.get('proveedor')
         if proveedor_id:
-            queryset = queryset.filter(proveedor_id=proveedor_id)
+            if proveedor_id == 'ninguno_imposible':
+                queryset = queryset.none()
+            elif ',' in proveedor_id:
+                proveedores_list = [p.strip() for p in proveedor_id.split(',') if p.strip()]
+                queryset = queryset.filter(proveedor_id__in=proveedores_list)
+            else:
+                queryset = queryset.filter(proveedor_id=proveedor_id)
 
         # Filter by status
         estado = self.request.query_params.get('estado')
         if estado:
-            queryset = queryset.filter(estado=estado)
+            if estado == 'ninguno_imposible':
+                queryset = queryset.none()
+            elif ',' in estado:
+                estados_list = [e.strip() for e in estado.split(',') if e.strip()]
+                queryset = queryset.filter(estado__in=estados_list)
+            else:
+                queryset = queryset.filter(estado=estado)
 
         return queryset
 
@@ -1087,12 +1202,21 @@ class PedidoTelaViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         user = request.user
 
-        # Vendedores can only edit their own pedidos de tela
-        if user.role == 'vendedor' and instance.usuario != user:
-            return Response(
-                {'error': 'No tienes permiso para editar este pedido.'},
-                status=status.HTTP_403_FORBIDDEN
+        # Vendedores can edit fabric orders that are theirs or associated with their orders/sales
+        if user.role == 'vendedor':
+            is_associated = (
+                instance.usuario == user or
+                (instance.orden_asociada and instance.orden_asociada.usuario == user) or
+                (instance.orden_asociada and instance.orden_asociada.venta and (
+                    instance.orden_asociada.venta.vendedor == user or
+                    user in instance.orden_asociada.venta.vendedores_compartidos.all()
+                ))
             )
+            if not is_associated:
+                return Response(
+                    {'error': 'No tienes permiso para editar este pedido.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
 
         # Non-admins cannot change estado when it is already 'En fabrica'
         if user.role != 'administrador' and instance.estado == 'En fabrica':
@@ -1163,7 +1287,11 @@ def vendedor_recent_activity(request):
         sale.fecha = sale.fecha_venta
         sale.type = 'venta'
 
-    recent_orders = OrdenPedido.objects.filter(usuario=user).select_related('proveedor').order_by('-fecha_creacion')[:5]
+    recent_orders = OrdenPedido.objects.filter(
+        Q(usuario=user) |
+        Q(venta__vendedor=user) |
+        Q(venta__vendedores_compartidos=user)
+    ).distinct().select_related('proveedor').order_by('-fecha_creacion')[:5]
     for order in recent_orders:
         order.fecha = order.fecha_creacion
         order.type = 'pedido'

@@ -96,6 +96,8 @@ class OrdenPedidoSerializer(serializers.ModelSerializer):
         return obj.proveedor.nombre_empresa if obj.proveedor else None
 
     def get_vendedor(self, obj):
+        if obj.venta and obj.venta.vendedor:
+            return obj.venta.vendedor.first_name
         return obj.usuario.first_name if obj.usuario else None
 
     @transaction.atomic
@@ -141,8 +143,6 @@ class VentaSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [] # El saldo se calcula automáticamente
         extra_kwargs = {
-            'vendedor': {'write_only': True},
-            'cliente': {'write_only': True},
             'vendedores_compartidos': {'required': False, 'allow_empty': True},
             'valor_total': {'coerce_to_string': False},
             'abono': {'coerce_to_string': False},
