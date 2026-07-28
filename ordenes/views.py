@@ -739,6 +739,26 @@ def listar_ventas(request):
                 ventas = ventas.filter(sede=sede_param)
 
     ventas = ventas.order_by('-fecha_venta', '-id')
+
+    page_param = request.GET.get('page')
+    page_size_param = request.GET.get('page_size')
+
+    if page_param and page_size_param:
+        try:
+            page = int(page_param)
+            page_size = int(page_size_param)
+            total_count = ventas.count()
+            start = (page - 1) * page_size
+            end = start + page_size
+            ventas_page = ventas[start:end]
+            serializer = VentaSerializer(ventas_page, many=True)
+            return Response({
+                'count': total_count,
+                'results': serializer.data
+            })
+        except ValueError:
+            pass
+
     serializer = VentaSerializer(ventas, many=True)
     return Response(serializer.data)
 
