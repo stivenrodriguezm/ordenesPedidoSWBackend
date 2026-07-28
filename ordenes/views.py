@@ -636,8 +636,8 @@ class EditarVentaClienteView(APIView):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_VENTAS')])
 def listar_ventas(request):
-    # OPTIMIZACIÓN: Iniciar con la consulta optimizada
-    ventas = Venta.objects.select_related('cliente', 'vendedor').all()
+    # OPTIMIZACIÓN: Iniciar con la consulta optimizada (select_related + prefetch_related)
+    ventas = Venta.objects.select_related('cliente', 'vendedor').prefetch_related('vendedores_compartidos').all()
 
     search_query = request.GET.get('search')
 
