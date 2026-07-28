@@ -556,8 +556,12 @@ class CrearVentaClienteView(APIView):
         cliente_data = request.data.get('cliente', {})
         venta_data = request.data.get('venta', {})
         observacion_texto = request.data.get('observacion')
-        if Venta.objects.filter(id=venta_data.get('id')).exists():
-            return Response({"error": "El ID de la venta ya existe."}, status=400)
+        venta_id = venta_data.get('id')
+        if venta_id:
+            if Venta.objects.filter(id=venta_id).exists():
+                return Response({"error": "El ID de la venta ya existe."}, status=400)
+        else:
+            venta_data.pop('id', None)
         if cliente_nuevo:
             cliente_serializer = ClienteSerializer(data=cliente_data)
             cliente_serializer.is_valid(raise_exception=True)
@@ -734,7 +738,7 @@ def listar_ventas(request):
             else:
                 ventas = ventas.filter(sede=sede_param)
 
-    ventas = ventas.order_by('-id')
+    ventas = ventas.order_by('-fecha_venta', '-id')
     serializer = VentaSerializer(ventas, many=True)
     return Response(serializer.data)
 

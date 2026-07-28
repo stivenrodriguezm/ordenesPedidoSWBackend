@@ -271,24 +271,32 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
         queryset=OrdenPedido.objects.all(), source='orden_asociada', write_only=True, required=False, allow_null=True
     )
     orden_id = serializers.SerializerMethodField()
+    orden_proveedor_nombre = serializers.SerializerMethodField()
+    venta_id = serializers.SerializerMethodField()
 
     class Meta:
         model = PedidoTela
         fields = [
             'id', 'usuario', 'usuario_nombre', 'proveedor', 'proveedor_nombre', 
             'direccion_entrega', 'fecha_creacion', 'estado', 'orden_asociada', 
-            'orden_asociada_id', 'detalles', 'orden_id'
+            'orden_asociada_id', 'detalles', 'orden_id', 'orden_proveedor_nombre', 'venta_id'
         ]
         read_only_fields = ['fecha_creacion', 'usuario', 'id']
 
     def get_proveedor_nombre(self, obj):
         return obj.proveedor.nombre_empresa if obj.proveedor else None
+        
+    def get_orden_proveedor_nombre(self, obj):
+        return obj.orden_asociada.proveedor.nombre_empresa if obj.orden_asociada and obj.orden_asociada.proveedor else '-'
 
     def get_usuario_nombre(self, obj):
         return obj.usuario.first_name if obj.usuario else None
         
     def get_orden_id(self, obj):
         return obj.orden_asociada.id if obj.orden_asociada else None
+
+    def get_venta_id(self, obj):
+        return obj.orden_asociada.venta.id if obj.orden_asociada and obj.orden_asociada.venta else None
 
     @transaction.atomic
     def create(self, validated_data):

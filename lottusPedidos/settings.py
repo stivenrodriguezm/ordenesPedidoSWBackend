@@ -190,6 +190,8 @@ DATABASES = {
     }
 }
 
+print("=== CONECTADO A LA BASE DE DATOS:", DATABASES['default']['NAME'], "===")
+
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {
