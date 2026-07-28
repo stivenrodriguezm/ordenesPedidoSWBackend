@@ -221,7 +221,7 @@ class StandardResultsSetPagination(PageNumberPagination):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def listar_vendedores(request):
-    vendedores = CustomUser.objects.filter(is_active=True).only('id', 'first_name')
+    vendedores = CustomUser.objects.filter(is_active=True).exclude(role='transportador').only('id', 'first_name')
     data = [{"id": v.id, "first_name": v.first_name} for v in vendedores]
     return Response(data)
 
