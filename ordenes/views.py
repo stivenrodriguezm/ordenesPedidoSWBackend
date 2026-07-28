@@ -37,6 +37,7 @@ from rest_framework.pagination import PageNumberPagination
 def cierre_caja(request):
     user = request.user
     descuadre = request.data.get('descuadre', 0)
+    signo = request.data.get('signo', 'faltante')
 
     try:
         descuadre_decimal = Decimal(descuadre)
@@ -47,15 +48,25 @@ def cierre_caja(request):
     total_acumulado = last_movement.total_acumulado if last_movement else Decimal('0')
 
     if descuadre_decimal != 0:
+        if signo == 'faltante':
+            total_acumulado -= descuadre_decimal
+            tipo_desc = 'faltante'
+            valor_caja = -descuadre_decimal
+        else:
+            total_acumulado += descuadre_decimal
+            tipo_desc = 'sobrante'
+            valor_caja = descuadre_decimal
+            
         formatted_descuadre = f"${descuadre_decimal:,.0f}"
-        concepto = f"Cierre de caja por {user.first_name}, descuadre de {formatted_descuadre}"
+        concepto = f"Cierre de caja por {user.first_name}, {tipo_desc} de {formatted_descuadre}"
     else:
         concepto = f"Cierre de caja exitoso por {user.first_name}"
+        valor_caja = Decimal('0')
 
     Caja.objects.create(
         usuario=user,
         concepto=concepto,
-        valor=descuadre_decimal,
+        valor=valor_caja,
         tipo='cierre',
         total_acumulado=total_acumulado
     )
