@@ -696,11 +696,19 @@ def listar_ventas(request):
             except ValueError:
                 return Response({"error": "Parámetros de mes o año inválidos en periods."}, status=status.HTTP_400_BAD_REQUEST)
         
-        elif start_date_param and end_date_param:
+        elif start_date_param or end_date_param:
             try:
-                start_date = date.fromisoformat(start_date_param)
-                end_date = date.fromisoformat(end_date_param)
-                ventas = ventas.filter(fecha_venta__gte=start_date, fecha_venta__lte=end_date)
+                if start_date_param and end_date_param:
+                    start_date = date.fromisoformat(start_date_param)
+                    end_date = date.fromisoformat(end_date_param)
+                    ventas = ventas.filter(fecha_venta__gte=start_date, fecha_venta__lte=end_date)
+                elif start_date_param:
+                    start_date = date.fromisoformat(start_date_param)
+                    end_date = date.today()
+                    ventas = ventas.filter(fecha_venta__gte=start_date, fecha_venta__lte=end_date)
+                elif end_date_param:
+                    end_date = date.fromisoformat(end_date_param)
+                    ventas = ventas.filter(fecha_venta__lte=end_date)
             except ValueError:
                 return Response({"error": "Formato de fecha inválido."}, status=status.HTTP_400_BAD_REQUEST)
                 
