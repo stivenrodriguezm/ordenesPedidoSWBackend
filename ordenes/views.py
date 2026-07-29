@@ -759,6 +759,24 @@ def listar_ventas(request):
 
     ventas = ventas.order_by('-fecha_venta', '-id')
 
+    is_report = request.GET.get('is_report')
+    if is_report == 'true':
+        ventas_data = []
+        for v in ventas:
+            ventas_data.append({
+                'id': v.id,
+                'estado': v.estado,
+                'vendedor': v.vendedor_id,
+                'vendedor_nombre': v.vendedor.first_name if v.vendedor else None,
+                'vendedores_compartidos': [vc.id for vc in v.vendedores_compartidos.all()],
+                'valor_total': v.valor_total,
+                'abono': v.abono,
+                'saldo': v.saldo,
+                'fecha_venta': v.fecha_venta,
+                'sede': v.sede,
+            })
+        return Response(ventas_data)
+
     page_param = request.GET.get('page')
     page_size_param = request.GET.get('page_size')
 
