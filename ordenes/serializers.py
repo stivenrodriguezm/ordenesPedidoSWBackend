@@ -278,7 +278,7 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
         model = PedidoTela
         fields = [
             'id', 'usuario', 'usuario_nombre', 'proveedor', 'proveedor_nombre', 
-            'direccion_entrega', 'fecha_creacion', 'estado', 'orden_asociada', 
+            'direccion_entrega', 'fecha_creacion', 'estado',  
             'orden_asociada_id', 'detalles', 'orden_id', 'orden_proveedor_nombre', 'venta_id'
         ]
         read_only_fields = ['fecha_creacion', 'usuario', 'id']
@@ -287,7 +287,17 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
         return obj.proveedor.nombre_empresa if obj.proveedor else None
         
     def get_orden_proveedor_nombre(self, obj):
-        return obj.orden_asociada.proveedor.nombre_empresa if obj.orden_asociada and obj.orden_asociada.proveedor else '-'
+        try:
+            if obj.orden_asociada:
+                if hasattr(obj.orden_asociada, 'proveedor') and obj.orden_asociada.proveedor:
+                    return obj.orden_asociada.proveedor.nombre_empresa
+                elif hasattr(obj.orden_asociada, 'proveedor_id') and obj.orden_asociada.proveedor_id:
+                    prov = Proveedor.objects.filter(id=obj.orden_asociada.proveedor_id).first()
+                    if prov:
+                        return prov.nombre_empresa
+        except Exception as e:
+            logging.error(f"Error getting orden_proveedor_nombre for PedidoTela {obj.id}: {e}")
+        return '-'
 
     def get_usuario_nombre(self, obj):
         return obj.usuario.first_name if obj.usuario else None
