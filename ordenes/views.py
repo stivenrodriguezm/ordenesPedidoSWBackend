@@ -1201,7 +1201,9 @@ class PedidoTelaViewSet(viewsets.ModelViewSet):
     pagination_class = StandardResultsSetPagination
 
     def get_queryset(self):
-        queryset = PedidoTela.objects.select_related('proveedor', 'usuario', 'orden_asociada').prefetch_related('detalles').all().order_by('-id')
+        queryset = PedidoTela.objects.select_related(
+            'proveedor', 'usuario', 'orden_asociada', 'orden_asociada__proveedor', 'orden_asociada__venta'
+        ).prefetch_related('detalles').all().order_by('-id')
 
         from .permissions import check_feature_permission
         if check_feature_permission('VER_TODOS_PEDIDOS_TELAS')().has_permission(self.request, None):

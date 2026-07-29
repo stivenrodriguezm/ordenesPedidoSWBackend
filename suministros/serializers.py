@@ -275,6 +275,7 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
     subcategoria_nombre = serializers.SerializerMethodField()
     venta_id = serializers.SerializerMethodField()
     grupo_nombre = serializers.SerializerMethodField()
+    grupo_id = serializers.SerializerMethodField()
     grupo_categoria_nombre = serializers.SerializerMethodField()
     grupo_subcategoria_nombre = serializers.SerializerMethodField()
 
@@ -285,7 +286,7 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
             'categoria', 'categoria_nombre',
             'subcategoria', 'subcategoria_nombre',
             'variacion', 'costo_especifico', 'observacion',
-            'disponibilidad', 'estado_fisico', 'venta', 'venta_id', 'imagen', 'fecha_ingreso', 'grupo_nombre',
+            'disponibilidad', 'estado_fisico', 'venta', 'venta_id', 'imagen', 'fecha_ingreso', 'grupo_nombre', 'grupo_id',
             'grupo_categoria_nombre', 'grupo_subcategoria_nombre',
             'lleva_tela', 'tela_referencia', 'tela_color', 'tela_costo_metro', 'tela_cantidad_metros'
         ]
@@ -298,6 +299,9 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
 
     def get_subcategoria_nombre(self, obj):
         return obj.subcategoria.nombre if obj.subcategoria else None
+
+    def get_grupo_id(self, obj):
+        return obj.grupo.id if obj.grupo else None
 
     def get_venta_id(self, obj):
         return str(obj.venta.id) if obj.venta else None
@@ -368,6 +372,9 @@ def _crear_item_inventario(prod_data, factura):
         cantidad = 1
 
     referencia = Referencia.objects.filter(id=ref_id).first() if ref_id else None
+    if not referencia:
+        return
+
     categoria = Categoria.objects.filter(id=cat_id).first() if cat_id else None
     subcategoria = Subcategoria.objects.filter(id=subcat_id).first() if subcat_id else None
     venta = Venta.objects.filter(id=venta_id_str).first() if venta_id_str.isdigit() else None
@@ -460,6 +467,60 @@ def _crear_item_inventario(prod_data, factura):
             )
 
 
+def _actualizar_item_inventario(inv_item, prod_data, factura):
+    """Actualiza los parámetros de un ítem de inventario existente sin recrearlo."""
+    if not inv_item:
+        return
+
+    if 'variacion' in prod_data:
+        inv_item.variacion = str(prod_data.get('variacion') or '')
+    if 'costo' in prod_data or 'costo_especifico' in prod_data:
+        try:
+            inv_item.costo_especifico = float(prod_data.get('costo') or prod_data.get('costo_especifico') or 0)
+        except (ValueError, TypeError):
+            pass
+    if 'observacion' in prod_data:
+        inv_item.observacion = str(prod_data.get('observacion') or '')
+    if 'disponibilidad' in prod_data:
+        inv_item.disponibilidad = str(prod_data.get('disponibilidad') or inv_item.disponibilidad)
+    if 'estado_fisico' in prod_data:
+        inv_item.estado_fisico = str(prod_data.get('estado_fisico') or inv_item.estado_fisico)
+
+    raw_zona = prod_data.get('zona') or prod_data.get('zona_id')
+    if raw_zona is not None:
+        try:
+            inv_item.zona_id = int(raw_zona) if raw_zona else None
+        except (ValueError, TypeError):
+            pass
+
+    grupo_id = prod_data.get('grupo_id') or prod_data.get('grupo')
+    if grupo_id is not None:
+        try:
+            inv_item.grupo_id = int(grupo_id) if grupo_id else None
+        except (ValueError, TypeError):
+            pass
+
+    if factura and getattr(factura, 'id_manual', None):
+        inv_item.factura_manual = factura.id_manual
+
+    telas_cueros_list = prod_data.get('telas_cueros') or prod_data.get('telasCueros')
+    if isinstance(telas_cueros_list, list):
+        inv_item.telas_cueros.all().delete()
+        for tc in telas_cueros_list:
+            if isinstance(tc, dict) and (tc.get('referencia') or tc.get('color') or tc.get('cantidad')):
+                ItemInventarioTelaCuero.objects.create(
+                    inventario=inv_item,
+                    tipo=str(tc.get('tipo') or 'tela'),
+                    referencia=str(tc.get('referencia') or '').strip(),
+                    color=str(tc.get('color') or '').strip(),
+                    unidad_medida=str(tc.get('unidad_medida') or ('metro' if tc.get('tipo') == 'tela' else 'decimetro')),
+                    costo_unidad=float(tc.get('costo_unidad') or tc.get('costoUnidad') or 0),
+                    cantidad=float(tc.get('cantidad') or 0),
+                )
+
+    inv_item.save()
+
+
 # ---------------------------------------------------------------------------
 # FacturaProveedor
 # ---------------------------------------------------------------------------
@@ -512,12 +573,22 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
             setattr(instance, attr, value)
         instance.save()
 
-        # Si se envían productos en el update: reemplazar los items de inventario
-        if productos_data is not None:
-            # Eliminar items del inventario vinculados a esta factura
-            instance.items_inventario.all().delete()
-            for prod_data in productos_data:
-                _crear_item_inventario(prod_data, instance)
+        # Si se actualizó el id_manual, actualizarlo en los items de inventario vinculados
+        if instance.id_manual is not None:
+            instance.items_inventario.update(factura_manual=instance.id_manual or '')
+
+        # Si se envían productos en el update: actualizar sus ítems existentes
+        if productos_data is not None and len(productos_data) > 0:
+            items_existentes = list(instance.items_inventario.all())
+            if len(items_existentes) > 0:
+                for i, prod_data in enumerate(productos_data):
+                    if i < len(items_existentes):
+                        _actualizar_item_inventario(items_existentes[i], prod_data, instance)
+                    else:
+                        _crear_item_inventario(prod_data, instance)
+            else:
+                for prod_data in productos_data:
+                    _crear_item_inventario(prod_data, instance)
 
         return instance
 

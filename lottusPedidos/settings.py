@@ -167,28 +167,35 @@ TEMPLATES = [
 WSGI_APPLICATION = 'lottusPedidos.wsgi.application'
 
 # Database configuration
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.sqlite3',
-#         'NAME': BASE_DIR / 'db.sqlite3',
-#     }
-# }
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME': os.environ.get('DB_NAME', 'u756180748_lottus'),
-        'USER': os.environ.get('DB_USER', 'u756180748_lottus'),
-        'PASSWORD': os.environ.get('DB_PASSWORD', 'Lottus123'),
-        'HOST': os.environ.get('DB_HOST', '195.35.61.108'),
-        'PORT': os.environ.get('DB_PORT', '3306'),
-        'OPTIONS': {
-            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-            'connect_timeout': 10,
-            'autocommit': True,
-        },
-        'CONN_MAX_AGE': 0, # Close connection after each request to avoid timeout disconnects
+# In local dev (no DB_HOST env var set) → SQLite to avoid exhausting remote hosting connection limits
+# In production → MySQL via environment variables
+_USE_REMOTE_DB = bool(os.environ.get('DB_HOST'))
+
+if _USE_REMOTE_DB:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.mysql',
+            'NAME': os.environ.get('DB_NAME', 'u756180748_lottus'),
+            'USER': os.environ.get('DB_USER', 'u756180748_lottus'),
+            'PASSWORD': os.environ.get('DB_PASSWORD', 'Lottus123'),
+            'HOST': os.environ.get('DB_HOST', '195.35.61.108'),
+            'PORT': os.environ.get('DB_PORT', '3306'),
+            'OPTIONS': {
+                'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+                'connect_timeout': 10,
+                'autocommit': True,
+            },
+            'CONN_MAX_AGE': 60,  # Reutilizar conexiones hasta 60s para reducir conexiones/hora al hosting
+        }
     }
-}
+else:
+    # Local development: use SQLite (no remote connections, no connection limits)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db_local.sqlite3',
+        }
+    }
 
 print("=== CONECTADO A LA BASE DE DATOS:", DATABASES['default']['NAME'], "===")
 
