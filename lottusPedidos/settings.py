@@ -172,11 +172,19 @@ WSGI_APPLICATION = 'lottusPedidos.wsgi.application'
 _USE_REMOTE_DB = bool(os.environ.get('DB_HOST'))
 
 if _USE_REMOTE_DB:
+    # En producción (DEBUG=False), se fuerza estrictamente la base de datos oficial u756180748_lottus
+    if not DEBUG:
+        active_db_name = 'u756180748_lottus'
+        active_db_user = 'u756180748_lottus'
+    else:
+        active_db_name = os.environ.get('DB_NAME', 'u756180748_pruebasv3')
+        active_db_user = os.environ.get('DB_USER', 'u756180748_root')
+
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.mysql',
-            'NAME': os.environ.get('DB_NAME', 'u756180748_lottus'),
-            'USER': os.environ.get('DB_USER', 'u756180748_lottus'),
+            'NAME': active_db_name,
+            'USER': active_db_user,
             'PASSWORD': os.environ.get('DB_PASSWORD', 'Lottus123'),
             'HOST': os.environ.get('DB_HOST', '195.35.61.108'),
             'PORT': os.environ.get('DB_PORT', '3306'),
@@ -197,7 +205,7 @@ else:
         }
     }
 
-print("=== CONECTADO A LA BASE DE DATOS:", DATABASES['default']['NAME'], "===")
+print(f"=== CONECTADO A LA BASE DE DATOS: {DATABASES['default']['NAME']} (USUARIO: {DATABASES['default']['USER']}) ===")
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
