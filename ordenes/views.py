@@ -13,7 +13,7 @@ from .models import (
     ObservacionCliente, Remision, ProveedorTela, PedidoTela, DetallePedidoTela, DireccionEntrega
 )
 from .serializers import (
-    ReferenciaSerializer, ProveedorSerializer, OrdenPedidoSerializer,
+    ReferenciaSerializer, ProveedorSerializer, OrdenPedidoSerializer, OrdenPedidoListSerializer,
     DetallePedidoSerializer, ClienteSerializer, VentaSerializer,
     ObservacionVentaSerializer, CajaSerializer, ReciboCajaSerializer,
     ComprobanteEgresoSerializer, VentaDetalleSerializer,
@@ -437,7 +437,11 @@ logger = logging.getLogger(__name__)
 @permission_classes([IsAuthenticated, check_feature_permission('VER_ORDENES')])
 def listar_pedidos(request):
     try:
-        pedidos = OrdenPedido.objects.select_related('proveedor', 'usuario', 'venta').all()
+        # select_related cubre todos los accesos de FK en OrdenPedidoListSerializer
+        # de un solo golpe, eliminando N+1 queries
+        pedidos = OrdenPedido.objects.select_related(
+            'proveedor', 'usuario', 'venta__vendedor'
+        ).all()
 
         # If user is a vendedor, they can see their own orders OR orders tied to their sales
         if request.user.role == 'vendedor':
@@ -500,11 +504,33 @@ def listar_pedidos(request):
 
         pedidos = pedidos.order_by('-id')
 
-        serializer = OrdenPedidoSerializer(pedidos, many=True)
+        # Usar el serializer ligero — sin detalles ni telas_asociadas
+        serializer = OrdenPedidoListSerializer(pedidos, many=True)
         return Response(serializer.data)
     except Exception as e:
         logger.error(f"Error en listar_pedidos: {e}", exc_info=True)
         return Response({"error": "Ocurrió un error inesperado en el servidor."}, status=500)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def detalle_orden_completo(request, orden_id):
+    """Endpoint ligero para obtener los detalles completos de una OP (para NuevaFactura).
+    Devuelve detalles del pedido + telas_asociadas. Usado de forma lazy al seleccionar la OP."""
+    try:
+        orden = OrdenPedido.objects.select_related(
+            'proveedor', 'usuario', 'venta__vendedor'
+        ).prefetch_related(
+            'detalles__referencia',
+            'pedidos_telas__detalles'
+        ).get(id=orden_id)
+        serializer = OrdenPedidoSerializer(orden)
+        return Response(serializer.data)
+    except OrdenPedido.DoesNotExist:
+        return Response({"error": "Orden no encontrada"}, status=404)
+    except Exception as e:
+        logger.error(f"Error en detalle_orden_completo {orden_id}: {e}", exc_info=True)
+        return Response({"error": "Error al obtener la orden"}, status=500)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])

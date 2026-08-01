@@ -74,6 +74,29 @@ class DetallePedidoSerializer(serializers.ModelSerializer):
             'referencia': {'write_only': True}
         }
 
+class OrdenPedidoListSerializer(serializers.ModelSerializer):
+    """Serializer ligero para el listado de órdenes — sin N+1 queries.
+    No incluye detalles ni telas_asociadas (se cargan bajo demanda al expandir).
+    Requiere select_related('proveedor', 'usuario', 'venta__vendedor') en el queryset.
+    """
+    proveedor_nombre = serializers.CharField(source='proveedor.nombre_empresa', read_only=True)
+    vendedor = serializers.SerializerMethodField()
+    fecha_pedido = serializers.DateField(source='fecha_creacion', read_only=True)
+
+    class Meta:
+        model = OrdenPedido
+        fields = [
+            'id', 'proveedor_nombre', 'fecha_pedido', 'fecha_esperada',
+            'estado', 'observacion', 'tela', 'venta', 'costo',
+            'vendedor', 'orden_venta', 'es_exhibicion'
+        ]
+
+    def get_vendedor(self, obj):
+        if obj.venta_id and obj.venta and obj.venta.vendedor:
+            return obj.venta.vendedor.first_name
+        return obj.usuario.first_name if obj.usuario else None
+
+
 class OrdenPedidoSerializer(serializers.ModelSerializer):
     proveedor_nombre = serializers.SerializerMethodField()
     vendedor = serializers.SerializerMethodField()
