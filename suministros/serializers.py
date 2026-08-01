@@ -168,7 +168,9 @@ class InventarioSerializer(serializers.ModelSerializer):
                         'subcategoria_nombre', 'proveedor_id', 'proveedor_nombre',
                         'factura_id_manual', 'factura_id', 'venta_numero',
                         'grupo_id', 'grupo_nombre', 'zona_nombre', 'sede_nombre',
-                        'lleva_tela', 'tela_referencia', 'tela_color', 'tela_costo_metro', 'tela_cantidad_metros']
+                        'zona', 'venta_id', 'imagen', 'lleva_tela', 'tela_referencia',
+                        'tela_color', 'tela_costo_metro', 'tela_cantidad_metros', 'vendedor_nombre'
+        ]
 
     def get_producto_nombre(self, obj):
         if obj.referencia:
@@ -242,6 +244,19 @@ class InventarioSerializer(serializers.ModelSerializer):
             pass
         return round(base + tela + adicionales, 2)
 
+    def get_vendedor_nombre(self, obj):
+        if obj.venta:
+            vendedores = []
+            if obj.venta.vendedor:
+                nombre = f"{obj.venta.vendedor.first_name} {obj.venta.vendedor.last_name}".strip() or obj.venta.vendedor.username
+                vendedores.append(nombre)
+            for vc in obj.venta.vendedores_compartidos.all():
+                nombre = f"{vc.first_name} {vc.last_name}".strip() or vc.username
+                if nombre not in vendedores:
+                    vendedores.append(nombre)
+            return " y ".join(vendedores) if vendedores else None
+        return None
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         try:
@@ -278,6 +293,7 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
     grupo_id = serializers.SerializerMethodField()
     grupo_categoria_nombre = serializers.SerializerMethodField()
     grupo_subcategoria_nombre = serializers.SerializerMethodField()
+    vendedor_nombre = serializers.SerializerMethodField()
 
     class Meta:
         model = Inventario
@@ -288,7 +304,7 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
             'variacion', 'costo_especifico', 'observacion',
             'disponibilidad', 'estado_fisico', 'venta', 'venta_id', 'imagen', 'fecha_ingreso', 'grupo_nombre', 'grupo_id',
             'grupo_categoria_nombre', 'grupo_subcategoria_nombre',
-            'lleva_tela', 'tela_referencia', 'tela_color', 'tela_costo_metro', 'tela_cantidad_metros'
+            'lleva_tela', 'tela_referencia', 'tela_color', 'tela_costo_metro', 'tela_cantidad_metros', 'vendedor_nombre'
         ]
 
     def get_referencia_nombre(self, obj):
@@ -315,6 +331,19 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
     def get_grupo_subcategoria_nombre(self, obj):
         return obj.grupo.subcategoria.nombre if obj.grupo and obj.grupo.subcategoria else None
 
+    def get_vendedor_nombre(self, obj):
+        if obj.venta:
+            vendedores = []
+            if obj.venta.vendedor:
+                nombre = f"{obj.venta.vendedor.first_name} {obj.venta.vendedor.last_name}".strip() or obj.venta.vendedor.username
+                vendedores.append(nombre)
+            for vc in obj.venta.vendedores_compartidos.all():
+                nombre = f"{vc.first_name} {vc.last_name}".strip() or vc.username
+                if nombre not in vendedores:
+                    vendedores.append(nombre)
+            return " y ".join(vendedores) if vendedores else None
+        return None
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         try:
@@ -332,6 +361,7 @@ class DetalleFacturaSerializer(serializers.ModelSerializer):
     referencia_nombre = serializers.SerializerMethodField()
     categoria_nombre = serializers.SerializerMethodField()
     subcategoria_nombre = serializers.SerializerMethodField()
+    vendedor_nombre = serializers.SerializerMethodField()
 
     class Meta:
         model = DetalleFactura
@@ -346,6 +376,24 @@ class DetalleFacturaSerializer(serializers.ModelSerializer):
 
     def get_subcategoria_nombre(self, obj):
         return obj.subcategoria.nombre if obj.subcategoria else None
+
+    def get_vendedor_nombre(self, obj):
+        if obj.venta_id:
+            try:
+                from ordenes.models import Venta
+                venta = Venta.objects.get(id=obj.venta_id)
+                vendedores = []
+                if venta.vendedor:
+                    nombre = f"{venta.vendedor.first_name} {venta.vendedor.last_name}".strip() or venta.vendedor.username
+                    vendedores.append(nombre)
+                for vc in venta.vendedores_compartidos.all():
+                    nombre = f"{vc.first_name} {vc.last_name}".strip() or vc.username
+                    if nombre not in vendedores:
+                        vendedores.append(nombre)
+                return " y ".join(vendedores) if vendedores else None
+            except Exception:
+                pass
+        return None
 
 
 # ---------------------------------------------------------------------------

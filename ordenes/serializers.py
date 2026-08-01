@@ -77,15 +77,16 @@ class DetallePedidoSerializer(serializers.ModelSerializer):
 class OrdenPedidoSerializer(serializers.ModelSerializer):
     proveedor_nombre = serializers.SerializerMethodField()
     vendedor = serializers.SerializerMethodField()
-    detalles = DetallePedidoSerializer(many=True, write_only=True, required=False)
+    detalles = DetallePedidoSerializer(many=True, read_only=True, required=False)
     fecha_pedido = serializers.DateField(source='fecha_creacion', read_only=True) # Mapea fecha_pedido a fecha_creacion
+    telas_asociadas = serializers.SerializerMethodField()
 
     class Meta:
         model = OrdenPedido
         fields = [
             'id', 'proveedor', 'proveedor_nombre', 'fecha_pedido', 'fecha_esperada', 
             'estado', 'observacion', 'tela', 'venta', 'costo',
-            'vendedor', 'detalles', 'orden_venta', 'es_exhibicion'
+            'vendedor', 'detalles', 'orden_venta', 'es_exhibicion', 'telas_asociadas'
         ]
         extra_kwargs = {
             'proveedor': {'write_only': True, 'queryset': Proveedor.objects.all()},
@@ -99,6 +100,11 @@ class OrdenPedidoSerializer(serializers.ModelSerializer):
         if obj.venta and obj.venta.vendedor:
             return obj.venta.vendedor.first_name
         return obj.usuario.first_name if obj.usuario else None
+
+    def get_telas_asociadas(self, obj):
+        from .models import DetallePedidoTela
+        detalles = DetallePedidoTela.objects.filter(pedido__orden_asociada=obj)
+        return DetallePedidoTelaSerializer(detalles, many=True).data
 
     @transaction.atomic
     def create(self, validated_data):
