@@ -207,13 +207,17 @@ def sales_chart_data(request):
     current_year_data = {i: 0 for i in range(1, 13)}
     last_year_data = {i: 0 for i in range(1, 13)}
 
-    current_sales_by_month = sales_current_year.values('fecha_venta__month').annotate(total=Sum('valor_calculado'))
-    for item in current_sales_by_month:
-        current_year_data[item['fecha_venta__month']] = item['total']
+    from django.db.models.functions import ExtractMonth
 
-    last_sales_by_month = sales_last_year.values('fecha_venta__month').annotate(total=Sum('valor_calculado'))
+    current_sales_by_month = sales_current_year.annotate(month=ExtractMonth('fecha_venta')).values('month').annotate(total=Sum('valor_calculado'))
+    for item in current_sales_by_month:
+        if item['month']:
+            current_year_data[item['month']] = item['total'] or 0
+
+    last_sales_by_month = sales_last_year.annotate(month=ExtractMonth('fecha_venta')).values('month').annotate(total=Sum('valor_calculado'))
     for item in last_sales_by_month:
-        last_year_data[item['fecha_venta__month']] = item['total']
+        if item['month']:
+            last_year_data[item['month']] = item['total'] or 0
 
     # Formatear para el gráfico
     labels = [calendar.month_abbr[i].capitalize() for i in range(1, 13)]
