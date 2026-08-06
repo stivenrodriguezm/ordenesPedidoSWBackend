@@ -20,7 +20,9 @@ from .serializers import (
     ObservacionClienteSerializer, RemisionSerializer,
     ProveedorTelaSerializer, PedidoTelaSerializer, DetallePedidoTelaSerializer, DireccionEntregaSerializer, UserManageSerializer
 )
-from .permissions import IsAdmin, IsAdministradorRole, check_feature_permission
+from .permissions import IsAdministradorRole, check_feature_permission
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q, F, Sum, Case, When, Value, IntegerField
 from decimal import Decimal, InvalidOperation
@@ -44,24 +46,21 @@ def cierre_caja(request):
     except (ValueError, TypeError, InvalidOperation):
         return Response({"error": "El valor de descuadre debe ser un número válido."}, status=status.HTTP_400_BAD_REQUEST)
 
-    last_movement = Caja.objects.order_by('-fecha_hora').first()
+    last_movement = Caja.objects.select_for_update().order_by('-fecha_hora', '-id').first()
     total_acumulado = last_movement.total_acumulado if last_movement else Decimal('0')
 
     if descuadre_decimal != 0:
         if signo == 'faltante':
-            total_acumulado -= descuadre_decimal
             tipo_desc = 'faltante'
-            valor_caja = -descuadre_decimal
         else:
-            total_acumulado += descuadre_decimal
             tipo_desc = 'sobrante'
-            valor_caja = descuadre_decimal
             
         formatted_descuadre = f"${descuadre_decimal:,.0f}"
         concepto = f"Cierre de caja por {user.first_name}, {tipo_desc} de {formatted_descuadre}"
     else:
         concepto = f"Cierre de caja exitoso por {user.first_name}"
-        valor_caja = Decimal('0')
+        
+    valor_caja = Decimal('0')
 
     Caja.objects.create(
         usuario=user,
@@ -76,30 +75,52 @@ def cierre_caja(request):
 @permission_classes([IsAuthenticated])
 def dashboard_stats(request):
     user = request.user
+    today = date.today()
 
-    # For vendedores: return their specific stats
+    if today.day >= 6:
+        start_date = date(today.year, today.month, 6)
+        if today.month == 12:
+            end_date = date(today.year + 1, 1, 5)
+        else:
+            end_date = date(today.year, today.month + 1, 5)
+    else:
+        if today.month == 1:
+            start_date = date(today.year - 1, 12, 6)
+        else:
+            start_date = date(today.year, today.month - 1, 6)
+        end_date = date(today.year, today.month, 5)
+
+    # For vendedores: return their specific stats with divided shared sales totals
     if user.role == 'vendedor':
-        # Filter ventas by vendor
         ventas = Venta.objects.filter(Q(vendedor=user) | Q(vendedores_compartidos=user)).distinct().exclude(estado='anulado')
 
-        # Vendor stat 1: Ventas Pendientes - count of their pending sales
         ventas_pendientes = ventas.filter(estado='pendiente').count()
-
-        # Vendor stat 2: Pedidos Pendientes - count of their ventas with estado_pedidos=False
         pedidos_pendientes = ventas.filter(estado_pedidos=False).count()
 
-        # Filter orders by vendor (created by vendor OR associated with vendor's sale)
         ordenes = OrdenPedido.objects.filter(
             Q(usuario=user) |
             Q(venta__vendedor=user) |
             Q(venta__vendedores_compartidos=user)
         ).distinct()
         
-        # Vendor stat 3: Órdenes Atrasadas - count of their overdue orders
-        today = date.today()
         ordenes_atrasadas = ordenes.filter(estado='en_proceso', fecha_esperada__lt=today).count()
 
+        from django.db.models import Count, ExpressionWrapper, DecimalField, F
+        ventas_annotated = ventas.annotate(
+            num_vendedores=Count('vendedores_compartidos') + 1
+        ).annotate(
+            valor_calculado=ExpressionWrapper(
+                F('valor_total') / F('num_vendedores'),
+                output_field=DecimalField(max_digits=12, decimal_places=2)
+            )
+        )
+
+        ventas_dia = ventas_annotated.filter(fecha_venta=today).aggregate(total=Sum('valor_calculado'))['total'] or 0
+        ventas_mes = ventas_annotated.filter(fecha_venta__gte=start_date, fecha_venta__lte=end_date).aggregate(total=Sum('valor_calculado'))['total'] or 0
+
         data = {
+            'ventas_dia': float(ventas_dia),
+            'ventas_mes': float(ventas_mes),
             'ventas_pendientes': ventas_pendientes,
             'pedidos_pendientes': pedidos_pendientes,
             'ordenes_atrasadas': ordenes_atrasadas,
@@ -110,49 +131,24 @@ def dashboard_stats(request):
 
     # For admin/auxiliar: return global stats
     ventas = Venta.objects.exclude(estado='anulado')
-
-    # Admin stat 1: Ventas Hoy - sum of sales today
-    today = date.today()
     ventas_dia = ventas.filter(fecha_venta=today).aggregate(total=Sum('valor_total'))['total'] or 0
-
-    # Admin stat 2: Ventas del Mes - sum of sales this month (Custom range: 6th to 5th)
-    if today.day >= 6:
-        start_date = date(today.year, today.month, 6)
-        # Handle December rollover
-        if today.month == 12:
-            end_date = date(today.year + 1, 1, 5)
-        else:
-            end_date = date(today.year, today.month + 1, 5)
-    else:
-        # Handle January rollover
-        if today.month == 1:
-            start_date = date(today.year - 1, 12, 6)
-        else:
-            start_date = date(today.year, today.month - 1, 6)
-        end_date = date(today.year, today.month, 5)
-
     ventas_mes = ventas.filter(fecha_venta__gte=start_date, fecha_venta__lte=end_date).aggregate(total=Sum('valor_total'))['total'] or 0
 
-    # Admin stat 3: Pedidos Pendientes - count of ALL ventas with estado_pedidos=False
     pedidos_pendientes = ventas.filter(estado_pedidos=False).count()
-
-    # Admin stat 4: Órdenes Atrasadas - count of ALL overdue orders (estado='pendiente' and fecha_esperada < today)
     ordenes_atrasadas = OrdenPedido.objects.filter(estado='pendiente', fecha_esperada__lt=today).count()
 
-    # Keep saldo_caja for admin/auxiliar users
     ultimo_movimiento_caja = Caja.objects.order_by('-fecha_hora').first()
     saldo_caja = ultimo_movimiento_caja.total_acumulado if ultimo_movimiento_caja else 0
     
-    # Keep ultimas_ventas for compatibility
     ultimas_ventas = ventas.select_related('cliente', 'vendedor').prefetch_related('vendedores_compartidos').order_by('-fecha_venta', '-id')[:5]
     ultimas_ventas_serializer = VentaSerializer(ultimas_ventas, many=True)
 
     data = {
-        'ventas_dia': ventas_dia,
-        'ventas_mes': ventas_mes,
+        'ventas_dia': float(ventas_dia),
+        'ventas_mes': float(ventas_mes),
         'pedidos_pendientes': pedidos_pendientes,
         'ordenes_atrasadas': ordenes_atrasadas,
-        'saldo_caja': saldo_caja,
+        'saldo_caja': float(saldo_caja),
         'ultimas_ventas': ultimas_ventas_serializer.data
     }
     return Response(data)
@@ -166,19 +162,41 @@ def sales_chart_data(request):
     user = request.user
 
     ventas = Venta.objects.exclude(estado='anulado')
-    
-    from django.db.models import Count, ExpressionWrapper, DecimalField, F
-    
+
+    from django.db.models import Count, ExpressionWrapper, DecimalField, F, OuterRef, Subquery, IntegerField, Value
+    from django.db.models.functions import Coalesce
+
+    # Subquery (no aggregate directo sobre el queryset externo) para poder luego volver a
+    # agregar con Sum() al agrupar por mes sin que Django rechace "aggregate sobre aggregate".
+    num_vendedores_sq = Venta.objects.filter(pk=OuterRef('pk')).annotate(
+        c=Count('vendedores_compartidos')
+    ).values('c')[:1]
+
+    vendedor_param = request.GET.get('vendedor') or request.GET.get('id_vendedor')
     if user.role == 'vendedor':
         ventas = ventas.filter(Q(vendedor=user) | Q(vendedores_compartidos=user)).distinct()
         ventas = ventas.annotate(
-            num_vendedores=Count('vendedores_compartidos') + 1
+            num_vendedores=Coalesce(Subquery(num_vendedores_sq, output_field=IntegerField()), Value(0)) + 1
         ).annotate(
             valor_calculado=ExpressionWrapper(
                 F('valor_total') / F('num_vendedores'),
-                output_field=DecimalField(max_digits=10, decimal_places=2)
+                output_field=DecimalField(max_digits=12, decimal_places=2)
             )
         )
+    elif vendedor_param:
+        try:
+            v_id = int(vendedor_param)
+            ventas = ventas.filter(Q(vendedor_id=v_id) | Q(vendedores_compartidos__id=v_id)).distinct()
+            ventas = ventas.annotate(
+                num_vendedores=Coalesce(Subquery(num_vendedores_sq, output_field=IntegerField()), Value(0)) + 1
+            ).annotate(
+                valor_calculado=ExpressionWrapper(
+                    F('valor_total') / F('num_vendedores'),
+                    output_field=DecimalField(max_digits=12, decimal_places=2)
+                )
+            )
+        except ValueError:
+            ventas = ventas.annotate(valor_calculado=F('valor_total'))
     else:
         ventas = ventas.annotate(valor_calculado=F('valor_total'))
 
@@ -249,12 +267,14 @@ class UserDetailView(APIView):
                 rp = RolePermission.objects.filter(role=user.role).first()
                 if rp and isinstance(rp.permissions, list):
                     perms = rp.permissions
-                elif user.role == 'transportador':
-                    perms = ['VER_REMISIONES']
-            except Exception as e:
-                print(f"Error cargando permisos de rol para {user.username}: {e}")
-                if user.role == 'transportador':
-                    perms = ['VER_REMISIONES']
+            except Exception:
+                logger.exception("Error cargando permisos de rol para %s", user.username)
+
+            if user.role == 'transportador' and 'VER_REMISIONES' not in perms:
+                # El transportador siempre puede ver sus remisiones asignadas (ver
+                # RemisionSuministroViewSet.get_permissions), sin importar la configuración
+                # de RolePermission. Se refleja aquí para que el frontend no quede desalineado.
+                perms = perms + ['VER_REMISIONES']
 
         return Response({
             "id": user.id,
@@ -295,8 +315,14 @@ def cambiar_contrasena(request):
     user = request.user
     old_password = request.data.get("old_password")
     new_password = request.data.get("new_password")
+    if not new_password:
+        return Response({"error": "La nueva contraseña es obligatoria."}, status=status.HTTP_400_BAD_REQUEST)
     if not user.check_password(old_password):
         return Response({"error": "La contraseña actual es incorrecta."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        validate_password(new_password, user)
+    except DjangoValidationError as e:
+        return Response({"error": " ".join(e.messages)}, status=status.HTTP_400_BAD_REQUEST)
     user.set_password(new_password)
     user.save()
     return Response({"message": "Contraseña actualizada correctamente."}, status=status.HTTP_200_OK)
@@ -424,8 +450,12 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
 class DetallePedidoViewSet(viewsets.ModelViewSet):
     queryset = DetallePedido.objects.select_related('referencia', 'orden').all()
     serializer_class = DetallePedidoSerializer
-    permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
+
+    def get_permissions(self):
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), check_feature_permission('EDITAR_ESTADO_ORDEN')()]
+        return [IsAuthenticated(), check_feature_permission('VER_ORDENES')()]
 
 # ... (El resto del archivo no cambia, lo incluyo para que sea el código completo) ...
 
@@ -513,7 +543,7 @@ def listar_pedidos(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_ORDENES')])
 def detalle_orden_completo(request, orden_id):
     """Endpoint ligero para obtener los detalles completos de una OP (para NuevaFactura).
     Devuelve detalles del pedido + telas_asociadas. Usado de forma lazy al seleccionar la OP."""
@@ -533,7 +563,7 @@ def detalle_orden_completo(request, orden_id):
         return Response({"error": "Error al obtener la orden"}, status=500)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_ORDENES')])
 def detalles_pedido(request, orden_id):
     try:
         # OPTIMIZACIÓN: Usar `select_related` y `only` para traer solo lo necesario
@@ -551,7 +581,8 @@ def detalles_pedido(request, orden_id):
         detalles_data = [{
             "cantidad": d.cantidad,
             "especificaciones": d.especificaciones,
-            "referencia": d.referencia.nombre if d.referencia else "N/A"
+            "referencia": d.referencia.nombre if d.referencia else "N/A",
+            "referencia_nombre": d.referencia.nombre if d.referencia else "N/A"
         } for d in detalles]
 
         # --- NUEVO: Obtener los PedidoTela asociados a esta orden ---
@@ -615,6 +646,8 @@ class CrearVentaClienteView(APIView):
             vendedor = CustomUser.objects.get(pk=venta_data.get('id_vendedor'), is_active=True)
         except CustomUser.DoesNotExist:
             raise ValidationError({"vendedor": "Vendedor no encontrado."})
+        except (TypeError, ValueError):
+            raise ValidationError({"vendedor": "El id del vendedor no es válido."})
         venta_data.update({'cliente': cliente.id, 'vendedor': vendedor.id, 'estado': 'pendiente', 'saldo': venta_data.get('valor_total', 0)})
         venta_serializer = VentaSerializer(data=venta_data)
         venta_serializer.is_valid(raise_exception=True)
@@ -667,8 +700,9 @@ class EditarVentaClienteView(APIView):
             return Response({"message": "Venta actualizada.", "venta_id": venta.id}, status=200)
         except Venta.DoesNotExist:
             return Response({"error": "Venta no encontrada."}, status=404)
-        except Exception as e:
-            return Response({"error": str(e)}, status=500)
+        except Exception:
+            logging.getLogger(__name__).exception("Error inesperado editando venta %s", id)
+            return Response({"error": "Error interno del servidor."}, status=500)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_VENTAS')])
@@ -676,10 +710,19 @@ def listar_ventas(request):
     # OPTIMIZACIÓN: Iniciar con la consulta optimizada (select_related + prefetch_related)
     ventas = Venta.objects.select_related('cliente', 'vendedor').prefetch_related('vendedores_compartidos').all()
 
+    # Un vendedor solo puede ver sus propias ventas (propias o compartidas), sin importar
+    # los filtros/búsqueda que envíe el cliente. Mismo patrón que listar_pedidos().
+    if request.user.role == 'vendedor':
+        ventas = ventas.filter(Q(vendedor=request.user) | Q(vendedores_compartidos=request.user)).distinct()
+
     search_query = request.GET.get('search')
 
     if search_query:
-        ventas = ventas.filter(Q(cliente__nombre__icontains=search_query) | Q(id__icontains=search_query))
+        # Búsqueda exacta por ID cuando el término es numérico (id__icontains fuerza CAST + full scan)
+        search_filter = Q(cliente__nombre__icontains=search_query)
+        if str(search_query).isdigit():
+            search_filter |= Q(id=int(search_query))
+        ventas = ventas.filter(search_filter)
     else:
         # ... (lógica de filtrado por fecha, estado, etc. se mantiene igual)
         periods_param = request.GET.get('periods')
@@ -826,7 +869,7 @@ def listar_ventas(request):
     return Response(serializer.data)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_VENTAS')])
 def detalle_venta(request, id):
     try:
         # OPTIMIZACIÓN: Usar select_related para joins y prefetch_related para relaciones inversas/many-to-many
@@ -837,18 +880,24 @@ def detalle_venta(request, id):
             'observaciones__autor', 
             # 'recibos', # REMOVED FOR PERFORMANCE
             'remisiones', 
-            'ordenes_pedido__proveedor', 
-            'ordenes_pedido__usuario', 
+            'ordenes_pedido__proveedor',
+            'ordenes_pedido__usuario',
+            'ordenes_pedido__pedidos_telas__detalles',
             'cliente__observaciones'
         ).get(id=id)
-        
+
+        if request.user.role == 'vendedor':
+            es_propia = venta.vendedor_id == request.user.id or venta.vendedores_compartidos.filter(id=request.user.id).exists()
+            if not es_propia:
+                return Response({"error": "No tienes permiso para ver esta venta."}, status=status.HTTP_403_FORBIDDEN)
+
         serializer = VentaDetalleSerializer(venta)
         return Response(serializer.data)
     except Venta.DoesNotExist:
         return Response({"error": "Venta no encontrada."}, status=404)
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_VENTAS')])
 def anadir_observacion_venta(request, id):
     try:
         venta = Venta.objects.get(id=id)
@@ -860,13 +909,13 @@ def anadir_observacion_venta(request, id):
         return Response({"error": "Venta no encontrada."}, status=404)
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_VENTAS')])
 def anadir_remision_a_venta(request, id):
     try:
         venta = Venta.objects.get(id=id)
         if Remision.objects.filter(codigo=request.data.get('codigo')).exists():
             return Response({"error": "El código de remisión ya existe."}, status=400)
-        serializer = RemisionSerializer(data={'venta': venta.id, **request.data})
+        serializer = RemisionSerializer(data={**request.data, 'venta': venta.id})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=201)
@@ -874,7 +923,7 @@ def anadir_remision_a_venta(request, id):
         return Response({"error": "Venta no encontrada."}, status=404)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_VENTAS')])
 def ver_remisiones_de_venta(request, id):
     try:
         venta = Venta.objects.get(id=id)
@@ -884,10 +933,8 @@ def ver_remisiones_de_venta(request, id):
     except Venta.DoesNotExist:
         return Response({"error": "Venta no encontrada."}, status=404)
 
-class ClientePagination(PageNumberPagination):
-    page_size = 30
-    page_size_query_param = 'page_size'
-    max_page_size = 100
+class ClientePagination(StandardResultsSetPagination):
+    pass
 
 class ClienteFilter(django_filters.FilterSet):
     query = django_filters.CharFilter(method='filter_by_query', label='Buscar')
@@ -901,7 +948,10 @@ class ClienteFilter(django_filters.FilterSet):
         if not value or not str(value).strip():
             return queryset
         val = str(value).strip()
-        return queryset.filter(Q(id__icontains=val) | Q(nombre__icontains=val) | Q(cedula__icontains=val))
+        q = Q(nombre__icontains=val) | Q(cedula__icontains=val)
+        if val.isdigit():
+            q |= Q(id=int(val))
+        return queryset.filter(q)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_CLIENTES')])
@@ -934,7 +984,7 @@ def obtener_cliente(request, id):
         return Response(serializer.data)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_CLIENTES')])
 def ventas_y_observaciones_cliente(request, id):
     try:
         cliente = Cliente.objects.prefetch_related('ventas', 'observaciones').get(id=id)
@@ -947,7 +997,7 @@ def ventas_y_observaciones_cliente(request, id):
         return Response({"error": "Cliente no encontrado."}, status=404)
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, check_feature_permission('VER_CLIENTES')])
 def anadir_observacion_cliente(request, id):
     try:
         cliente = Cliente.objects.get(id=id)
@@ -958,10 +1008,8 @@ def anadir_observacion_cliente(request, id):
     except Cliente.DoesNotExist:
         return Response({"error": "Cliente no encontrado."}, status=404)
 
-class CajaPagination(PageNumberPagination):
-    page_size = 30
-    page_size_query_param = 'page_size'
-    max_page_size = 100
+class CajaPagination(StandardResultsSetPagination):
+    pass
 
 from django.db.models import Q, F, Sum, Case, When, DecimalField
 
@@ -999,13 +1047,22 @@ def caja_view(request):
         fecha_fin = request.GET.get('fecha_fin')
         query = request.GET.get('query')
         if fecha_inicio:
-            start_datetime = datetime.combine(datetime.strptime(fecha_inicio, '%Y-%m-%d').date(), time.min)
+            try:
+                start_datetime = datetime.combine(datetime.strptime(fecha_inicio, '%Y-%m-%d').date(), time.min)
+            except (ValueError, TypeError):
+                return Response({"error": "El parámetro fecha_inicio debe tener formato YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
             movimientos = movimientos.filter(fecha_hora__gte=start_datetime)
         if fecha_fin:
-            end_datetime = datetime.combine(datetime.strptime(fecha_fin, '%Y-%m-%d').date(), time.max)
+            try:
+                end_datetime = datetime.combine(datetime.strptime(fecha_fin, '%Y-%m-%d').date(), time.max)
+            except (ValueError, TypeError):
+                return Response({"error": "El parámetro fecha_fin debe tener formato YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
             movimientos = movimientos.filter(fecha_hora__lte=end_datetime)
         if query:
-            movimientos = movimientos.filter(Q(id__icontains=query) | Q(concepto__icontains=query))
+            caja_filter = Q(concepto__icontains=query)
+            if str(query).isdigit():
+                caja_filter |= Q(id=int(query))
+            movimientos = movimientos.filter(caja_filter)
         
         paginator = CajaPagination()
         page = paginator.paginate_queryset(movimientos, request)
@@ -1033,10 +1090,8 @@ def caja_view(request):
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-class ReciboCajaPagination(PageNumberPagination):
-    page_size = 30
-    page_size_query_param = 'page_size'
-    max_page_size = 100
+class ReciboCajaPagination(StandardResultsSetPagination):
+    pass
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_RECIBOS')])
@@ -1056,9 +1111,6 @@ def listar_recibos_caja(request):
     venta_id_param = request.GET.get('venta_id') or request.GET.get('venta')
     query = request.GET.get('query')
 
-    logger.info(f"Listar Recibos Caja - Full Params: {request.GET}")
-    logger.info(f"Listar Recibos Caja - Parsed: venta_id={venta_id_param}, query={query}")
-
     if fecha_inicio:
         recibos = recibos.filter(fecha__gte=fecha_inicio)
     if fecha_fin:
@@ -1069,20 +1121,20 @@ def listar_recibos_caja(request):
         try:
             v_id = int(venta_id_param)
             recibos = recibos.filter(venta__id=v_id)
-            logger.info(f"Filtering recibos by venta_id={v_id}. Count before pagination: {recibos.count()}")
         except ValueError:
             logger.warning(f"Invalid venta_id parameter: {venta_id_param}")
     if query:
-        recibos = recibos.filter(Q(id__icontains=query) | Q(venta__id__icontains=query) | Q(venta__cliente__nombre__icontains=query))
+        recibos_filter = Q(venta__cliente__nombre__icontains=query)
+        if str(query).isdigit():
+            recibos_filter |= Q(id=int(query)) | Q(venta__id=int(query))
+        recibos = recibos.filter(recibos_filter)
 
     paginator = ReciboCajaPagination()
     page = paginator.paginate_queryset(recibos, request)
     return paginator.get_paginated_response(ReciboCajaSerializer(page, many=True).data)
 
-class ComprobanteEgresoPagination(PageNumberPagination):
-    page_size = 30
-    page_size_query_param = 'page_size'
-    max_page_size = 100
+class ComprobanteEgresoPagination(StandardResultsSetPagination):
+    pass
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_COMPROBANTES_EGRESO')])
@@ -1116,7 +1168,6 @@ def listar_comprobantes_egreso(request):
 @transaction.atomic
 def crear_comprobante_egreso(request):
     from suministros.models import FacturaProveedor
-    logger.info(f"Received data for crear_comprobante_egreso: {request.data}")
     try:
         facturas_ids = request.data.get('facturas_ids', [])
         
@@ -1128,6 +1179,12 @@ def crear_comprobante_egreso(request):
             facturas = FacturaProveedor.objects.filter(id__in=facturas_ids)
             ids_str = ', '.join(str(f.id_manual) for f in facturas)
             data['concepto'] = f"Pago fact. {ids_str}"
+            
+        # Determine estado based on medio_pago
+        if data.get('medio_pago') == 'Efectivo':
+            data['estado'] = 'Pagado'
+        else:
+            data['estado'] = 'Por Confirmar Pago'
         
         serializer = ComprobanteEgresoSerializer(data=data)
         serializer.is_valid(raise_exception=True)
@@ -1142,13 +1199,18 @@ def crear_comprobante_egreso(request):
             )
         
         if egreso.medio_pago == 'Efectivo':
-            proveedor_nombre = egreso.proveedor.nombre_empresa
+            prov = egreso.proveedor
+            recibido_por = request.data.get('recibido_por')
+            if recibido_por and str(recibido_por).strip():
+                prov_nombre = str(recibido_por).strip()
+            else:
+                prov_nombre = prov.nombre_encargado if (prov and prov.nombre_encargado and prov.nombre_encargado != 'N/A') else (prov.nombre_empresa if prov else 'Proveedor')
             if facturas_ids:
                 facturas = FacturaProveedor.objects.filter(id__in=facturas_ids)
                 ids_str = ', '.join(str(f.id_manual) for f in facturas)
-                concepto_caja = f"Pago a {proveedor_nombre}, Fact. {ids_str}"
+                concepto_caja = f"Pago a {prov_nombre}, CE. {egreso.id}, Fact. {ids_str}"
             else:
-                concepto_caja = f"Pago a {proveedor_nombre}, CE. {egreso.id}"
+                concepto_caja = f"Pago a {prov_nombre}, CE. {egreso.id}"
             caja_data = {
                 'concepto': concepto_caja,
                 'valor': egreso.valor,
@@ -1158,9 +1220,32 @@ def crear_comprobante_egreso(request):
             caja_serializer.is_valid(raise_exception=True)
             caja_serializer.save()
         return Response(serializer.data, status=201)
-    except Exception as e:
-        logger.error(f"Error creating comprobante de egreso: {e}", exc_info=True)
-        return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except ValidationError as e:
+        detail = getattr(e, 'detail', str(e))
+        if isinstance(detail, dict):
+            return Response(detail, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": str(detail)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("Error inesperado creando comprobante de egreso")
+        return Response({"detail": "Error interno del servidor."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated, check_feature_permission('APROBAR_EGRESO')])
+@transaction.atomic
+def confirmar_comprobante_egreso(request, id):
+    try:
+        egreso = ComprobanteEgreso.objects.select_for_update().get(id=id)
+    except ComprobanteEgreso.DoesNotExist:
+        return Response({"error": "Comprobante de Egreso no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+    if egreso.estado == 'Pagado':
+        return Response({"message": "El comprobante ya se encuentra pagado."}, status=status.HTTP_200_OK)
+
+    egreso.estado = 'Pagado'
+    egreso.save(update_fields=['estado'])
+
+    return Response({"message": "Transferencia de egreso confirmada exitosamente.", "id": egreso.id, "estado": "Pagado"}, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -1177,8 +1262,8 @@ def crear_recibo_caja(request):
     if fecha_str_input:
         try:
             fecha_creacion = datetime.strptime(fecha_str_input, '%Y-%m-%d').date()
-        except ValueError:
-            fecha_creacion = date.today()
+        except (ValueError, TypeError):
+            return Response({"error": "La fecha debe tener formato YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
     else:
         fecha_creacion = date.today()
         
@@ -1324,7 +1409,11 @@ class PedidoTelaViewSet(viewsets.ModelViewSet):
 class DetallePedidoTelaViewSet(viewsets.ModelViewSet):
     queryset = DetallePedidoTela.objects.all()
     serializer_class = DetallePedidoTelaSerializer
-    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), check_feature_permission('EDITAR_ESTADO_TELA_ORDEN')()]
+        return [IsAuthenticated(), check_feature_permission('VER_PEDIDOS_TELAS')()]
 
 
 @api_view(['PATCH'])
@@ -1441,18 +1530,31 @@ def listar_transportadores(request):
     data = [{"id": t.id, "first_name": t.first_name, "username": t.username} for t in transportadores]
     return Response(data)
 
-@api_view(['GET'])
-@permission_classes([])
-def test_view(request):
-    return Response({"message": "Test successful"}, status=status.HTTP_200_OK)
-
 @api_view(['PUT', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def editar_eliminar_observacion_venta(request, obs_id):
     try:
-        observacion = ObservacionVenta.objects.get(id=obs_id)
+        observacion = ObservacionVenta.objects.select_related('venta').get(id=obs_id)
     except ObservacionVenta.DoesNotExist:
         return Response({'error': 'Observación no encontrada.'}, status=404)
+
+    user = request.user
+    venta = observacion.venta
+    es_autor = observacion.autor_id == user.id
+    es_admin = user.role == 'administrador'
+
+    if user.role == 'vendedor':
+        # EDITAR_VENTA es un permiso de ROL compartido por todos los vendedores (no por venta
+        # individual), así que aquí NO debe usarse como bypass: solo el autor de la nota o el
+        # vendedor dueño (propio o compartido) de esa venta puntual puede editarla/borrarla.
+        es_vendedor_dueno = venta.vendedor_id == user.id or venta.vendedores_compartidos.filter(id=user.id).exists()
+        autorizado = es_admin or es_autor or es_vendedor_dueno
+    else:
+        tiene_permiso_edicion = check_feature_permission('EDITAR_VENTA')().has_permission(request, None)
+        autorizado = es_admin or es_autor or tiene_permiso_edicion
+
+    if not autorizado:
+        return Response({'error': 'No tienes permiso para modificar esta observación.'}, status=403)
 
     if request.method == 'PUT':
         texto = request.data.get('texto')
@@ -1473,6 +1575,14 @@ def editar_eliminar_observacion_cliente(request, obs_id):
         observacion = ObservacionCliente.objects.get(id=obs_id)
     except ObservacionCliente.DoesNotExist:
         return Response({'error': 'Observación no encontrada.'}, status=404)
+
+    user = request.user
+    es_autor = observacion.autor_id == user.id
+    es_admin = user.role == 'administrador'
+    tiene_permiso_edicion = check_feature_permission('EDITAR_CLIENTE')().has_permission(request, None)
+
+    if not (es_admin or es_autor or tiene_permiso_edicion):
+        return Response({'error': 'No tienes permiso para modificar esta observación.'}, status=403)
 
     if request.method == 'PUT':
         texto = request.data.get('texto')

@@ -1,4 +1,5 @@
 import random
+from django.db import transaction
 from rest_framework import serializers
 from .models import (
     Categoria, Subcategoria, Inventario,
@@ -229,32 +230,43 @@ class InventarioSerializer(serializers.ModelSerializer):
         return obj.zona.nombre if obj.zona else None
 
     def get_sede_nombre(self, obj):
-        return obj.zona.sede.nombre if obj.zona and obj.zona.sede else None
+        try:
+            return obj.zona.sede.nombre if obj.zona and obj.zona.sede else None
+        except Exception:
+            return None
 
     def get_costo_total(self, obj):
-        base = float(obj.costo_especifico or 0)
-        tela = 0
-        if getattr(obj, 'lleva_tela', False):
-            tela = float(obj.tela_costo_metro or 0) * float(obj.tela_cantidad_metros or 0)
-        adicionales = 0
         try:
-            # Check if relation exists to avoid crashing before migration
-            adicionales = sum(float(c.valor) for c in obj.costos_adicionales.all())
+            base = float(obj.costo_especifico or 0)
+            tela = 0
+            if getattr(obj, 'lleva_tela', False):
+                tela = float(obj.tela_costo_metro or 0) * float(obj.tela_cantidad_metros or 0)
+            adicionales = 0
+            try:
+                adicionales = sum(float(c.valor) for c in obj.costos_adicionales.all())
+            except Exception:
+                pass
+            return round(base + tela + adicionales, 2)
         except Exception:
-            pass
-        return round(base + tela + adicionales, 2)
+            return 0.0
 
     def get_vendedor_nombre(self, obj):
-        if obj.venta:
-            vendedores = []
-            if obj.venta.vendedor:
-                nombre = f"{obj.venta.vendedor.first_name} {obj.venta.vendedor.last_name}".strip() or obj.venta.vendedor.username
-                vendedores.append(nombre)
-            for vc in obj.venta.vendedores_compartidos.all():
-                nombre = f"{vc.first_name} {vc.last_name}".strip() or vc.username
-                if nombre not in vendedores:
-                    vendedores.append(nombre)
-            return " y ".join(vendedores) if vendedores else None
+        try:
+            if getattr(obj, 'venta', None):
+                vendedores = []
+                vendedor = getattr(obj.venta, 'vendedor', None)
+                if vendedor:
+                    nombre = f"{getattr(vendedor, 'first_name', '')} {getattr(vendedor, 'last_name', '')}".strip() or getattr(vendedor, 'username', '')
+                    if nombre:
+                        vendedores.append(nombre)
+                if hasattr(obj.venta, 'vendedores_compartidos'):
+                    for vc in obj.venta.vendedores_compartidos.all():
+                        nombre = f"{getattr(vc, 'first_name', '')} {getattr(vc, 'last_name', '')}".strip() or getattr(vc, 'username', '')
+                        if nombre and nombre not in vendedores:
+                            vendedores.append(nombre)
+                return " y ".join(vendedores) if vendedores else None
+        except Exception:
+            return None
         return None
 
     def to_representation(self, instance):
@@ -357,6 +369,22 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
 # DetalleFactura (kept for backward compatibility with existing records)
 # ---------------------------------------------------------------------------
 
+class DetalleFacturaListSerializer(serializers.ListSerializer):
+    """Precarga las Ventas referenciadas por venta_id (CharField, no FK)
+    en una sola query para evitar N+1 en get_vendedor_nombre."""
+    def to_representation(self, data):
+        from ordenes.models import Venta
+        items = list(data.all() if hasattr(data, 'all') else data)
+        venta_ids = [d.venta_id for d in items if d.venta_id]
+        self._ventas_cache = {
+            str(v.id): v
+            for v in Venta.objects.filter(id__in=venta_ids)
+            .select_related('vendedor')
+            .prefetch_related('vendedores_compartidos')
+        }
+        return super().to_representation(items)
+
+
 class DetalleFacturaSerializer(serializers.ModelSerializer):
     referencia_nombre = serializers.SerializerMethodField()
     categoria_nombre = serializers.SerializerMethodField()
@@ -367,6 +395,7 @@ class DetalleFacturaSerializer(serializers.ModelSerializer):
         model = DetalleFactura
         fields = '__all__'
         read_only_fields = ('factura',)
+        list_serializer_class = DetalleFacturaListSerializer
 
     def get_referencia_nombre(self, obj):
         return obj.referencia.nombre if obj.referencia else None
@@ -380,8 +409,14 @@ class DetalleFacturaSerializer(serializers.ModelSerializer):
     def get_vendedor_nombre(self, obj):
         if obj.venta_id:
             try:
-                from ordenes.models import Venta
-                venta = Venta.objects.get(id=obj.venta_id)
+                ventas_cache = getattr(self.parent, '_ventas_cache', None) if self.parent is not None else None
+                if ventas_cache is not None:
+                    venta = ventas_cache.get(str(obj.venta_id))
+                    if venta is None:
+                        return None
+                else:
+                    from ordenes.models import Venta
+                    venta = Venta.objects.get(id=obj.venta_id)
                 vendedores = []
                 if venta.vendedor:
                     nombre = f"{venta.vendedor.first_name} {venta.vendedor.last_name}".strip() or venta.vendedor.username
@@ -606,6 +641,7 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
             'detalles',         # read-only fallback (salida histórica)
         ]
 
+    @transaction.atomic
     def create(self, validated_data):
         productos_data = validated_data.pop('productos', [])
         factura = FacturaProveedor.objects.create(**validated_data)
@@ -669,10 +705,7 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
         remision = super().create(validated_data)
         if inventario_items_data:
             remision.inventario_items.set(inventario_items_data)
-            # Marcar el inventario como "Por despachar"
-            for item in inventario_items_data:
-                item.disponibilidad = 'por_despachar'
-                item.save()
+            # La disponibilidad ('por_despachar') la actualiza perform_create del viewset en bulk
         return remision
 
     def update(self, instance, validated_data):

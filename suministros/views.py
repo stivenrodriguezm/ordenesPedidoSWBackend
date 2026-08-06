@@ -16,7 +16,7 @@ from .serializers import (
     SedeSerializer, ZonaSerializer, HistorialTrasladoSerializer,
     CostoAdicionalInventarioSerializer, ItemInventarioTelaCueroSerializer
 )
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, BasePermission
 from ordenes.permissions import check_feature_permission
 
 class CategoriaViewSet(viewsets.ModelViewSet):
@@ -46,6 +46,15 @@ class SedeViewSet(viewsets.ModelViewSet):
     queryset = Sede.objects.all()
     serializer_class = SedeSerializer
 
+    def destroy(self, request, *args, **kwargs):
+        sede = self.get_object()
+        if sede.zonas.exists():
+            return Response(
+                {'error': 'No se puede eliminar una sede que tiene zonas asociadas. Elimina o reasigna las zonas primero.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        return super().destroy(request, *args, **kwargs)
+
 class ZonaViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
@@ -55,6 +64,15 @@ class ZonaViewSet(viewsets.ModelViewSet):
     serializer_class = ZonaSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['sede']
+
+    def destroy(self, request, *args, **kwargs):
+        zona = self.get_object()
+        if zona.items_inventario.exists():
+            return Response(
+                {'error': 'No se puede eliminar una zona que tiene inventario asignado. Traslada el inventario a otra zona primero.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        return super().destroy(request, *args, **kwargs)
 
 class HistorialTrasladoViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = HistorialTraslado.objects.select_related('item_inventario', 'zona_origen', 'zona_destino', 'usuario').all().order_by('-fecha')
@@ -88,12 +106,17 @@ class InventarioViewSet(viewsets.ModelViewSet):
         'zona',
         'zona__sede',
     ).prefetch_related(
-        'costos_adicionales'
+        'costos_adicionales',
+        'telas_cueros',
+        'venta__vendedores_compartidos',
     )
     serializer_class = InventarioSerializer
 
     def get_queryset(self):
-        return self.queryset.all()
+        try:
+            return self.queryset.all()
+        except Exception:
+            return Inventario.objects.all()
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['disponibilidad', 'categoria', 'subcategoria', 'referencia__proveedor']
     search_fields = ['id_referencia', 'referencia__nombre', 'variacion', 'factura_manual']
@@ -192,6 +215,8 @@ class FacturaProveedorViewSet(viewsets.ModelViewSet):
                 'items_inventario__categoria',
                 'items_inventario__subcategoria',
                 'items_inventario__venta',
+                'items_inventario__venta__vendedor',
+                'items_inventario__venta__vendedores_compartidos',
             )
         return qs.all()
         
@@ -208,6 +233,13 @@ class FacturaProveedorViewSet(viewsets.ModelViewSet):
     ordering = ['-fecha_factura', '-id']
 
 class DetalleFacturaViewSet(viewsets.ModelViewSet):
+    def get_permissions(self):
+        if self.action in ['create']:
+            return [IsAuthenticated(), check_feature_permission('CREAR_FACTURA')()]
+        elif self.action in ['update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), check_feature_permission('EDITAR_FACTURA')()]
+        return [IsAuthenticated(), check_feature_permission('VER_FACTURAS')()]
+
     queryset = DetalleFactura.objects.all()
     serializer_class = DetalleFacturaSerializer
     filter_backends = [DjangoFilterBackend]
@@ -215,10 +247,32 @@ class DetalleFacturaViewSet(viewsets.ModelViewSet):
 
 class RemisionSuministroViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
-        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+        # El transportador siempre puede ver las remisiones que se le asignaron (en cualquier
+        # estado) y actualizarlas — la única acción que le permite partial_update() es marcar
+        # "finalizada". No depende de que un administrador le configure VER_REMISIONES/CREAR_REMISION
+        # manualmente en Gestión de Usuarios.
+        if self.action in ['create', 'destroy']:
             return [IsAuthenticated(), check_feature_permission('CREAR_REMISION')()]
-        return [IsAuthenticated(), check_feature_permission('VER_REMISIONES')()]
-        
+
+        if self.action in ['update', 'partial_update']:
+            class RemisionEditPermission(BasePermission):
+                def has_permission(self, request, view):
+                    if not request.user or not request.user.is_authenticated:
+                        return False
+                    if request.user.role == 'transportador':
+                        return True
+                    return check_feature_permission('CREAR_REMISION')().has_permission(request, view)
+            return [IsAuthenticated(), RemisionEditPermission()]
+
+        class RemisionViewPermission(BasePermission):
+            def has_permission(self, request, view):
+                if not request.user or not request.user.is_authenticated:
+                    return False
+                if request.user.role == 'transportador':
+                    return True
+                return check_feature_permission('VER_REMISIONES')().has_permission(request, view)
+        return [IsAuthenticated(), RemisionViewPermission()]
+
     serializer_class = RemisionSuministroSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['estado', 'vendedor']
@@ -267,6 +321,36 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
             )
         return queryset
 
+    def _es_remision_del_transportador(self, instance, user):
+        if instance.transportador_usuario_id == user.id:
+            return True
+        if user.first_name and instance.transportador and instance.transportador.lower() == user.first_name.lower():
+            return True
+        if instance.transportador and instance.transportador.lower() == (user.username or '').lower():
+            return True
+        return False
+
+    def update(self, request, *args, **kwargs):
+        # OJO: UpdateModelMixin.partial_update() delega en self.update(partial=True), así que
+        # este bloqueo solo debe aplicar a un PUT completo real, no al PATCH ya validado en
+        # partial_update() más abajo.
+        if request.user.role == 'transportador' and not kwargs.get('partial', False):
+            return Response({'error': 'No tienes permiso para realizar esta acción.'}, status=status.HTTP_403_FORBIDDEN)
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        if request.user.role == 'transportador':
+            instance = self.get_object()
+            if not self._es_remision_del_transportador(instance, request.user):
+                return Response({'error': 'No tienes permiso para modificar esta remisión.'}, status=status.HTTP_403_FORBIDDEN)
+            campos_enviados = set(request.data.keys())
+            if campos_enviados - {'estado'} or request.data.get('estado') != 'finalizada':
+                return Response(
+                    {'error': 'Como transportador solo puedes marcar la remisión como "finalizada".'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        return super().partial_update(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         remision = serializer.save()
         # Update associated inventory items to 'por_despachar'
@@ -304,7 +388,6 @@ class GrupoInventarioViewSet(viewsets.ModelViewSet):
         'componentes',
         'componentes__referencia',
         'componentes__categoria',
-        'componentes__subcategoria',
         'componentes__subcategoria',
         'items_inventario',
     )

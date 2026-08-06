@@ -5,9 +5,18 @@ import os
 try:
     # pyrefly: ignore [missing-import]
     from dotenv import load_dotenv
-    load_dotenv()
+    _env_file = Path(__file__).resolve().parent.parent / '.env'
+    load_dotenv(dotenv_path=_env_file, override=True)
 except ImportError:
-    pass
+    # Fallback si python-dotenv no está instalado: parseo manual de .env
+    _env_file = Path(__file__).resolve().parent.parent / '.env'
+    if _env_file.exists():
+        with open(_env_file, 'r', encoding='utf-8') as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith('#') and '=' in _line:
+                    _k, _v = _line.split('=', 1)
+                    os.environ.setdefault(_k.strip(), _v.strip().strip("'\""))
 
 import pymysql
 pymysql.version_info = (1, 4, 3, "final", 0)
@@ -35,26 +44,31 @@ django.utils.timezone.make_aware = _make_aware_safe
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Cargar variables de entorno desde .env directamente (sin depender de python-dotenv)
-_env_file = BASE_DIR / '.env'
-if _env_file.exists():
-    with open(_env_file, 'r', encoding='utf-8') as _f:
-        for _line in _f:
-            _line = _line.strip()
-            if _line and not _line.startswith('#') and '=' in _line:
-                _k, _v = _line.split('=', 1)
-                os.environ[_k.strip()] = _v.strip().strip("'\"")
+# DEBUG: False por defecto; activar solo en desarrollo local con DJANGO_DEBUG=true
+DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() in ('true', '1', 't')
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-9k362@l)2sf4x1pstt7f=js1!y5u8*+ck*z77x=3x#k24j%r)-')
-
-# DEBUG: False in production, True in local development
-DEBUG = os.environ.get('DJANGO_DEBUG', 'True').lower() in ('true', '1', 't')
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
+if not SECRET_KEY:
+    if DEBUG:
+        # Solo para desarrollo local; en producción DJANGO_SECRET_KEY es obligatoria
+        SECRET_KEY = 'django-insecure-dev-only-local-key'
+    else:
+        from django.core.exceptions import ImproperlyConfigured
+        raise ImproperlyConfigured(
+            'La variable de entorno DJANGO_SECRET_KEY es obligatoria cuando DEBUG=False.'
+        )
 
 AUTH_USER_MODEL = 'ordenes.CustomUser'
 
-# Allowed hosts configuration
-ALLOWED_HOSTS = ['*']
+# Allowed hosts: configurar vía ALLOWED_HOSTS="api.ejemplo.com,otro.ejemplo.com"
+ALLOWED_HOSTS = [
+    h.strip()
+    for h in os.environ.get(
+        'ALLOWED_HOSTS', 'localhost,127.0.0.1,api.muebleslottus.com'
+    ).split(',')
+    if h.strip()
+]
 
 # CORS configuration
 CORS_ALLOW_ALL_ORIGINS = False
@@ -63,21 +77,25 @@ CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     'https://app.muebleslottus.com',   # Producción Frontend HTTPS
     'https://api.muebleslottus.com',   # Producción Backend HTTPS
-    'http://app.muebleslottus.com',    # Producción Frontend HTTP
-    'http://localhost:3000',           # Desarrollo local
-    'http://127.0.0.1:3000',          # Desarrollo local (alt)
-    'http://localhost:5173',           # Vite dev
-    'http://127.0.0.1:5173',          # Vite dev (alt)
-    'http://localhost:8000',           # Django admin local
-    'http://127.0.0.1:8000',          # Django admin local (alt)
 ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https://.*\.muebleslottus\.com$",
-    r"^http://.*\.muebleslottus\.com$",
-    r"^http://localhost:[0-9]+$",
-    r"^http://127\.0\.0\.1:[0-9]+$",
 ]
+
+if DEBUG:
+    CORS_ALLOWED_ORIGINS += [
+        'http://localhost:3000',           # Desarrollo local
+        'http://127.0.0.1:3000',          # Desarrollo local (alt)
+        'http://localhost:5173',           # Vite dev
+        'http://127.0.0.1:5173',          # Vite dev (alt)
+        'http://localhost:8000',           # Django admin local
+        'http://127.0.0.1:8000',          # Django admin local (alt)
+    ]
+    CORS_ALLOWED_ORIGIN_REGEXES += [
+        r"^http://localhost:[0-9]+$",
+        r"^http://127\.0\.0\.1:[0-9]+$",
+    ]
 
 CORS_ALLOW_METHODS = [
     'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS',
@@ -98,23 +116,30 @@ CORS_ALLOW_HEADERS = [
 CSRF_TRUSTED_ORIGINS = [
     'https://app.muebleslottus.com',   # Producción Frontend
     'https://api.muebleslottus.com',   # Producción Backend
-    'http://app.muebleslottus.com',
-    'http://localhost:3000',           # Desarrollo local
-    'http://127.0.0.1:3000',          # Desarrollo local (alt)
-    'http://localhost:5173',           # Vite dev
-    'http://127.0.0.1:5173',          # Vite dev (alt)
-    'http://localhost:8000',           # Django admin local
-    'http://127.0.0.1:8000',          # Django admin local (alt)
 ]
+if DEBUG:
+    CSRF_TRUSTED_ORIGINS += [
+        'http://localhost:3000',           # Desarrollo local
+        'http://127.0.0.1:3000',          # Desarrollo local (alt)
+        'http://localhost:5173',           # Vite dev
+        'http://127.0.0.1:5173',          # Vite dev (alt)
+        'http://localhost:8000',           # Django admin local
+        'http://127.0.0.1:8000',          # Django admin local (alt)
+    ]
 
 # Configuración de Reverse Proxy Nginx & SSL en Producción
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
 
-# Cookies seguras en producción
+# Cookies y cabeceras seguras en producción
 if not DEBUG:
     CSRF_COOKIE_SECURE = True
     SESSION_COOKIE_SECURE = True
+    SESSION_COOKIE_HTTPONLY = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    X_FRAME_OPTIONS = 'DENY'
 else:
     CSRF_COOKIE_SECURE = False
     SESSION_COOKIE_SECURE = False
@@ -131,6 +156,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'ordenes',
     'suministros',
+    'paginaweb',
     'django_extensions',
     'django_filters',
 ]
@@ -185,8 +211,8 @@ if _USE_REMOTE_DB:
             'ENGINE': 'django.db.backends.mysql',
             'NAME': active_db_name,
             'USER': active_db_user,
-            'PASSWORD': os.environ.get('DB_PASSWORD', 'Lottus123'),
-            'HOST': os.environ.get('DB_HOST', '195.35.61.108'),
+            'PASSWORD': os.environ['DB_PASSWORD'],
+            'HOST': os.environ['DB_HOST'],
             'PORT': os.environ.get('DB_PORT', '3306'),
             'OPTIONS': {
                 'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
@@ -194,6 +220,7 @@ if _USE_REMOTE_DB:
                 'autocommit': True,
             },
             'CONN_MAX_AGE': 60,  # Reutilizar conexiones hasta 60s para reducir conexiones/hora al hosting
+            'CONN_HEALTH_CHECKS': True,
         }
     }
 else:
@@ -204,8 +231,6 @@ else:
             'NAME': BASE_DIR / 'db_local.sqlite3',
         }
     }
-
-print(f"=== CONECTADO A LA BASE DE DATOS: {DATABASES['default']['NAME']} (USUARIO: {DATABASES['default']['USER']}) ===")
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
@@ -254,8 +279,9 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.UserRateThrottle'
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '100/day',
-        'user': '1000/day'
+        'anon': '1000/day',
+        'user': '10000/day',
+        'login': '10/min',
     }
 }
 
@@ -266,6 +292,7 @@ SIMPLE_JWT = {
 }
 
 def custom_exception_handler(exc, context):
+    import logging
     from rest_framework.views import exception_handler
     from rest_framework.response import Response
     from rest_framework import status
@@ -273,8 +300,13 @@ def custom_exception_handler(exc, context):
     response = exception_handler(exc, context)
 
     if response is None:
+        logging.getLogger('django.request').exception(
+            'Error interno no controlado en %s: %s',
+            context.get('view').__class__.__name__ if context.get('view') else 'vista desconocida',
+            exc,
+        )
         return Response(
-            {"detail": f"Error interno del servidor: {str(exc)}"},
+            {"detail": "Error interno del servidor."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 

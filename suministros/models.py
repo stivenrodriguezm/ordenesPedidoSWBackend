@@ -20,7 +20,7 @@ class Subcategoria(models.Model):
 class GrupoInventario(models.Model):
     nombre = models.CharField(max_length=150)  # "Comedor 6 puestos"
     descripcion = models.TextField(blank=True)
-    activo = models.BooleanField(default=True)
+    activo = models.BooleanField(default=True, db_index=True)
     categoria = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True, blank=True)
     subcategoria = models.ForeignKey(Subcategoria, on_delete=models.SET_NULL, null=True, blank=True)
     observacion = models.TextField(blank=True)
@@ -80,7 +80,7 @@ class Inventario(models.Model):
     variacion = models.CharField(max_length=255, blank=True)
     costo_especifico = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     observacion = models.TextField(blank=True, null=True)
-    disponibilidad = models.CharField(max_length=50, choices=DISPONIBILIDAD_CHOICES, default='cliente')
+    disponibilidad = models.CharField(max_length=50, choices=DISPONIBILIDAD_CHOICES, default='cliente', db_index=True)
     estado_fisico = models.CharField(max_length=50, choices=ESTADO_FISICO_CHOICES, default='buen_estado')
     zona = models.ForeignKey(Zona, on_delete=models.SET_NULL, null=True, blank=True, related_name='items_inventario')
     qr_uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True, null=True)
@@ -139,33 +139,6 @@ class ItemInventarioTelaCuero(models.Model):
         return f"[{self.get_tipo_display()}] {self.referencia or 'Sin ref'} ({self.color or 'Sin color'}) — {self.cantidad}{self.unidad_medida}"
 
 
-def _ensure_telas_cueros_table():
-    from django.db import connection
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS `suministros_iteminventariotelacuero` (
-                  `id` bigint NOT NULL AUTO_INCREMENT,
-                  `tipo` varchar(20) NOT NULL DEFAULT 'tela',
-                  `referencia` varchar(100) DEFAULT NULL,
-                  `color` varchar(50) DEFAULT NULL,
-                  `unidad_medida` varchar(20) NOT NULL DEFAULT 'metro',
-                  `costo_unidad` decimal(12,2) NOT NULL DEFAULT '0.00',
-                  `cantidad` decimal(10,2) NOT NULL DEFAULT '0.00',
-                  `inventario_id` varchar(255) NOT NULL,
-                  PRIMARY KEY (`id`),
-                  KEY `suministros_iteminve_inventario_id_idx` (`inventario_id`),
-                  CONSTRAINT `fk_suministros_iteminve_inventario` FOREIGN KEY (`inventario_id`) REFERENCES `suministros_inventario` (`id_referencia`) ON DELETE CASCADE
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-            """)
-    except Exception as e:
-        pass
-
-try:
-    _ensure_telas_cueros_table()
-except Exception:
-    pass
-
 class CostoAdicionalInventario(models.Model):
     """Costos adicionales por ítem (tela, mano de obra, herrajes, etc.)
     No altera el costo_especifico original proveniente de la factura del proveedor."""
@@ -191,9 +164,9 @@ class FacturaProveedor(models.Model):
     ]
     id_manual = models.CharField(max_length=50, unique=True)
     valor = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    fecha_factura = models.DateTimeField(default=timezone.now)
+    fecha_factura = models.DateTimeField(default=timezone.now, db_index=True)
     fecha_pago = models.DateField(null=True, blank=True)
-    estado = models.CharField(max_length=50, choices=ESTADO_CHOICES, default='pendiente')
+    estado = models.CharField(max_length=50, choices=ESTADO_CHOICES, default='pendiente', db_index=True)
     proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE, related_name='facturas_suministros', null=True, blank=True)
     observaciones = models.TextField(blank=True, null=True)
 
@@ -229,7 +202,7 @@ class HistorialTraslado(models.Model):
     zona_origen = models.ForeignKey(Zona, on_delete=models.SET_NULL, null=True, blank=True, related_name='traslados_origen')
     zona_destino = models.ForeignKey(Zona, on_delete=models.SET_NULL, null=True, blank=True, related_name='traslados_destino')
     usuario = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
-    fecha = models.DateTimeField(default=timezone.now)
+    fecha = models.DateTimeField(default=timezone.now, db_index=True)
     observacion = models.TextField(blank=True, null=True)
 
     def __str__(self):
@@ -243,7 +216,7 @@ class RemisionSuministro(models.Model):
         ('anulada', 'Anulada'),
         ('devuelta', 'Devuelta'),
     ]
-    fecha_creacion = models.DateTimeField(auto_now_add=True)
+    fecha_creacion = models.DateTimeField(auto_now_add=True, db_index=True)
     fecha_entrega = models.DateField(null=True, blank=True)
     hora_desde = models.TimeField(null=True, blank=True)
     hora_hasta = models.TimeField(null=True, blank=True)
@@ -252,7 +225,7 @@ class RemisionSuministro(models.Model):
     barrio = models.CharField(max_length=100, blank=True)
     
     orden_asociada = models.ForeignKey(Venta, on_delete=models.SET_NULL, null=True, blank=True, related_name='remisiones_suministros')
-    estado = models.CharField(max_length=50, choices=ESTADO_CHOICES, default='creada')
+    estado = models.CharField(max_length=50, choices=ESTADO_CHOICES, default='creada', db_index=True)
     
     sin_saldo = models.BooleanField(default=False)
     saldo = models.DecimalField(max_digits=12, decimal_places=2, default=0)

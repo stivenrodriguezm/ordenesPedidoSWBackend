@@ -22,6 +22,8 @@ class Proveedor(models.Model):
     nombre_empresa = models.CharField(max_length=255, unique=True, default='N/A')
     nombre_encargado = models.CharField(max_length=255, default='N/A')
     contacto = models.CharField(max_length=20, default='0')
+    dias_pago = models.IntegerField(default=0)
+    porcentaje_descuento = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
 
     def __str__(self):
         return self.nombre_empresa
@@ -67,14 +69,14 @@ class Venta(models.Model):
     vendedor = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='ventas')
     vendedores_compartidos = models.ManyToManyField(CustomUser, related_name='ventas_compartidas', blank=True)
     traslado = models.BooleanField(default=False)
-    sede = models.CharField(max_length=20, choices=[('Lottus 1', 'Lottus 1'), ('Lottus 2', 'Lottus 2')], default='Lottus 1')
+    sede = models.CharField(max_length=20, choices=[('Lottus 1', 'Lottus 1'), ('Lottus 2', 'Lottus 2')], default='Lottus 1', db_index=True)
     valor_total = models.DecimalField(max_digits=10, decimal_places=2)
     abono = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     saldo = models.DecimalField(max_digits=10, decimal_places=2)
-    fecha_venta = models.DateField(default=timezone.now, db_index=True)
+    fecha_venta = models.DateField(default=timezone.localdate, db_index=True)
     fecha_entrega = models.DateField(db_index=True)
     estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='pendiente', db_index=True)
-    estado_pedidos = models.BooleanField(default=False)
+    estado_pedidos = models.BooleanField(default=False, db_index=True)
 
     def __str__(self):
         return f"Venta {self.id} - {self.cliente.nombre}"
@@ -105,7 +107,7 @@ class OrdenPedido(models.Model):
 
 class DetallePedido(models.Model):
     orden = models.ForeignKey(OrdenPedido, on_delete=models.CASCADE, related_name='detalles')
-    referencia = models.ForeignKey(Referencia, on_delete=models.CASCADE)
+    referencia = models.ForeignKey(Referencia, on_delete=models.SET_NULL, null=True, blank=True)
     cantidad = models.PositiveIntegerField()
     especificaciones = models.TextField()
 
@@ -127,7 +129,7 @@ class ObservacionCliente(models.Model):
 class Remision(models.Model):
     venta = models.ForeignKey(Venta, on_delete=models.CASCADE, related_name='remisiones')
     codigo = models.CharField(max_length=50, unique=True)
-    fecha = models.DateField(default=timezone.now)
+    fecha = models.DateField(default=timezone.localdate)
 
 class ReciboCaja(models.Model):
     id = models.PositiveIntegerField(primary_key=True)
@@ -144,7 +146,7 @@ class ReciboCaja(models.Model):
         ('Confirmado', 'Confirmado'),
     ]
     venta = models.ForeignKey(Venta, on_delete=models.CASCADE, related_name='recibos')
-    fecha = models.DateField(default=timezone.now, db_index=True)
+    fecha = models.DateField(default=timezone.localdate, db_index=True)
     valor = models.DecimalField(max_digits=10, decimal_places=2)
     metodo_pago = models.CharField(max_length=50, choices=MEDIO_PAGO_CHOICES, db_index=True)
     estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='Pendiente', db_index=True)
@@ -172,9 +174,10 @@ class ComprobanteEgreso(models.Model):
         ('Otro', 'Otro'),
     ]
     proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE)
-    fecha = models.DateField(default=timezone.now, db_index=True)
+    fecha = models.DateField(default=timezone.localdate, db_index=True)
     valor = models.DecimalField(max_digits=10, decimal_places=2)
     medio_pago = models.CharField(max_length=20, choices=MEDIO_PAGO_CHOICES, db_index=True)
+    estado = models.CharField(max_length=50, default='Por Confirmar Pago')
     descripcion = models.TextField(blank=True, null=True)
     concepto = models.CharField(max_length=255, default='', blank=True)
 

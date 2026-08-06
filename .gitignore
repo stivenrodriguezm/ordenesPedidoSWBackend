@@ -1,1 +1,11 @@
 venv/
+testenv/
+.env
+*.sqlite3
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store
+*.log
+staticfiles/
+media/

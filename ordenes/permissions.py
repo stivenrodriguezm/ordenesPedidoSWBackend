@@ -1,19 +1,5 @@
 from rest_framework.permissions import BasePermission
 
-class IsAdmin(BasePermission):
-    """
-    Permite acceso solo a los administradores (is_staff=True).
-    """
-    def has_permission(self, request, view):
-        return request.user.is_staff
-
-class IsVendedor(BasePermission):
-    """
-    Permite acceso solo a vendedores (is_staff=False).
-    """
-    def has_permission(self, request, view):
-        return not request.user.is_staff
-
 class IsAdministradorRole(BasePermission):
     """
     Permite acceso solo a usuarios designados explícitamente con el rol administrador.
@@ -39,8 +25,13 @@ def check_feature_permission(feature_code):
             # For other roles (e.g. vendedor, auxiliar, etc.), look up their dynamic permissions
             try:
                 from .models import RolePermission
-                rp = RolePermission.objects.filter(role=request.user.role).first()
-                if rp and feature_code in rp.permissions:
+                # Cachea los permisos del rol en el request para no repetir la query
+                cache = getattr(request, '_role_permissions_cache', None)
+                if cache is None:
+                    rp = RolePermission.objects.filter(role=request.user.role).first()
+                    cache = set(rp.permissions) if rp and isinstance(rp.permissions, list) else set()
+                    request._role_permissions_cache = cache
+                if feature_code in cache:
                     return True
             except Exception:
                 pass

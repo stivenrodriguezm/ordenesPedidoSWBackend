@@ -7,10 +7,10 @@ from .views import (
     listar_ventas, detalle_venta, anadir_observacion_venta, anadir_remision_a_venta,
     ver_remisiones_de_venta, listar_clientes, obtener_cliente, ventas_y_observaciones_cliente,
     anadir_observacion_cliente, listar_recibos_caja, editar_eliminar_observacion_venta, editar_eliminar_observacion_cliente, 
-    listar_comprobantes_egreso, crear_comprobante_egreso, crear_recibo_caja, 
+    listar_comprobantes_egreso, crear_comprobante_egreso, confirmar_comprobante_egreso, crear_recibo_caja, 
     confirmar_recibo, listar_vendedores, UserDetailView, cambiar_contrasena,
     dashboard_stats, sales_chart_data, cierre_caja, listar_ventas_pendientes_ids,
-    vendedor_recent_activity, test_view, listar_transportadores,
+    vendedor_recent_activity, listar_transportadores,
     ProveedorTelaViewSet, PedidoTelaViewSet, DetallePedidoTelaViewSet, DireccionEntregaViewSet, UserViewSet, RolePermissionViewSet
 )
 
@@ -46,6 +46,7 @@ urlpatterns = [
     path('recibos-caja/', listar_recibos_caja, name='listar-recibos-caja'),
     path('comprobantes-egreso/', listar_comprobantes_egreso, name='listar-comprobantes-egreso'),
     path('comprobantes-egreso/crear/', crear_comprobante_egreso, name='crear-comprobante-egreso'),
+    path('comprobantes-egreso/<int:id>/confirmar/', confirmar_comprobante_egreso, name='confirmar-comprobante-egreso'),
     path('recibos-caja/crear/', crear_recibo_caja, name='crear-recibo-caja'),
     path('recibos-caja/<int:id>/confirmar/', confirmar_recibo, name='confirmar-recibo'),
     path('vendedores/', listar_vendedores, name='listar-vendedores'),
@@ -57,7 +58,6 @@ urlpatterns = [
     path('vendedor-recent-activity/', vendedor_recent_activity, name='vendedor-recent-activity'),
     path('get-pendientes-ids/', listar_ventas_pendientes_ids, name='get-pendientes-ids'),
     path('transportadores/', listar_transportadores, name='listar-transportadores'),
-    path('test/', test_view, name='test-view'),
     path('observaciones-venta/<int:obs_id>/', editar_eliminar_observacion_venta, name='editar-eliminar-observacion-venta'),
     path('observaciones-cliente/<int:obs_id>/', editar_eliminar_observacion_cliente, name='editar-eliminar-observacion-cliente'),
 ]
