@@ -43,3 +43,32 @@ class PaginawebSetting(models.Model):
 
     def __str__(self):
         return self.key
+
+
+class AsesorPerfil(models.Model):
+    """
+    Tarjeta digital de un asesor comercial LOTTUS, gestionada desde "Gestión
+    Web" (Paleta de Vendedores). Es contenido independiente del sistema de
+    usuarios/autenticación (CustomUser) — el admin crea, edita y elimina
+    tantas tarjetas como quiera, igual que con los productos web.
+    """
+    id = models.CharField(max_length=255, primary_key=True, default=uuid.uuid4)
+    nombre = models.CharField(max_length=150, verbose_name="Nombre")
+    activo = models.BooleanField(default=False, verbose_name="Visible en la página web")
+    slug = models.SlugField(max_length=160, unique=True, verbose_name="Slug")
+    cargo = models.CharField(max_length=120, blank=True, default="Asesor Comercial", verbose_name="Cargo")
+    whatsapp = models.CharField(max_length=20, blank=True, default="", verbose_name="WhatsApp")
+    foto = models.CharField(max_length=500, blank=True, default="", verbose_name="Foto")
+    bio_corta = models.CharField(max_length=280, blank=True, default="", verbose_name="Bio corta")
+    orden = models.PositiveIntegerField(default=0, verbose_name="Orden")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Fecha de Creación")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="Última Actualización")
+
+    class Meta:
+        db_table = 'paginaweb_asesor_perfil'
+        verbose_name = 'Perfil de Asesor'
+        verbose_name_plural = 'Perfiles de Asesores'
+        ordering = ['orden', 'nombre']
+
+    def __str__(self):
+        return f"{self.nombre} ({self.slug})"

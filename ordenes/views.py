@@ -263,22 +263,30 @@ class UserDetailView(APIView):
     def get(self, request):
         user = request.user
         perms = []
-        if user.role == 'administrador':
-            perms = ['ALL']
-        else:
-            try:
-                from .models import RolePermission
-                rp = RolePermission.objects.filter(role=user.role).first()
-                if rp and isinstance(rp.permissions, list):
-                    perms = rp.permissions
-            except Exception:
-                logger.exception("Error cargando permisos de rol para %s", user.username)
+        try:
+            from .models import RolePermission
+            rp = RolePermission.objects.filter(role=user.role).first()
+            if rp and isinstance(rp.permissions, list):
+                # 'ALL' es un valor heredado; una vez que el rol tiene una
+                # configuración explícita, solo cuentan los permisos listados.
+                perms = [p for p in rp.permissions if p != 'ALL']
+            elif user.role == 'auxiliar':
+                perms = [
+                    'VER_RECIBOS', 'ACCESO_RECIBOS', 'VER_CAJA', 'ACCESO_CAJA',
+                    'VER_COMPROBANTES_EGRESO', 'ACCESO_EGRESOS', 'CREAR_RECIBO',
+                    'APROBAR_RECIBO', 'CREAR_INGRESO_CAJA', 'CREAR_EGRESO_CAJA',
+                    'CREAR_COMPROBANTE_EGRESO', 'APROBAR_EGRESO'
+                ]
+            elif user.role == 'administrador':
+                # Sin configuración explícita todavía: administrador mantiene
+                # acceso total hasta que se configure el rol.
+                perms = ['ALL']
+        except Exception:
+            logger.exception("Error cargando permisos de rol para %s", user.username)
 
-            if user.role == 'transportador' and 'VER_REMISIONES' not in perms:
-                # El transportador siempre puede ver sus remisiones asignadas (ver
-                # RemisionSuministroViewSet.get_permissions), sin importar la configuración
-                # de RolePermission. Se refleja aquí para que el frontend no quede desalineado.
-                perms = perms + ['VER_REMISIONES']
+        if user.role == 'transportador' and 'VER_REMISIONES' not in perms:
+            # El transportador siempre puede ver sus remisiones asignadas
+            perms = perms + ['VER_REMISIONES']
 
         return Response({
             "id": user.id,
@@ -312,6 +320,16 @@ class RolePermissionViewSet(viewsets.ModelViewSet):
                 model = RolePermission
                 fields = ['id', 'role', 'permissions']
         return RolePermissionSerializer
+
+    def perform_update(self, serializer):
+        # Resguardo: el rol administrador nunca debe poder quedar sin acceso
+        # a esta misma pantalla, para no bloquear la única vía de recuperación.
+        if serializer.instance.role == 'administrador':
+            perms = set(serializer.validated_data.get('permissions') or [])
+            perms.update({'VER_USUARIOS', 'GESTION_USUARIOS', 'EDITAR_PERMISOS_SISTEMA'})
+            serializer.save(permissions=list(perms))
+        else:
+            serializer.save()
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -443,6 +461,11 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
         data = request.data.copy()
+        new_estado = data.get('estado')
+        if new_estado == 'anulado' and instance.estado != 'anulado':
+            from .permissions import check_feature_permission
+            if not (request.user.role == 'administrador' or check_feature_permission('ANULAR_ORDEN_PEDIDO')().has_permission(request, self)):
+                return Response({"error": "No tienes permiso para anular órdenes de pedido."}, status=status.HTTP_403_FORBIDDEN)
         # Vendedores solo pueden actualizar el estado de tela
         if request.user.role == 'vendedor':
             data = {'tela': data.get('tela', instance.tela)}
@@ -688,6 +711,11 @@ class EditarVentaClienteView(APIView):
                 submitted_keys = set(venta_data.keys())
                 if not submitted_keys.issubset(allowed_keys):
                     return Response({"error": "Solo tienes permiso para modificar los estados autorizados."}, status=status.HTTP_403_FORBIDDEN)
+
+            if venta_data.get('estado') == 'anulado' and venta.estado != 'anulado':
+                has_anular = check_feature_permission('ANULAR_ORDEN_PEDIDO')().has_permission(request, self)
+                if not (request.user.role == 'administrador' or has_anular):
+                    return Response({"error": "No tienes permiso para anular ventas u órdenes."}, status=status.HTTP_403_FORBIDDEN)
 
             cliente_serializer = ClienteSerializer(venta.cliente, data=cliente_data, partial=True)
             cliente_serializer.is_valid(raise_exception=True)
@@ -1143,25 +1171,44 @@ class ComprobanteEgresoPagination(StandardResultsSetPagination):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_COMPROBANTES_EGRESO')])
 def listar_comprobantes_egreso(request):
-    # OPTIMIZACIÓN: Cargar datos del proveedor relacionados en una sola consulta
     egresos = ComprobanteEgreso.objects.select_related('proveedor').order_by('-fecha', '-id')
 
     fecha_inicio = request.GET.get('fecha_inicio')
     fecha_fin = request.GET.get('fecha_fin')
-    medio_pago = request.GET.get('medio_pago')
-    proveedor_id = request.GET.get('proveedor')
+    medio_pago_param = request.GET.get('medio_pago') or request.GET.get('medios_pago')
+    proveedor_param = request.GET.get('proveedor') or request.GET.get('proveedores')
+    estado_param = request.GET.get('estado') or request.GET.get('estados')
     query = request.GET.get('query')
 
     if fecha_inicio:
         egresos = egresos.filter(fecha__gte=fecha_inicio)
     if fecha_fin:
         egresos = egresos.filter(fecha__lte=fecha_fin)
-    if medio_pago:
-        egresos = egresos.filter(medio_pago=medio_pago)
-    if proveedor_id:
-        egresos = egresos.filter(proveedor__id=proveedor_id)
+
+    if medio_pago_param:
+        medios = [m.strip() for m in medio_pago_param.split(',') if m.strip()]
+        if medios:
+            egresos = egresos.filter(medio_pago__in=medios)
+
+    if estado_param:
+        estados = [e.strip() for e in estado_param.split(',') if e.strip()]
+        if estados:
+            expanded = set(estados)
+            if 'Por Confirmar Pago' in expanded or 'Por Confirmar' in expanded:
+                expanded.add('Por Confirmar Pago')
+                expanded.add('Por Confirmar')
+            egresos = egresos.filter(estado__in=list(expanded))
+
+    if proveedor_param:
+        prov_ids = [p.strip() for p in proveedor_param.split(',') if p.strip().isdigit()]
+        if prov_ids:
+            egresos = egresos.filter(proveedor__id__in=prov_ids)
+
     if query:
-        egresos = egresos.filter(Q(id__icontains=query) | Q(concepto__icontains=query) | Q(descripcion__icontains=query) | Q(proveedor__nombre_empresa__icontains=query))
+        q_filter = Q(concepto__icontains=query) | Q(descripcion__icontains=query) | Q(proveedor__nombre_empresa__icontains=query)
+        if str(query).isdigit():
+            q_filter |= Q(id=int(query))
+        egresos = egresos.filter(q_filter)
 
     paginator = ComprobanteEgresoPagination()
     page = paginator.paginate_queryset(egresos, request)

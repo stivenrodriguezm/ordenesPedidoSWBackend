@@ -262,6 +262,10 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
+# URL pública del sitio (webLottusPrueba) — usada para construir enlaces
+# absolutos (perfil de asesor, QR) fuera del dominio del API.
+PUBLIC_SITE_URL = os.environ.get('PUBLIC_SITE_URL', 'http://localhost:4000').rstrip('/')
+
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

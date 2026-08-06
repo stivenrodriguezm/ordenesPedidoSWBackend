@@ -380,7 +380,7 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
 class GrupoInventarioViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ['create']:
-            return [IsAuthenticated(), check_feature_permission('CREAR_ITEM_INVENTARIO')()]
+            return [IsAuthenticated(), check_feature_permission('CREAR_GRUPO_INVENTARIO')()]
         elif self.action in ['update', 'partial_update', 'destroy']:
             return [IsAuthenticated(), check_feature_permission('EDITAR_ITEM_INVENTARIO')()]
         return [IsAuthenticated(), check_feature_permission('VER_INVENTARIO')()]
