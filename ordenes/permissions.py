@@ -42,6 +42,9 @@ def check_feature_permission(feature_code):
                 return False
 
             try:
+                if request.user.role == 'administrador':
+                    return True
+
                 from .models import RolePermission
                 cache = getattr(request, '_role_permissions_cache', None)
                 if cache is None:

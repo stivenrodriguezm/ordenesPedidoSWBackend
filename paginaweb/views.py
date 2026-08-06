@@ -19,7 +19,7 @@ from .serializers import (
     PaginawebProductoSerializer, PaginawebSettingSerializer, CATEGORIES,
     AsesorPublicSerializer, AsesorAdminSerializer,
 )
-from ordenes.permissions import check_feature_permission
+from ordenes.permissions import IsAdministradorRole
 
 
 @api_view(['GET'])
@@ -108,7 +108,7 @@ def public_settings(request):
 class PaginawebProductoAdminViewSet(viewsets.ModelViewSet):
     queryset = PaginawebProducto.objects.all()
     serializer_class = PaginawebProductoSerializer
-    permission_classes = [permissions.IsAuthenticated, check_feature_permission('ADMINISTRAR_PAGINAWEB')]
+    permission_classes = [permissions.IsAuthenticated, IsAdministradorRole]
 
     def perform_create(self, serializer):
         data = self.request.data
@@ -135,7 +135,7 @@ class PaginawebProductoAdminViewSet(viewsets.ModelViewSet):
 
 
 @api_view(['POST', 'GET'])
-@permission_classes([permissions.IsAuthenticated, check_feature_permission('ADMINISTRAR_PAGINAWEB')])
+@permission_classes([permissions.IsAuthenticated, IsAdministradorRole])
 def admin_settings(request):
     """
     POST /api/paginaweb/admin/settings/
@@ -158,7 +158,7 @@ def admin_settings(request):
 
 
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated, check_feature_permission('ADMINISTRAR_PAGINAWEB')])
+@permission_classes([permissions.IsAuthenticated, IsAdministradorRole])
 def admin_upload_image(request):
     """
     POST /api/paginaweb/upload/
@@ -250,7 +250,7 @@ class AsesorPerfilAdminViewSet(viewsets.ModelViewSet):
     """
     queryset = AsesorPerfil.objects.all()
     serializer_class = AsesorAdminSerializer
-    permission_classes = [permissions.IsAuthenticated, check_feature_permission('ADMINISTRAR_PAGINAWEB')]
+    permission_classes = [permissions.IsAuthenticated, IsAdministradorRole]
 
     def perform_create(self, serializer):
         data = self.request.data
@@ -274,7 +274,7 @@ class AsesorPerfilAdminViewSet(viewsets.ModelViewSet):
 
 
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated, check_feature_permission('ADMINISTRAR_PAGINAWEB')])
+@permission_classes([permissions.IsAuthenticated, IsAdministradorRole])
 def admin_upload_asesor_foto(request):
     """
     POST /api/paginaweb/admin/asesores/upload-foto/
