@@ -161,6 +161,7 @@ class FacturaProveedor(models.Model):
         ('pagada', 'Pagada'),
         ('pendiente', 'Pendiente'),
         ('atrasada', 'Atrasada'),
+        ('pago_en_proceso', 'Pago en proceso'),
     ]
     id_manual = models.CharField(max_length=50, unique=True)
     valor = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -169,6 +170,13 @@ class FacturaProveedor(models.Model):
     estado = models.CharField(max_length=50, choices=ESTADO_CHOICES, default='pendiente', db_index=True)
     proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE, related_name='facturas_suministros', null=True, blank=True)
     observaciones = models.TextField(blank=True, null=True)
+    comprobante_egreso = models.ForeignKey(
+        'ordenes.ComprobanteEgreso',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='facturas',
+    )
 
     def __str__(self):
         return f"Factura {self.id_manual}"

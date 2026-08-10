@@ -180,6 +180,7 @@ class ComprobanteEgreso(models.Model):
     estado = models.CharField(max_length=50, default='Por Confirmar Pago')
     descripcion = models.TextField(blank=True, null=True)
     concepto = models.CharField(max_length=255, default='', blank=True)
+    recibido_por = models.CharField(max_length=255, blank=True, default='')
 
 class ProveedorTela(models.Model):
     nombre_empresa = models.CharField(max_length=255, unique=True, default='N/A')

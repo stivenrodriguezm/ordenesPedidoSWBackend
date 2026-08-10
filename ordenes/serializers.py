@@ -301,10 +301,11 @@ class CajaSerializer(serializers.ModelSerializer):
 
 class ComprobanteEgresoSerializer(serializers.ModelSerializer):
     proveedor_nombre = serializers.SerializerMethodField()
+    facturas_detalle = serializers.SerializerMethodField()
 
     class Meta:
         model = ComprobanteEgreso
-        fields = ['id', 'proveedor', 'proveedor_nombre', 'medio_pago', 'estado', 'valor', 'descripcion', 'fecha', 'concepto']
+        fields = ['id', 'proveedor', 'proveedor_nombre', 'medio_pago', 'estado', 'valor', 'descripcion', 'fecha', 'concepto', 'recibido_por', 'facturas_detalle']
 
     def get_proveedor_nombre(self, obj):
         try:
@@ -312,6 +313,37 @@ class ComprobanteEgresoSerializer(serializers.ModelSerializer):
         except Exception as e:
             logging.error(f'Error serializing proveedor_nombre for ComprobanteEgreso {obj.id}: {e}')
             return None
+
+    def get_facturas_detalle(self, obj):
+        try:
+            facturas = getattr(obj, '_prefetched_facturas', None)
+            if facturas is None:
+                from suministros.models import FacturaProveedor
+                facturas = FacturaProveedor.objects.filter(comprobante_egreso=obj).prefetch_related('productos__referencia')
+            result = []
+            for f in facturas:
+                productos = []
+                for p in f.productos.all():
+                    productos.append({
+                        'id': p.id,
+                        'referencia_nombre': p.referencia.nombre if p.referencia else 'Producto',
+                        'variacion': p.variacion or '',
+                        'costo': str(p.costo),
+                        'observacion': p.observacion or '',
+                    })
+                result.append({
+                    'id': f.id,
+                    'id_manual': f.id_manual,
+                    'fecha_factura': f.fecha_factura.strftime('%Y-%m-%d') if f.fecha_factura else None,
+                    'fecha_pago': str(f.fecha_pago) if f.fecha_pago else None,
+                    'valor': str(f.valor),
+                    'estado': f.estado,
+                    'observaciones': f.observaciones or '',
+                    'productos': productos,
+                })
+            return result
+        except Exception:
+            return []
 
 class ClienteDetalleSerializer(serializers.ModelSerializer):
     observaciones = ObservacionClienteSerializer(many=True, read_only=True)

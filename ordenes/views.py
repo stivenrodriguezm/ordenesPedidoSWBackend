@@ -1171,7 +1171,9 @@ class ComprobanteEgresoPagination(StandardResultsSetPagination):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_COMPROBANTES_EGRESO')])
 def listar_comprobantes_egreso(request):
-    egresos = ComprobanteEgreso.objects.select_related('proveedor').order_by('-fecha', '-id')
+    egresos = ComprobanteEgreso.objects.select_related('proveedor').prefetch_related(
+        'facturas__productos__referencia'
+    ).order_by('-fecha', '-id')
 
     fecha_inicio = request.GET.get('fecha_inicio')
     fecha_fin = request.GET.get('fecha_fin')
@@ -1222,8 +1224,14 @@ def crear_comprobante_egreso(request):
     try:
         facturas_ids = request.data.get('facturas_ids', [])
         
+        # Validate recibido_por is always required
+        recibido_por = (request.data.get('recibido_por') or '').strip()
+        if not recibido_por:
+            return Response({"detail": "El campo 'Quien recibe' es obligatorio."}, status=status.HTTP_400_BAD_REQUEST)
+        
         # Build payload for serializer (exclude facturas_ids)
         data = {k: v for k, v in request.data.items() if k != 'facturas_ids'}
+        data['recibido_por'] = recibido_por
         
         # Auto-generate concepto if facturas selected
         if facturas_ids:
@@ -1232,7 +1240,8 @@ def crear_comprobante_egreso(request):
             data['concepto'] = f"Pago fact. {ids_str}"
             
         # Determine estado based on medio_pago
-        if data.get('medio_pago') == 'Efectivo':
+        is_efectivo = data.get('medio_pago') == 'Efectivo'
+        if is_efectivo:
             data['estado'] = 'Pagado'
         else:
             data['estado'] = 'Por Confirmar Pago'
@@ -1241,21 +1250,30 @@ def crear_comprobante_egreso(request):
         serializer.is_valid(raise_exception=True)
         egreso = serializer.save()
         
-        # Mark facturas as paid
+        # Update facturas: link to CE and set appropriate status
         if facturas_ids:
             today = date.today()
-            FacturaProveedor.objects.filter(id__in=facturas_ids).update(
-                estado='pagada',
-                fecha_pago=today
-            )
-        
-        if egreso.medio_pago == 'Efectivo':
-            prov = egreso.proveedor
-            recibido_por = request.data.get('recibido_por')
-            if recibido_por and str(recibido_por).strip():
-                prov_nombre = str(recibido_por).strip()
+            if is_efectivo:
+                # Cash: immediate payment — facturas go directly to 'pagada'
+                FacturaProveedor.objects.filter(id__in=facturas_ids).update(
+                    estado='pagada',
+                    fecha_pago=today,
+                    comprobante_egreso=egreso,
+                )
             else:
-                prov_nombre = prov.nombre_encargado if (prov and prov.nombre_encargado and prov.nombre_encargado != 'N/A') else (prov.nombre_empresa if prov else 'Proveedor')
+                # Transfer/Other: intermediate state until CE is confirmed
+                FacturaProveedor.objects.filter(id__in=facturas_ids).update(
+                    estado='pago_en_proceso',
+                    comprobante_egreso=egreso,
+                )
+        
+        # Cash: create caja movement
+        if is_efectivo:
+            prov = egreso.proveedor
+            prov_nombre = recibido_por or (
+                prov.nombre_encargado if (prov and prov.nombre_encargado and prov.nombre_encargado != 'N/A')
+                else (prov.nombre_empresa if prov else 'Proveedor')
+            )
             if facturas_ids:
                 facturas = FacturaProveedor.objects.filter(id__in=facturas_ids)
                 ids_str = ', '.join(str(f.id_manual) for f in facturas)
@@ -1285,6 +1303,7 @@ def crear_comprobante_egreso(request):
 @permission_classes([IsAuthenticated, check_feature_permission('APROBAR_EGRESO')])
 @transaction.atomic
 def confirmar_comprobante_egreso(request, id):
+    from suministros.models import FacturaProveedor
     try:
         egreso = ComprobanteEgreso.objects.select_for_update().get(id=id)
     except ComprobanteEgreso.DoesNotExist:
@@ -1295,6 +1314,12 @@ def confirmar_comprobante_egreso(request, id):
 
     egreso.estado = 'Pagado'
     egreso.save(update_fields=['estado'])
+
+    # Transition linked facturas from 'pago_en_proceso' → 'pagada'
+    FacturaProveedor.objects.filter(
+        comprobante_egreso=egreso,
+        estado='pago_en_proceso',
+    ).update(estado='pagada', fecha_pago=date.today())
 
     return Response({"message": "Transferencia de egreso confirmada exitosamente.", "id": egreso.id, "estado": "Pagado"}, status=status.HTTP_200_OK)
 
