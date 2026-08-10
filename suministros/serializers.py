@@ -630,6 +630,7 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
     items_inventario = FacturasInventarioReadSerializer(many=True, read_only=True)
     detalles = DetalleFacturaSerializer(many=True, read_only=True)
     proveedor_nombre = serializers.ReadOnlyField(source='proveedor.nombre_empresa')
+    comprobante_egreso = serializers.PrimaryKeyRelatedField(read_only=True)
 
     class Meta:
         model = FacturaProveedor
@@ -639,7 +640,20 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
             'productos',        # write-only (entrada)
             'items_inventario', # read-only (salida)
             'detalles',         # read-only fallback (salida histórica)
+            'comprobante_egreso', # read-only (salida) - vínculo con el comprobante de egreso, si tiene
         ]
+
+    def validate(self, attrs):
+        # Una factura ya vinculada a un comprobante de egreso no se puede editar:
+        # su estado (pago_en_proceso/pagada) es gestionado por el flujo de comprobantes,
+        # y permitir la edición aquí dejaría el comprobante desincronizado de la factura.
+        if self.instance is not None and self.instance.comprobante_egreso_id is not None:
+            raise serializers.ValidationError(
+                'Esta factura está vinculada al comprobante de egreso '
+                f'#{self.instance.comprobante_egreso_id} y no puede editarse. '
+                'Para corregirla, primero gestiona el comprobante de egreso asociado.'
+            )
+        return attrs
 
     @transaction.atomic
     def create(self, validated_data):
