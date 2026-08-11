@@ -105,7 +105,7 @@ class OrdenPedidoListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'proveedor_nombre', 'fecha_pedido', 'fecha_esperada',
             'estado', 'observacion', 'tela', 'venta', 'costo',
-            'vendedor', 'orden_venta', 'es_exhibicion'
+            'vendedor', 'orden_venta', 'es_exhibicion', 'es_feria_hogar'
         ]
 
     def get_vendedor(self, obj):
@@ -126,9 +126,9 @@ class OrdenPedidoSerializer(serializers.ModelSerializer):
     class Meta:
         model = OrdenPedido
         fields = [
-            'id', 'proveedor', 'proveedor_nombre', 'fecha_pedido', 'fecha_esperada', 
+            'id', 'proveedor', 'proveedor_nombre', 'fecha_pedido', 'fecha_esperada',
             'estado', 'observacion', 'tela', 'venta', 'costo',
-            'vendedor', 'detalles', 'orden_venta', 'es_exhibicion', 'telas_asociadas'
+            'vendedor', 'detalles', 'orden_venta', 'es_exhibicion', 'es_feria_hogar', 'telas_asociadas'
         ]
         extra_kwargs = {
             'proveedor': {'write_only': True, 'queryset': Proveedor.objects.all()},
@@ -218,9 +218,10 @@ class VentaSerializer(serializers.ModelSerializer):
             'valor_total', 
             'abono', 
             'saldo', 
-            'fecha_entrega', 
-            'estado', 
-            'estado_pedidos'
+            'fecha_entrega',
+            'estado',
+            'estado_pedidos',
+            'es_feria_hogar'
         ]
         read_only_fields = ['abono'] # El abono solo cambia vía recibos de caja; el saldo se recalcula en las vistas
         extra_kwargs = {
@@ -305,30 +306,43 @@ class ComprobanteEgresoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ComprobanteEgreso
-        fields = ['id', 'proveedor', 'proveedor_nombre', 'medio_pago', 'estado', 'valor', 'descripcion', 'fecha', 'concepto', 'recibido_por', 'facturas_detalle']
+        fields = ['id', 'proveedor', 'proveedor_nombre', 'proveedor_otro_nombre', 'medio_pago', 'estado', 'valor', 'descripcion', 'fecha', 'concepto', 'recibido_por', 'facturas_detalle']
 
     def get_proveedor_nombre(self, obj):
         try:
-            return obj.proveedor.nombre_empresa if obj.proveedor else None
+            if obj.proveedor:
+                return obj.proveedor.nombre_empresa
+            return obj.proveedor_otro_nombre or None
         except Exception as e:
             logging.error(f'Error serializing proveedor_nombre for ComprobanteEgreso {obj.id}: {e}')
             return None
 
     def get_facturas_detalle(self, obj):
         try:
-            facturas = getattr(obj, '_prefetched_facturas', None)
-            if facturas is None:
-                from suministros.models import FacturaProveedor
-                facturas = FacturaProveedor.objects.filter(comprobante_egreso=obj).prefetch_related('productos__referencia')
+            # Si la vista de listado ya prefetcheó 'facturas__items_inventario__...' a nivel de
+            # queryset, reutilizar ese caché en vez de volver a encadenar prefetch_related aquí
+            # (encadenar sobre un related manager ya prefetcheado ignora el caché y dispara una
+            # query nueva POR CADA comprobante — con 30 por página eso son ~90 queries extra).
+            if 'facturas' in getattr(obj, '_prefetched_objects_cache', {}):
+                facturas = obj.facturas.all()
+            else:
+                facturas = obj.facturas.all().prefetch_related(
+                    'items_inventario__referencia', 'items_inventario__categoria', 'items_inventario__subcategoria'
+                )
             result = []
             for f in facturas:
                 productos = []
-                for p in f.productos.all():
+                # Los productos reales de una factura viven en Inventario (items_inventario);
+                # DetalleFactura (related_name 'productos') es una tabla legada que el flujo
+                # de creación de facturas ya no escribe (ver _crear_item_inventario).
+                for p in f.items_inventario.all():
                     productos.append({
-                        'id': p.id,
+                        'id': p.id_referencia,
                         'referencia_nombre': p.referencia.nombre if p.referencia else 'Producto',
+                        'categoria_nombre': p.categoria.nombre if p.categoria else '',
+                        'subcategoria_nombre': p.subcategoria.nombre if p.subcategoria else '',
                         'variacion': p.variacion or '',
-                        'costo': str(p.costo),
+                        'costo': str(p.costo_especifico),
                         'observacion': p.observacion or '',
                     })
                 result.append({
@@ -343,6 +357,7 @@ class ComprobanteEgresoSerializer(serializers.ModelSerializer):
                 })
             return result
         except Exception:
+            logging.exception(f'Error serializing facturas_detalle for ComprobanteEgreso {obj.id}')
             return []
 
 class ClienteDetalleSerializer(serializers.ModelSerializer):

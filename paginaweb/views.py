@@ -94,6 +94,14 @@ def public_settings(request):
     """
     GET /api/paginaweb/settings/
     """
+    PaginawebSetting.objects.update_or_create(
+        key="heroSubtitle",
+        defaults={"value": "Cada pieza nace en nuestro estudio creativo y toma forma en manos de maestros artesanos bogotanos. Para quienes entienden que un hogar no se decora: se compone."}
+    )
+    PaginawebSetting.objects.update_or_create(
+        key="aboutText",
+        defaults={"value": "Desde hace más de 5 años, en LOTTUS entendemos que un mueble bien hecho no pasa de moda: se convierte en parte de la memoria del hogar y se hereda. Cada pieza nace en nuestro taller de Bogotá, donde maestros ebanistas combinan roble, nogal, mármol y cuero con un diseño concebido para perdurar."}
+    )
     settings_objs = PaginawebSetting.objects.all()
     settings_dict = {}
     for obj in settings_objs:

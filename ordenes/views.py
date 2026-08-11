@@ -768,6 +768,7 @@ def listar_ventas(request):
         estado = request.GET.get('estado')
         vendedor_id_param = request.GET.get('vendedor')
         sede_param = request.GET.get('sede')
+        feria_param = request.GET.get('es_feria_hogar')
 
         if periods_param:
             periods = [p.strip() for p in periods_param.split(',') if p.strip()]
@@ -852,11 +853,22 @@ def listar_ventas(request):
                 return Response({"error": "ID de vendedor inválido."}, status=status.HTTP_400_BAD_REQUEST)
                 
         if sede_param:
+            # Las ventas sin sede (sede=None) son de Feria del Hogar y no pertenecen a
+            # ninguna sede — el filtro de Sede nunca debe ocultarlas, eso lo controla
+            # únicamente el filtro es_feria_hogar.
             if ',' in str(sede_param):
                 sedes_list = [s.strip() for s in str(sede_param).split(',') if s.strip()]
-                ventas = ventas.filter(sede__in=sedes_list)
+                ventas = ventas.filter(Q(sede__in=sedes_list) | Q(sede__isnull=True))
             else:
-                ventas = ventas.filter(sede=sede_param)
+                ventas = ventas.filter(Q(sede=sede_param) | Q(sede__isnull=True))
+
+        if feria_param is not None:
+            tokens = [t.strip().lower() for t in str(feria_param).split(',') if t.strip()]
+            bool_values = [t == 'true' for t in tokens if t in ('true', 'false')]
+            if bool_values:
+                ventas = ventas.filter(es_feria_hogar__in=bool_values)
+            else:
+                ventas = ventas.filter(pk__in=[])
 
     ventas = ventas.order_by('-fecha_venta', '-id')
 
@@ -875,6 +887,7 @@ def listar_ventas(request):
                 'saldo': v.saldo,
                 'fecha_venta': v.fecha_venta,
                 'sede': v.sede,
+                'es_feria_hogar': v.es_feria_hogar,
             })
         return Response(ventas_data)
 
@@ -1171,8 +1184,16 @@ class ComprobanteEgresoPagination(StandardResultsSetPagination):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_COMPROBANTES_EGRESO')])
 def listar_comprobantes_egreso(request):
+    from django.db.models import Prefetch
+    from suministros.models import FacturaProveedor, Inventario
+
+    # select_related (JOIN, 1 query) para los items en vez de 3 prefetch_related
+    # encadenados (3 round-trips extra) — con la BD remota cada query cuenta.
+    items_qs = Inventario.objects.select_related('referencia', 'categoria', 'subcategoria')
+    facturas_qs = FacturaProveedor.objects.prefetch_related(Prefetch('items_inventario', queryset=items_qs))
+
     egresos = ComprobanteEgreso.objects.select_related('proveedor').prefetch_related(
-        'facturas__productos__referencia'
+        Prefetch('facturas', queryset=facturas_qs)
     ).order_by('-fecha', '-id')
 
     fecha_inicio = request.GET.get('fecha_inicio')
@@ -1228,17 +1249,30 @@ def crear_comprobante_egreso(request):
         recibido_por = (request.data.get('recibido_por') or '').strip()
         if not recibido_por:
             return Response({"detail": "El campo 'Quien recibe' es obligatorio."}, status=status.HTTP_400_BAD_REQUEST)
-        
+
+        # Validate proveedor: either a registered proveedor id, or a free-text name ("Otro")
+        proveedor_id = request.data.get('proveedor')
+        proveedor_otro_nombre = (request.data.get('proveedor_otro_nombre') or '').strip()
+        if not proveedor_id and not proveedor_otro_nombre:
+            return Response({"detail": "Debes seleccionar un proveedor o indicar el nombre en 'Otro'."}, status=status.HTTP_400_BAD_REQUEST)
+
         # Build payload for serializer (exclude facturas_ids)
         data = {k: v for k, v in request.data.items() if k != 'facturas_ids'}
         data['recibido_por'] = recibido_por
-        
-        # Auto-generate concepto if facturas selected
-        if facturas_ids:
+        if not proveedor_id:
+            # Proveedor "Otro": no hay proveedor registrado ni facturas asociadas posibles.
+            data['proveedor'] = None
+            data['proveedor_otro_nombre'] = proveedor_otro_nombre
+            facturas_ids = []
+
+        # Auto-generar concepto solo si el cliente no envió uno explícito — el flujo
+        # "mixto" (facturas + conceptos libres) arma su propio texto combinado en el
+        # frontend y lo manda ya listo, así que no debe sobreescribirse aquí.
+        if facturas_ids and not (data.get('concepto') or '').strip():
             facturas = FacturaProveedor.objects.filter(id__in=facturas_ids)
             ids_str = ', '.join(str(f.id_manual) for f in facturas)
             data['concepto'] = f"Pago fact. {ids_str}"
-            
+
         # Determine estado based on medio_pago
         is_efectivo = data.get('medio_pago') == 'Efectivo'
         if is_efectivo:

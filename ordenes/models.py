@@ -69,7 +69,7 @@ class Venta(models.Model):
     vendedor = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='ventas')
     vendedores_compartidos = models.ManyToManyField(CustomUser, related_name='ventas_compartidas', blank=True)
     traslado = models.BooleanField(default=False)
-    sede = models.CharField(max_length=20, choices=[('Lottus 1', 'Lottus 1'), ('Lottus 2', 'Lottus 2')], default='Lottus 1', db_index=True)
+    sede = models.CharField(max_length=20, choices=[('Lottus 1', 'Lottus 1'), ('Lottus 2', 'Lottus 2')], default='Lottus 1', null=True, blank=True, db_index=True)
     valor_total = models.DecimalField(max_digits=10, decimal_places=2)
     abono = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     saldo = models.DecimalField(max_digits=10, decimal_places=2)
@@ -77,6 +77,7 @@ class Venta(models.Model):
     fecha_entrega = models.DateField(db_index=True)
     estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='pendiente', db_index=True)
     estado_pedidos = models.BooleanField(default=False, db_index=True)
+    es_feria_hogar = models.BooleanField(default=False, db_index=True)
 
     def __str__(self):
         return f"Venta {self.id} - {self.cliente.nombre}"
@@ -101,6 +102,7 @@ class OrdenPedido(models.Model):
     costo = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     orden_venta = models.CharField(max_length=50, blank=True, null=True)
     es_exhibicion = models.BooleanField(default=False)
+    es_feria_hogar = models.BooleanField(default=False)
 
     def __str__(self):
         return f"Orden {self.id} para {self.proveedor.nombre_empresa}"
@@ -173,7 +175,9 @@ class ComprobanteEgreso(models.Model):
         ('Transferencia', 'Transferencia'),
         ('Otro', 'Otro'),
     ]
-    proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE)
+    proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE, null=True, blank=True)
+    # Nombre libre del proveedor cuando no está registrado en el sistema (proveedor = "Otro").
+    proveedor_otro_nombre = models.CharField(max_length=255, blank=True, default='')
     fecha = models.DateField(default=timezone.localdate, db_index=True)
     valor = models.DecimalField(max_digits=10, decimal_places=2)
     medio_pago = models.CharField(max_length=20, choices=MEDIO_PAGO_CHOICES, db_index=True)
