@@ -13,3 +13,4 @@ python-dotenv==1.0.1
 django-extensions==3.2.3
 qrcode==7.4.2
 requests==2.32.3
+rawpy==0.25.1

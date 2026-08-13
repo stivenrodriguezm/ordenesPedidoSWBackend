@@ -19,6 +19,7 @@ from .serializers import (
     AsesorPublicSerializer, AsesorAdminSerializer,
 )
 from .sirv import upload_to_sirv, SirvUploadError
+from .image_utils import convert_raw_to_jpeg, RawConversionError, RAW_EXTENSIONS
 from ordenes.permissions import IsAdministradorRole
 
 logger = logging.getLogger(__name__)
@@ -181,11 +182,28 @@ def admin_upload_image(request):
     uploaded_urls = []
     for f in files:
         ext = os.path.splitext(f.name)[1].lower()
-        if ext not in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif']:
+        content_type = f.content_type
+        file_bytes = f.read()
+
+        if ext in RAW_EXTENSIONS:
+            # Los navegadores no pueden mostrar RAW directamente — se revela a JPEG
+            # antes de subir para que el producto realmente se vea en la web.
+            try:
+                file_bytes = convert_raw_to_jpeg(file_bytes)
+            except RawConversionError:
+                logger.exception(f"Error convirtiendo RAW a JPEG: {f.name}")
+                return Response(
+                    {"error": f"No se pudo procesar el archivo RAW '{f.name}'."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             ext = '.jpg'
+            content_type = 'image/jpeg'
+        elif ext not in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif']:
+            ext = '.jpg'
+
         filename = f"paginaweb/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
         try:
-            url = upload_to_sirv(f.read(), filename, f.content_type)
+            url = upload_to_sirv(file_bytes, filename, content_type)
         except SirvUploadError:
             logger.exception("Error subiendo imagen a Sirv")
             return Response({"error": "No se pudo subir la imagen. Intenta de nuevo."}, status=status.HTTP_502_BAD_GATEWAY)
