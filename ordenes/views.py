@@ -24,7 +24,7 @@ from .permissions import IsAdministradorRole, check_feature_permission
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import Q, F, Sum, Case, When, Value, IntegerField, Exists, OuterRef
+from django.db.models import Q, F, Sum, Max, Case, When, Value, IntegerField, Exists, OuterRef
 from decimal import Decimal, InvalidOperation
 from rest_framework.exceptions import ValidationError
 from datetime import date, timedelta, time, datetime
@@ -1287,6 +1287,14 @@ def listar_comprobantes_egreso(request):
     page = paginator.paginate_queryset(egresos, request)
     return paginator.get_paginated_response(ComprobanteEgresoSerializer(page, many=True).data)
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, check_feature_permission('CREAR_COMPROBANTE_EGRESO')])
+def siguiente_numero_comprobante_egreso(request):
+    """Vista previa del próximo número de comprobante (informativa, sin reservarlo).
+    El número real se asigna de forma atómica en crear_comprobante_egreso."""
+    max_id = ComprobanteEgreso.objects.aggregate(Max('id'))['id__max'] or 0
+    return Response({"siguiente": max(3001, max_id + 1)})
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, check_feature_permission('CREAR_COMPROBANTE_EGRESO')])
 @transaction.atomic
@@ -1306,9 +1314,17 @@ def crear_comprobante_egreso(request):
         if not proveedor_id and not proveedor_otro_nombre:
             return Response({"detail": "Debes seleccionar un proveedor o indicar el nombre en 'Otro'."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Build payload for serializer (exclude facturas_ids)
-        data = {k: v for k, v in request.data.items() if k != 'facturas_ids'}
+        # Build payload for serializer (exclude facturas_ids; 'id' is never client-supplied,
+        # it's always auto-generated below)
+        data = {k: v for k, v in request.data.items() if k not in ('facturas_ids', 'id')}
         data['recibido_por'] = recibido_por
+
+        # Numeración automática del comprobante: arranca en 3001 y luego continúa desde
+        # el máximo existente + 1. select_for_update() bloquea las filas ya existentes
+        # dentro de esta misma transacción atómica para serializar creaciones concurrentes
+        # y evitar números duplicados.
+        max_id = ComprobanteEgreso.objects.select_for_update().aggregate(Max('id'))['id__max'] or 0
+        data['id'] = max(3001, max_id + 1)
         if not proveedor_id:
             # Proveedor "Otro": no hay proveedor registrado ni facturas asociadas posibles.
             data['proveedor'] = None
