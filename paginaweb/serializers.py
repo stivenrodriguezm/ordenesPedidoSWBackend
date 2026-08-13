@@ -13,6 +13,12 @@ CATEGORIES = [
 ]
 
 class PaginawebProductoSerializer(serializers.ModelSerializer):
+    # Opcional: PaginawebProductoAdminViewSet.perform_create genera el slug
+    # automáticamente a partir del nombre cuando no se envía uno explícito —
+    # si este campo fuera required=True (el default heredado del SlugField
+    # del modelo, que no es blank), la validación rechazaría la creación
+    # antes de que ese auto-generado pudiera ejecutarse.
+    slug = serializers.SlugField(required=False, allow_blank=True)
     oldPrice = serializers.DecimalField(source='old_price', max_digits=12, decimal_places=2, required=False, allow_null=True)
     priceRange = serializers.JSONField(source='price_range', required=False, allow_null=True)
     shortDescription = serializers.CharField(source='short_description', required=False, allow_blank=True)
