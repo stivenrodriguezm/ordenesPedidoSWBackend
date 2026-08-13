@@ -264,23 +264,28 @@ class UserDetailView(APIView):
         user = request.user
         perms = []
         try:
-            from .models import RolePermission
-            rp = RolePermission.objects.filter(role=user.role).first()
-            if rp and isinstance(rp.permissions, list):
-                # 'ALL' es un valor heredado; una vez que el rol tiene una
-                # configuración explícita, solo cuentan los permisos listados.
-                perms = [p for p in rp.permissions if p != 'ALL']
-            elif user.role == 'auxiliar':
-                perms = [
-                    'VER_RECIBOS', 'ACCESO_RECIBOS', 'VER_CAJA', 'ACCESO_CAJA',
-                    'VER_COMPROBANTES_EGRESO', 'ACCESO_EGRESOS', 'CREAR_RECIBO',
-                    'APROBAR_RECIBO', 'CREAR_INGRESO_CAJA', 'CREAR_EGRESO_CAJA',
-                    'CREAR_COMPROBANTE_EGRESO', 'APROBAR_EGRESO'
-                ]
-            elif user.role == 'administrador':
-                # Sin configuración explícita todavía: administrador mantiene
-                # acceso total hasta que se configure el rol.
+            if user.role == 'administrador':
+                # El rol administrador siempre tiene acceso total, sin importar
+                # la configuración guardada en RolePermission (misma regla que
+                # check_feature_permission aplica en cada endpoint protegido).
+                # No depender de la fila de RolePermission evita que un admin
+                # pierda botones/funciones si esa fila queda incompleta al
+                # editar los permisos de otro rol desde la pantalla de Usuarios.
                 perms = ['ALL']
+            else:
+                from .models import RolePermission
+                rp = RolePermission.objects.filter(role=user.role).first()
+                if rp and isinstance(rp.permissions, list):
+                    # 'ALL' es un valor heredado; una vez que el rol tiene una
+                    # configuración explícita, solo cuentan los permisos listados.
+                    perms = [p for p in rp.permissions if p != 'ALL']
+                elif user.role == 'auxiliar':
+                    perms = [
+                        'VER_RECIBOS', 'ACCESO_RECIBOS', 'VER_CAJA', 'ACCESO_CAJA',
+                        'VER_COMPROBANTES_EGRESO', 'ACCESO_EGRESOS', 'CREAR_RECIBO',
+                        'APROBAR_RECIBO', 'CREAR_INGRESO_CAJA', 'CREAR_EGRESO_CAJA',
+                        'CREAR_COMPROBANTE_EGRESO', 'APROBAR_EGRESO'
+                    ]
         except Exception:
             logger.exception("Error cargando permisos de rol para %s", user.username)
 
