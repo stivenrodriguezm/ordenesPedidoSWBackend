@@ -77,6 +77,7 @@ CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     'https://app.muebleslottus.com',   # Producción Frontend HTTPS
     'https://api.muebleslottus.com',   # Producción Backend HTTPS
+    'https://stivenrodriguezm.github.io',   # Sitio público (paginaweb) en GitHub Pages
 ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
