@@ -6,9 +6,8 @@ from django.conf import settings
 from django.db.models import Q
 from django.http import HttpResponse
 from django.utils.text import slugify
-from django.core.files.storage import default_storage
-from django.core.files.base import ContentFile
 import io
+import logging
 import os
 import uuid
 import datetime
@@ -19,7 +18,10 @@ from .serializers import (
     PaginawebProductoSerializer, PaginawebSettingSerializer, CATEGORIES,
     AsesorPublicSerializer, AsesorAdminSerializer,
 )
+from .sirv import upload_to_sirv, SirvUploadError
 from ordenes.permissions import IsAdministradorRole
+
+logger = logging.getLogger(__name__)
 
 
 @api_view(['GET'])
@@ -182,8 +184,12 @@ def admin_upload_image(request):
         if ext not in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif']:
             ext = '.jpg'
         filename = f"paginaweb/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
-        saved_path = default_storage.save(filename, ContentFile(f.read()))
-        uploaded_urls.append(f"/media/{saved_path}")
+        try:
+            url = upload_to_sirv(f.read(), filename, f.content_type)
+        except SirvUploadError:
+            logger.exception("Error subiendo imagen a Sirv")
+            return Response({"error": "No se pudo subir la imagen. Intenta de nuevo."}, status=status.HTTP_502_BAD_GATEWAY)
+        uploaded_urls.append(url)
 
     return Response({
         "ok": True,
@@ -300,6 +306,10 @@ def admin_upload_asesor_foto(request):
     if ext not in ['.jpg', '.jpeg', '.png', '.webp']:
         ext = '.jpg'
     filename = f"asesores/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
-    saved_path = default_storage.save(filename, ContentFile(f.read()))
+    try:
+        url = upload_to_sirv(f.read(), filename, f.content_type)
+    except SirvUploadError:
+        logger.exception("Error subiendo foto de asesor a Sirv")
+        return Response({"error": "No se pudo subir la imagen. Intenta de nuevo."}, status=status.HTTP_502_BAD_GATEWAY)
 
-    return Response({"ok": True, "url": f"/media/{saved_path}"})
+    return Response({"ok": True, "url": url})

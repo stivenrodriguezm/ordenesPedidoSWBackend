@@ -267,6 +267,12 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 # absolutos (perfil de asesor, QR) fuera del dominio del API.
 PUBLIC_SITE_URL = os.environ.get('PUBLIC_SITE_URL', 'http://localhost:4000').rstrip('/')
 
+# Sirv (CDN de imágenes) — usado por paginaweb.sirv para subir imágenes de
+# Gestión Web (productos, fotos de asesores) en vez de guardarlas en disco.
+SIRV_CLIENT_ID = os.environ.get('SIRV_CLIENT_ID', '')
+SIRV_CLIENT_SECRET = os.environ.get('SIRV_CLIENT_SECRET', '')
+SIRV_PUBLIC_DOMAIN = os.environ.get('SIRV_PUBLIC_DOMAIN', 'lottus.sirv.com')
+
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
