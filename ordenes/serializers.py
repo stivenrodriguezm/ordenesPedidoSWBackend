@@ -1,12 +1,13 @@
 from rest_framework import serializers
 import logging
+from decimal import Decimal
 from django.db import transaction
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from .models import (
     CustomUser, Referencia, Proveedor, OrdenPedido, DetallePedido, Cliente, Venta,
-    ObservacionVenta, ObservacionCliente, Remision, ReciboCaja, Caja, ComprobanteEgreso,
+    ObservacionVenta, ObservacionCliente, Remision, ReciboCaja, PagoReciboCaja, Caja, ComprobanteEgreso,
     ProveedorTela, PedidoTela, DetallePedidoTela, DireccionEntrega
 )
 
@@ -258,10 +259,56 @@ class RemisionSerializer(serializers.ModelSerializer):
         model = Remision
         fields = '__all__'
 
+class PagoReciboCajaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PagoReciboCaja
+        fields = ['id', 'metodo_pago', 'valor', 'estado', 'confirmacion']
+        read_only_fields = ['id', 'estado', 'confirmacion']
+
+
 class ReciboCajaSerializer(serializers.ModelSerializer):
+    vendedor_nombre = serializers.SerializerMethodField()
+    pagos = PagoReciboCajaSerializer(many=True, read_only=True)
+    valor = serializers.SerializerMethodField()
+    metodo_pago = serializers.SerializerMethodField()
+    estado = serializers.SerializerMethodField()
+
     class Meta:
         model = ReciboCaja
-        fields = '__all__'
+        fields = ['id', 'venta', 'fecha', 'nota', 'pagos', 'vendedor_nombre', 'valor', 'metodo_pago', 'estado']
+
+    def get_vendedor_nombre(self, obj):
+        venta = obj.venta
+        if not venta:
+            return None
+        nombres = [venta.vendedor.first_name] if venta.vendedor and venta.vendedor.first_name else []
+        nombres += [v.first_name for v in venta.vendedores_compartidos.all() if v.first_name]
+        return ", ".join(nombres) if nombres else None
+
+    def _pagos_list(self, obj):
+        return list(obj.pagos.all())
+
+    def get_valor(self, obj):
+        return sum((p.valor for p in self._pagos_list(obj)), Decimal('0'))
+
+    def get_metodo_pago(self, obj):
+        pagos = self._pagos_list(obj)
+        if len(pagos) == 1:
+            return pagos[0].metodo_pago
+        if len(pagos) > 1:
+            return 'Múltiple'
+        return None
+
+    def get_estado(self, obj):
+        pagos = self._pagos_list(obj)
+        if not pagos:
+            return 'Pendiente'
+        estados = {p.estado for p in pagos}
+        if estados == {'Confirmado'}:
+            return 'Confirmado'
+        if 'Confirmado' in estados and len(pagos) > 1:
+            return 'Parcial'
+        return 'Pendiente'
 
 from django.db import transaction, IntegrityError
 
@@ -409,13 +456,15 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
     orden_id = serializers.SerializerMethodField()
     orden_proveedor_nombre = serializers.SerializerMethodField()
     venta_id = serializers.SerializerMethodField()
+    venta_vendedor_nombre = serializers.SerializerMethodField()
 
     class Meta:
         model = PedidoTela
         fields = [
-            'id', 'usuario', 'usuario_nombre', 'proveedor', 'proveedor_nombre', 
-            'direccion_entrega', 'fecha_creacion', 'estado',  
-            'orden_asociada_id', 'detalles', 'orden_id', 'orden_proveedor_nombre', 'venta_id'
+            'id', 'usuario', 'usuario_nombre', 'proveedor', 'proveedor_nombre',
+            'direccion_entrega', 'fecha_creacion', 'estado', 'observacion',
+            'orden_asociada_id', 'detalles', 'orden_id', 'orden_proveedor_nombre', 'venta_id',
+            'venta_vendedor_nombre'
         ]
         read_only_fields = ['fecha_creacion', 'usuario', 'id']
 
@@ -443,6 +492,14 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
 
     def get_venta_id(self, obj):
         return obj.orden_asociada.venta.id if obj.orden_asociada and obj.orden_asociada.venta else None
+
+    def get_venta_vendedor_nombre(self, obj):
+        venta = obj.orden_asociada.venta if obj.orden_asociada else None
+        if not venta:
+            return None
+        nombres = [venta.vendedor.first_name] if venta.vendedor and venta.vendedor.first_name else []
+        nombres += [v.first_name for v in venta.vendedores_compartidos.all() if v.first_name]
+        return ", ".join(nombres) if nombres else None
 
     def create(self, validated_data):
         detalles_data = validated_data.pop('detalles', [])

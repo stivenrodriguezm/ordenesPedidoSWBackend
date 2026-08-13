@@ -135,6 +135,14 @@ class Remision(models.Model):
 
 class ReciboCaja(models.Model):
     id = models.PositiveIntegerField(primary_key=True)
+    venta = models.ForeignKey(Venta, on_delete=models.CASCADE, related_name='recibos')
+    fecha = models.DateField(default=timezone.localdate, db_index=True)
+    nota = models.TextField(blank=True, null=True)
+
+class PagoReciboCaja(models.Model):
+    """Una línea de pago dentro de un ReciboCaja — un recibo puede cubrirse con
+    varios medios de pago a la vez (ej. una parte en efectivo y otra por
+    transferencia); cada línea se confirma de forma independiente."""
     MEDIO_PAGO_CHOICES = [
         ('Efectivo', 'Efectivo'),
         ('Davivienda', 'Davivienda'),
@@ -147,12 +155,10 @@ class ReciboCaja(models.Model):
         ('Pendiente', 'Pendiente'),
         ('Confirmado', 'Confirmado'),
     ]
-    venta = models.ForeignKey(Venta, on_delete=models.CASCADE, related_name='recibos')
-    fecha = models.DateField(default=timezone.localdate, db_index=True)
-    valor = models.DecimalField(max_digits=10, decimal_places=2)
+    recibo = models.ForeignKey(ReciboCaja, on_delete=models.CASCADE, related_name='pagos')
     metodo_pago = models.CharField(max_length=50, choices=MEDIO_PAGO_CHOICES, db_index=True)
+    valor = models.DecimalField(max_digits=10, decimal_places=2)
     estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='Pendiente', db_index=True)
-    nota = models.TextField(blank=True, null=True)
     confirmacion = models.TextField(blank=True, null=True)
 
 class Caja(models.Model):
@@ -207,6 +213,7 @@ class PedidoTela(models.Model):
     fecha_creacion = models.DateField(auto_now_add=True, db_index=True)
     estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='Pendiente', db_index=True)
     orden_asociada = models.ForeignKey(OrdenPedido, on_delete=models.SET_NULL, null=True, blank=True, related_name='pedidos_telas')
+    observacion = models.TextField(blank=True, null=True)
 
     def __str__(self):
         return f"Pedido Tela {self.id} - {self.proveedor.nombre_empresa}"

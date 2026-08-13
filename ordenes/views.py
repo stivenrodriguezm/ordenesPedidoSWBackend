@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from django.http import HttpResponse
 from .models import (
     Referencia, Proveedor, OrdenPedido, DetallePedido, CustomUser, Cliente,
-    Venta, ObservacionVenta, Caja, ReciboCaja, ComprobanteEgreso,
+    Venta, ObservacionVenta, Caja, ReciboCaja, PagoReciboCaja, ComprobanteEgreso,
     ObservacionCliente, Remision, ProveedorTela, PedidoTela, DetallePedidoTela, DireccionEntrega
 )
 from .serializers import (
@@ -24,7 +24,7 @@ from .permissions import IsAdministradorRole, check_feature_permission
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import Q, F, Sum, Case, When, Value, IntegerField
+from django.db.models import Q, F, Sum, Case, When, Value, IntegerField, Exists, OuterRef
 from decimal import Decimal, InvalidOperation
 from rest_framework.exceptions import ValidationError
 from datetime import date, timedelta, time, datetime
@@ -409,7 +409,19 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
                         return ('CREAR_ORDEN' in p or 'CREAR_PROPIAS_ORDENES' in p or 'CREAR_ORDENES_OTROS' in p)
                     return False
             return [IsAuthenticated(), DynamicCreateOrderPermission()]
-        elif self.action in ['update', 'partial_update', 'destroy']:
+        elif self.action in ['update', 'partial_update']:
+            class DynamicUpdateOrderPermission(BasePermission):
+                def has_permission(self, request, view):
+                    if not request.user or not request.user.is_authenticated:
+                        return False
+                    if request.user.role == 'administrador':
+                        return True
+                    from .permissions import check_feature_permission
+                    can_edit_estado = check_feature_permission('EDITAR_ESTADO_ORDEN')().has_permission(request, view)
+                    can_edit_tela = check_feature_permission('EDITAR_ESTADO_TELA_ORDEN')().has_permission(request, view)
+                    return can_edit_estado or can_edit_tela or request.user.role == 'vendedor'
+            return [IsAuthenticated(), DynamicUpdateOrderPermission()]
+        elif self.action in ['destroy']:
             return [IsAuthenticated(), check_feature_permission('EDITAR_ESTADO_ORDEN')()]
         return [IsAuthenticated(), check_feature_permission('VER_ORDENES')()]
     http_method_names = ['get', 'post', 'put', 'patch', 'delete']
@@ -461,15 +473,39 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
         data = request.data.copy()
+        from .permissions import check_feature_permission
+
+        can_edit_estado = (
+            request.user.role == 'administrador' or 
+            check_feature_permission('EDITAR_ESTADO_ORDEN')().has_permission(request, self)
+        )
+        can_edit_tela = (
+            request.user.role == 'administrador' or 
+            request.user.role == 'vendedor' or 
+            check_feature_permission('EDITAR_ESTADO_TELA_ORDEN')().has_permission(request, self)
+        )
+        can_edit_costo = (
+            request.user.role in ['administrador', 'auxiliar'] and 
+            check_feature_permission('VER_COSTOS_ORDEN')().has_permission(request, self)
+        )
+
         new_estado = data.get('estado')
         if new_estado == 'anulado' and instance.estado != 'anulado':
-            from .permissions import check_feature_permission
             if not (request.user.role == 'administrador' or check_feature_permission('ANULAR_ORDEN_PEDIDO')().has_permission(request, self)):
                 return Response({"error": "No tienes permiso para anular órdenes de pedido."}, status=status.HTTP_403_FORBIDDEN)
-        # Vendedores solo pueden actualizar el estado de tela
-        if request.user.role == 'vendedor':
-            data = {'tela': data.get('tela', instance.tela)}
-        serializer = self.get_serializer(instance, data=data, partial=True)
+
+        filtered_data = {}
+        if 'costo' in data and can_edit_costo:
+            filtered_data['costo'] = data['costo']
+        if 'estado' in data and can_edit_estado:
+            filtered_data['estado'] = data['estado']
+        if 'tela' in data and can_edit_tela:
+            filtered_data['tela'] = data['tela']
+
+        if not filtered_data and data:
+            return Response({"error": "No tienes permisos para modificar estos campos de la orden."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = self.get_serializer(instance, data=filtered_data, partial=True)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
         return Response(serializer.data)
@@ -557,7 +593,10 @@ def listar_pedidos(request):
 
         tela = request.GET.get('tela')
         if tela:
-            pedidos = pedidos.filter(tela=tela)
+            # Las órdenes de Feria del Hogar deben poder recibir pedidos de material aunque
+            # no se haya marcado "requiere tela" al crearlas (no siempre se sabe de antemano) —
+            # por eso siempre se incluyen aquí, sin importar su campo `tela`.
+            pedidos = pedidos.filter(Q(tela=tela) | Q(es_feria_hogar=True))
 
         pedidos = pedidos.order_by('-id')
 
@@ -629,6 +668,7 @@ def detalles_pedido(request, orden_id):
                 "proveedor": pt.proveedor.nombre_empresa if pt.proveedor else "N/A",
                 "fecha_creacion": str(pt.fecha_creacion) if pt.fecha_creacion else None,
                 "estado": pt.estado,
+                "observacion": pt.observacion or '',
                 "detalles": detalles_tela,
             })
         # -------------------------------------------------------
@@ -1141,15 +1181,20 @@ class ReciboCajaPagination(StandardResultsSetPagination):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_RECIBOS')])
 def listar_recibos_caja(request):
-    # OPTIMIZACIÓN: Cargar datos del cliente y priorizar los recibos no confirmados ('Pendiente') primero
-    recibos = ReciboCaja.objects.select_related('venta__cliente').annotate(
+    # OPTIMIZACIÓN: Cargar datos del cliente y priorizar los recibos con algún pago
+    # pendiente primero — como estado/metodo_pago/valor ahora viven en PagoReciboCaja
+    # (un recibo puede tener varias líneas), "pendiente" se resuelve con un Exists.
+    recibos = ReciboCaja.objects.select_related('venta__cliente', 'venta__vendedor').prefetch_related(
+        'venta__vendedores_compartidos', 'pagos'
+    ).annotate(
+        tiene_pendiente=Exists(PagoReciboCaja.objects.filter(recibo=OuterRef('pk'), estado='Pendiente')),
         orden_estado=Case(
-            When(estado='Pendiente', then=Value(0)),
+            When(tiene_pendiente=True, then=Value(0)),
             default=Value(1),
             output_field=IntegerField(),
         )
     ).order_by('orden_estado', '-fecha', '-id')
-    
+
     fecha_inicio = request.GET.get('fecha_inicio')
     fecha_fin = request.GET.get('fecha_fin')
     medio_pago = request.GET.get('medio_pago')
@@ -1161,7 +1206,7 @@ def listar_recibos_caja(request):
     if fecha_fin:
         recibos = recibos.filter(fecha__lte=fecha_fin)
     if medio_pago:
-        recibos = recibos.filter(metodo_pago=medio_pago)
+        recibos = recibos.filter(pagos__metodo_pago=medio_pago).distinct()
     if venta_id_param:
         try:
             v_id = int(venta_id_param)
@@ -1362,13 +1407,40 @@ def confirmar_comprobante_egreso(request, id):
 @permission_classes([IsAuthenticated, check_feature_permission('CREAR_RECIBO')])
 @transaction.atomic
 def crear_recibo_caja(request):
-    serializer = ReciboCajaSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    
-    metodo_pago = request.data.get('metodo_pago')
-    
+    data = request.data
+    pagos_data = data.get('pagos')
+    if not isinstance(pagos_data, list) or len(pagos_data) == 0:
+        return Response({"error": "Debe incluir al menos un pago (método y valor)."}, status=status.HTTP_400_BAD_REQUEST)
+
+    recibo_id = data.get('id')
+    venta_id = data.get('venta')
+    if not recibo_id or not venta_id:
+        return Response({"error": "Faltan datos del recibo (No. de recibo / venta)."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if ReciboCaja.objects.filter(id=recibo_id).exists():
+        return Response({"error": "Ya existe un recibo con ese número."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        venta = Venta.objects.get(id=venta_id)
+    except Venta.DoesNotExist:
+        return Response({"error": "Venta no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+    medios_validos = {c[0] for c in PagoReciboCaja.MEDIO_PAGO_CHOICES}
+    pagos_parseados = []
+    for pago in pagos_data:
+        metodo = pago.get('metodo_pago')
+        if metodo not in medios_validos:
+            return Response({"error": f"Método de pago inválido: {metodo}"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            valor = Decimal(str(pago.get('valor', 0)))
+        except (InvalidOperation, TypeError):
+            valor = Decimal('0')
+        if valor <= 0:
+            return Response({"error": "Cada pago debe tener un valor mayor a cero."}, status=status.HTTP_400_BAD_REQUEST)
+        pagos_parseados.append((metodo, valor))
+
     # Use provided date or default to today
-    fecha_str_input = request.data.get('fecha')
+    fecha_str_input = data.get('fecha')
     if fecha_str_input:
         try:
             fecha_creacion = datetime.strptime(fecha_str_input, '%Y-%m-%d').date()
@@ -1376,33 +1448,40 @@ def crear_recibo_caja(request):
             return Response({"error": "La fecha debe tener formato YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
     else:
         fecha_creacion = date.today()
-        
+
     usuario_nombre = request.user.first_name or request.user.username
-    
     # Format date as "20-nov-2025"
     fecha_str = fecha_creacion.strftime('%d-%b-%Y').lower()
-    
-    if metodo_pago == 'Efectivo':
-        confirmacion_text = f"Confirmado el {fecha_str} por {usuario_nombre}"
-        recibo = serializer.save(estado='Confirmado', confirmacion=confirmacion_text, fecha=fecha_creacion)
-        # Actualizar abono y saldo de la venta
-        venta = recibo.venta
-        venta.abono = F('abono') + recibo.valor
-        venta.saldo = F('saldo') - recibo.valor
-        venta.save(update_fields=['abono', 'saldo'])
-        
-        # Crear movimiento de caja (ingreso)
-        caja_data = {
-            'concepto': f"OC. {venta.id}, RC. {recibo.id}",
-            'valor': recibo.valor,
-            'tipo': 'ingreso',
-        }
-        caja_serializer = CajaSerializer(data=caja_data, context={'request': request})
-        caja_serializer.is_valid(raise_exception=True)
-        caja_serializer.save()
-    else:
-        recibo = serializer.save(estado='Pendiente', fecha=fecha_creacion)
-        
+
+    recibo = ReciboCaja.objects.create(
+        id=recibo_id, venta=venta, fecha=fecha_creacion, nota=data.get('nota') or None
+    )
+
+    for metodo, valor in pagos_parseados:
+        if metodo == 'Efectivo':
+            confirmacion_text = f"Confirmado el {fecha_str} por {usuario_nombre}"
+            PagoReciboCaja.objects.create(
+                recibo=recibo, metodo_pago=metodo, valor=valor,
+                estado='Confirmado', confirmacion=confirmacion_text
+            )
+            # Actualizar abono y saldo de la venta
+            venta.abono = F('abono') + valor
+            venta.saldo = F('saldo') - valor
+            venta.save(update_fields=['abono', 'saldo'])
+            venta.refresh_from_db(fields=['abono', 'saldo'])
+
+            # Crear movimiento de caja (ingreso)
+            caja_data = {
+                'concepto': f"OC. {venta.id}, RC. {recibo.id}",
+                'valor': valor,
+                'tipo': 'ingreso',
+            }
+            caja_serializer = CajaSerializer(data=caja_data, context={'request': request})
+            caja_serializer.is_valid(raise_exception=True)
+            caja_serializer.save()
+        else:
+            PagoReciboCaja.objects.create(recibo=recibo, metodo_pago=metodo, valor=valor, estado='Pendiente')
+
     return Response(ReciboCajaSerializer(recibo).data, status=status.HTTP_201_CREATED)
 
 class ProveedorTelaViewSet(viewsets.ModelViewSet):
@@ -1441,8 +1520,9 @@ class PedidoTelaViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = PedidoTela.objects.select_related(
-            'proveedor', 'usuario', 'orden_asociada', 'orden_asociada__proveedor', 'orden_asociada__venta'
-        ).prefetch_related('detalles').all().order_by('-id')
+            'proveedor', 'usuario', 'orden_asociada', 'orden_asociada__proveedor',
+            'orden_asociada__venta', 'orden_asociada__venta__vendedor'
+        ).prefetch_related('detalles', 'orden_asociada__venta__vendedores_compartidos').all().order_by('-id')
 
         from .permissions import check_feature_permission
         if check_feature_permission('VER_TODOS_PEDIDOS_TELAS')().has_permission(self.request, None):
@@ -1529,34 +1609,41 @@ class DetallePedidoTelaViewSet(viewsets.ModelViewSet):
 @api_view(['PATCH'])
 @permission_classes([IsAuthenticated, check_feature_permission('APROBAR_RECIBO')])
 @transaction.atomic
-def confirmar_recibo(request, id):
+def confirmar_pago_recibo(request, pago_id):
+    """Confirma una línea de pago específica de un recibo (un recibo puede tener
+    varias, una por medio de pago). Solo esta línea se marca Confirmado y solo
+    su valor se abona a la venta — las demás líneas del mismo recibo, si las
+    hay, siguen su propio estado de forma independiente."""
     try:
-        recibo = ReciboCaja.objects.get(id=id)
-    except ReciboCaja.DoesNotExist:
-        return Response({"error": "Recibo de Caja no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+        pago = PagoReciboCaja.objects.select_related('recibo__venta').get(id=pago_id)
+    except PagoReciboCaja.DoesNotExist:
+        return Response({"error": "Pago no encontrado."}, status=status.HTTP_404_NOT_FOUND)
 
-    if recibo.estado == 'Confirmado':
-        return Response({"message": "El recibo ya está confirmado."}, status=status.HTTP_200_OK)
+    if pago.estado == 'Confirmado':
+        return Response({"message": "El pago ya está confirmado."}, status=status.HTTP_200_OK)
 
     # Get current date and admin user
     fecha_confirmacion = date.today()
     admin_nombre = request.user.first_name or request.user.username
-    
+
     # Format date as "20-nov-2025"
     fecha_str = fecha_confirmacion.strftime('%d-%b-%Y').lower()
     confirmacion_text = f"Confirmado el {fecha_str} por {admin_nombre}"
-    
-    recibo.estado = 'Confirmado'
-    recibo.confirmacion = confirmacion_text
-    recibo.save(update_fields=['estado', 'confirmacion'])
 
-    # Actualizar abono y saldo de la venta
-    venta = recibo.venta
-    venta.abono = F('abono') + recibo.valor
-    venta.saldo = F('saldo') - recibo.valor
+    pago.estado = 'Confirmado'
+    pago.confirmacion = confirmacion_text
+    pago.save(update_fields=['estado', 'confirmacion'])
+
+    # Actualizar abono y saldo de la venta con el valor de esta línea de pago
+    venta = pago.recibo.venta
+    venta.abono = F('abono') + pago.valor
+    venta.saldo = F('saldo') - pago.valor
     venta.save(update_fields=['abono', 'saldo'])
 
-    return Response({"message": "Recibo confirmado y venta actualizada."}, status=status.HTTP_200_OK)
+    return Response(
+        {"message": "Pago confirmado y venta actualizada.", "recibo": ReciboCajaSerializer(pago.recibo).data},
+        status=status.HTTP_200_OK
+    )
 
 
 
