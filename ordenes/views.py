@@ -1287,14 +1287,6 @@ def listar_comprobantes_egreso(request):
     page = paginator.paginate_queryset(egresos, request)
     return paginator.get_paginated_response(ComprobanteEgresoSerializer(page, many=True).data)
 
-@api_view(['GET'])
-@permission_classes([IsAuthenticated, check_feature_permission('CREAR_COMPROBANTE_EGRESO')])
-def siguiente_numero_comprobante_egreso(request):
-    """Vista previa del próximo número de comprobante (informativa, sin reservarlo).
-    El número real se asigna de forma atómica en crear_comprobante_egreso."""
-    max_id = ComprobanteEgreso.objects.aggregate(Max('id'))['id__max'] or 0
-    return Response({"siguiente": max(3001, max_id + 1)})
-
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, check_feature_permission('CREAR_COMPROBANTE_EGRESO')])
 @transaction.atomic
