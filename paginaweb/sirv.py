@@ -24,11 +24,14 @@ def _get_sirv_token():
     if not settings.SIRV_CLIENT_ID or not settings.SIRV_CLIENT_SECRET:
         raise SirvUploadError("SIRV_CLIENT_ID / SIRV_CLIENT_SECRET no están configurados.")
 
-    resp = requests.post(
-        f"{SIRV_API_BASE}/token",
-        json={"clientId": settings.SIRV_CLIENT_ID, "clientSecret": settings.SIRV_CLIENT_SECRET},
-        timeout=10,
-    )
+    try:
+        resp = requests.post(
+            f"{SIRV_API_BASE}/token",
+            json={"clientId": settings.SIRV_CLIENT_ID, "clientSecret": settings.SIRV_CLIENT_SECRET},
+            timeout=10,
+        )
+    except requests.exceptions.RequestException as e:
+        raise SirvUploadError(f"No se pudo conectar con Sirv para autenticar: {e}")
     if not resp.ok:
         raise SirvUploadError(f"No se pudo autenticar con Sirv ({resp.status_code}): {resp.text[:200]}")
 
@@ -47,16 +50,22 @@ def upload_to_sirv(file_bytes, filename, content_type=None):
     token = _get_sirv_token()
     path = "/" + filename.lstrip("/")
 
-    resp = requests.post(
-        f"{SIRV_API_BASE}/files/upload",
-        params={"filename": path},
-        data=file_bytes,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": content_type or "application/octet-stream",
-        },
-        timeout=30,
-    )
+    try:
+        resp = requests.post(
+            f"{SIRV_API_BASE}/files/upload",
+            params={"filename": path},
+            data=file_bytes,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": content_type or "application/octet-stream",
+            },
+            # Fotos en alta resolución pueden pesar varias decenas de MB — con
+            # una conexión lenta la subida a Sirv puede tardar más que unos
+            # pocos segundos, así que este timeout es generoso a propósito.
+            timeout=90,
+        )
+    except requests.exceptions.RequestException as e:
+        raise SirvUploadError(f"No se pudo conectar con Sirv para subir el archivo: {e}")
     if not resp.ok:
         raise SirvUploadError(f"Sirv rechazó la subida ({resp.status_code}): {resp.text[:200]}")
 
