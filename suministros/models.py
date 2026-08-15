@@ -163,7 +163,11 @@ class FacturaProveedor(models.Model):
         ('atrasada', 'Atrasada'),
         ('pago_en_proceso', 'Pago en proceso'),
     ]
-    id_manual = models.CharField(max_length=50, unique=True)
+    # No es unique=True a nivel global: distintos proveedores numeran sus propias
+    # facturas de forma independiente, así que es normal y esperado que el mismo
+    # número aparezca para dos proveedores distintos. Lo que sí debe evitarse es
+    # repetir el mismo número para el MISMO proveedor — ver Meta.constraints.
+    id_manual = models.CharField(max_length=50)
     valor = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     fecha_factura = models.DateTimeField(default=timezone.now, db_index=True)
     fecha_pago = models.DateField(null=True, blank=True)
@@ -177,6 +181,11 @@ class FacturaProveedor(models.Model):
         blank=True,
         related_name='facturas',
     )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['id_manual', 'proveedor'], name='unique_id_manual_por_proveedor'),
+        ]
 
     def __str__(self):
         return f"Factura {self.id_manual}"
