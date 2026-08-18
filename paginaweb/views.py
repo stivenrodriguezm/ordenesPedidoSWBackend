@@ -18,7 +18,7 @@ from .models import PaginawebProducto, PaginawebSetting, AsesorPerfil, PqrsTicke
 from .serializers import (
     PaginawebProductoSerializer, PaginawebSettingSerializer, CATEGORIES,
     AsesorPublicSerializer, AsesorAdminSerializer,
-    PqrsPublicCreateSerializer, PqrsAdminSerializer,
+    PqrsPublicCreateSerializer, PqrsAdminSerializer, PqrsTrackingSerializer,
 )
 from .sirv import upload_to_sirv, SirvUploadError
 from .image_utils import convert_raw_to_jpeg, RawConversionError, RAW_EXTENSIONS
@@ -360,6 +360,35 @@ def public_create_pqrs(request):
         "radicado": ticket.radicado,
         "message": "Hemos recibido tu solicitud. Revisa tu correo para ver la confirmación.",
     }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def public_track_pqrs(request):
+    """
+    POST /api/paginaweb/pqrs/rastrear/  { "radicado": "PQRS-XXXXXXXX", "email": "..." }
+    Consulta pública de seguimiento. Exige radicado + correo juntos (no solo
+    el radicado) para que no cualquiera pueda leer el caso de otra persona
+    adivinando/probando radicados — el correo actúa como segundo factor,
+    igual que en los portales de PQRS típicos que piden radicado + documento.
+    """
+    radicado = (request.data.get('radicado') or '').strip().upper()
+    email = (request.data.get('email') or '').strip().lower()
+    if not radicado or not email:
+        return Response(
+            {"error": "Ingresa el radicado y el correo con el que lo creaste."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    prefix = radicado[5:] if radicado.startswith('PQRS-') else radicado
+    if len(prefix) < 6:
+        return Response({"error": "No encontramos un PQRS con esos datos."}, status=status.HTTP_404_NOT_FOUND)
+
+    ticket = PqrsTicket.objects.filter(id__istartswith=prefix, email__iexact=email).first()
+    if not ticket:
+        return Response({"error": "No encontramos un PQRS con esos datos."}, status=status.HTTP_404_NOT_FOUND)
+
+    return Response(PqrsTrackingSerializer(ticket).data)
 
 
 class PqrsAdminViewSet(viewsets.ModelViewSet):

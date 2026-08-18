@@ -65,14 +65,14 @@ def send_confirmation_email(ticket):
       <p>Hola {escape(ticket.nombre)},</p>
       <p>Recibimos tu <strong>{escape(ticket.get_tipo_display())}</strong> y ya está registrada en nuestro sistema.
       Nuestro equipo la revisará y te responderemos a este mismo correo en un plazo máximo de
-      <strong>2 días hábiles</strong>.</p>
+      <strong>10 días hábiles</strong>.</p>
       <table style="width:100%;border-collapse:collapse;margin:20px 0;font-family:Arial,Helvetica,sans-serif;font-size:0.85rem">
         <tr><td style="padding:6px 0;color:#6b6b6b;width:120px">Radicado</td><td style="padding:6px 0;font-weight:700">{escape(ticket.radicado)}</td></tr>
         <tr><td style="padding:6px 0;color:#6b6b6b">Tipo</td><td style="padding:6px 0">{escape(ticket.get_tipo_display())}</td></tr>
         {f'<tr><td style="padding:6px 0;color:#6b6b6b">Asunto</td><td style="padding:6px 0">{escape(ticket.asunto)}</td></tr>' if ticket.asunto else ''}
       </table>
       <div style="background:#faf9f7;border-left:3px solid {_GOLD};padding:14px 18px;margin:0 0 20px;white-space:pre-wrap;font-family:Arial,Helvetica,sans-serif;font-size:0.88rem;color:#333">{escape(ticket.mensaje)}</div>
-      <p style="font-family:Arial,Helvetica,sans-serif;font-size:0.85rem;color:#6b6b6b">Guarda tu número de radicado para futuras consultas sobre este caso.</p>
+      <p style="font-family:Arial,Helvetica,sans-serif;font-size:0.85rem;color:#6b6b6b">Guarda tu número de radicado: con él y este correo puedes consultar el estado y el histórico de tu caso cuando quieras en la sección "Consultar PQRS" de <a href="{escape(settings.PUBLIC_SITE_URL)}/contacto" style="color:{_INK}">{escape(settings.PUBLIC_SITE_URL.replace('https://', '').replace('http://', ''))}/contacto</a>.</p>
     """
     html = _shell(f"Radicado {ticket.radicado}", "Hemos recibido tu solicitud", body)
     return _send(

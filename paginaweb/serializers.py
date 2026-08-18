@@ -190,3 +190,24 @@ class PqrsAdminSerializer(serializers.ModelSerializer):
         if value not in valid:
             raise serializers.ValidationError("Estado inválido.")
         return value
+
+
+class PqrsTrackingSerializer(serializers.ModelSerializer):
+    """
+    Consulta pública de seguimiento (radicado + correo). Expone el
+    histórico completo del caso pero nada de datos de contacto del cliente
+    salvo su propio nombre (ya sabe su correo/teléfono, no hace falta
+    repetírselos).
+    """
+    radicado = serializers.ReadOnlyField()
+    tipoDisplay = serializers.CharField(source='get_tipo_display', read_only=True)
+    estadoDisplay = serializers.CharField(source='get_estado_display', read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+
+    class Meta:
+        model = PqrsTicket
+        fields = [
+            'radicado', 'tipo', 'tipoDisplay', 'nombre', 'mensaje',
+            'estado', 'estadoDisplay', 'respuestas', 'createdAt', 'updatedAt',
+        ]

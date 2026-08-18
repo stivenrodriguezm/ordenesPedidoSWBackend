@@ -16,6 +16,7 @@ urlpatterns = [
     path('asesores/<slug:slug>/', views.public_asesor_detail, name='paginaweb-public-asesor-detail'),
     path('asesores/<slug:slug>/qr.png', views.asesor_qr_png, name='paginaweb-asesor-qr'),
     path('pqrs/', views.public_create_pqrs, name='paginaweb-public-pqrs-create'),
+    path('pqrs/rastrear/', views.public_track_pqrs, name='paginaweb-public-pqrs-track'),
 
     # Endpoints Administración
     path('admin/settings/', views.admin_settings, name='paginaweb-admin-settings'),
