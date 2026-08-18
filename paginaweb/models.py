@@ -72,3 +72,53 @@ class AsesorPerfil(models.Model):
 
     def __str__(self):
         return f"{self.nombre} ({self.slug})"
+
+
+class PqrsTicket(models.Model):
+    """
+    Ticket de PQRS (Petición, Queja, Reclamo, Sugerencia) enviado desde el
+    formulario público de "Contacto". Se gestiona desde "Gestión Web" en el
+    ERP: el admin puede cambiar el estado libremente y responder — cada
+    respuesta queda registrada en `respuestas` y se envía por correo al
+    cliente.
+    """
+    TIPO_CHOICES = [
+        ('peticion', 'Petición'),
+        ('queja', 'Queja'),
+        ('reclamo', 'Reclamo'),
+        ('sugerencia', 'Sugerencia'),
+    ]
+    ESTADO_CHOICES = [
+        ('recibido', 'Recibido'),
+        ('en_proceso', 'En proceso'),
+        ('respondido', 'Respondido'),
+        ('cerrado', 'Cerrado'),
+    ]
+
+    id = models.CharField(max_length=255, primary_key=True, default=uuid.uuid4)
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES, default='peticion', verbose_name="Tipo de PQRS")
+    asunto = models.CharField(max_length=150, blank=True, default="", verbose_name="Asunto")
+    nombre = models.CharField(max_length=150, verbose_name="Nombre")
+    email = models.EmailField(verbose_name="Correo electrónico")
+    telefono = models.CharField(max_length=30, blank=True, default="", verbose_name="Teléfono")
+    mensaje = models.TextField(verbose_name="Mensaje")
+    estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='recibido', verbose_name="Estado")
+    # Lista de respuestas: [{"mensaje": str, "fecha": iso str, "autor": str}, ...]
+    respuestas = models.JSONField(default=list, blank=True, verbose_name="Respuestas")
+    respondido_por = models.CharField(max_length=150, blank=True, default="", verbose_name="Respondido por")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Fecha de Creación")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="Última Actualización")
+
+    class Meta:
+        db_table = 'paginaweb_pqrs_ticket'
+        verbose_name = 'Ticket PQRS'
+        verbose_name_plural = 'Tickets PQRS'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.radicado} — {self.nombre} ({self.get_tipo_display()})"
+
+    @property
+    def radicado(self):
+        # Referencia corta y legible para el cliente (no expone el UUID completo).
+        return f"PQRS-{str(self.id)[:8].upper()}"

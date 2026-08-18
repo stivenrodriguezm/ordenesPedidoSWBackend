@@ -1,10 +1,11 @@
 from rest_framework import viewsets, status, permissions
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.conf import settings
 from django.db.models import Q
 from django.http import HttpResponse
+from django.utils import timezone
 from django.utils.text import slugify
 import io
 import logging
@@ -13,13 +14,15 @@ import uuid
 import datetime
 import qrcode
 
-from .models import PaginawebProducto, PaginawebSetting, AsesorPerfil
+from .models import PaginawebProducto, PaginawebSetting, AsesorPerfil, PqrsTicket
 from .serializers import (
     PaginawebProductoSerializer, PaginawebSettingSerializer, CATEGORIES,
     AsesorPublicSerializer, AsesorAdminSerializer,
+    PqrsPublicCreateSerializer, PqrsAdminSerializer,
 )
 from .sirv import upload_to_sirv, SirvUploadError
 from .image_utils import convert_raw_to_jpeg, RawConversionError, RAW_EXTENSIONS
+from . import emails as pqrs_emails
 from ordenes.permissions import IsAdministradorRole
 
 logger = logging.getLogger(__name__)
@@ -331,3 +334,85 @@ def admin_upload_asesor_foto(request):
         return Response({"error": "No se pudo subir la imagen. Intenta de nuevo."}, status=status.HTTP_502_BAD_GATEWAY)
 
     return Response({"ok": True, "url": url})
+
+
+# ============================================================
+# PQRS — Peticiones, Quejas, Reclamos y Sugerencias (formulario de Contacto)
+# ============================================================
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def public_create_pqrs(request):
+    """
+    POST /api/paginaweb/pqrs/
+    Crea un ticket desde el formulario público de "Contacto" y envía el
+    correo de confirmación al cliente (más una notificación interna).
+    """
+    serializer = PqrsPublicCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    ticket = serializer.save(id=str(uuid.uuid4()))
+
+    pqrs_emails.send_confirmation_email(ticket)
+    pqrs_emails.send_internal_notification(ticket)
+
+    return Response({
+        "ok": True,
+        "radicado": ticket.radicado,
+        "message": "Hemos recibido tu solicitud. Revisa tu correo para ver la confirmación.",
+    }, status=status.HTTP_201_CREATED)
+
+
+class PqrsAdminViewSet(viewsets.ModelViewSet):
+    """
+    Gestión de PQRS desde "Gestión Web" → pestaña PQRS. El contenido
+    enviado por el cliente es de solo lectura; el estado se puede cambiar
+    libremente (PATCH) y las respuestas se agregan con la acción
+    `responder`, que también envía el correo al cliente.
+    """
+    queryset = PqrsTicket.objects.all()
+    serializer_class = PqrsAdminSerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdministradorRole]
+
+    def create(self, request, *args, **kwargs):
+        return Response(
+            {"error": "Los tickets PQRS solo se crean desde el formulario público de contacto."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {"error": "No se permite eliminar tickets PQRS."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def update(self, request, *args, **kwargs):
+        # El contenido del cliente es de solo lectura (ver read_only_fields
+        # del serializer); solo se admite actualización parcial de estado.
+        kwargs['partial'] = True
+        return super().update(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'])
+    def responder(self, request, pk=None):
+        """
+        POST /api/paginaweb/admin/pqrs/<id>/responder/  { "mensaje": "..." }
+        Agrega una respuesta al hilo del ticket, marca el estado como
+        "respondido" y envía el correo al cliente.
+        """
+        ticket = self.get_object()
+        mensaje = (request.data.get('mensaje') or '').strip()
+        if not mensaje:
+            return Response({"error": "El mensaje de respuesta es obligatorio."}, status=status.HTTP_400_BAD_REQUEST)
+
+        autor = request.user.get_full_name() or request.user.username
+        ticket.respuestas = list(ticket.respuestas or []) + [{
+            "mensaje": mensaje,
+            "fecha": timezone.now().isoformat(),
+            "autor": autor,
+        }]
+        ticket.estado = 'respondido'
+        ticket.respondido_por = autor
+        ticket.save()
+
+        pqrs_emails.send_response_email(ticket, mensaje)
+
+        return Response(PqrsAdminSerializer(ticket).data)

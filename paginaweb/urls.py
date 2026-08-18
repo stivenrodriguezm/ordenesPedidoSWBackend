@@ -5,6 +5,7 @@ from . import views
 router = DefaultRouter()
 router.register(r'admin/products', views.PaginawebProductoAdminViewSet, basename='paginaweb-admin-products')
 router.register(r'admin/asesores', views.AsesorPerfilAdminViewSet, basename='paginaweb-admin-asesores')
+router.register(r'admin/pqrs', views.PqrsAdminViewSet, basename='paginaweb-admin-pqrs')
 
 urlpatterns = [
     # Endpoints Públicos
@@ -14,6 +15,7 @@ urlpatterns = [
     path('asesores/', views.public_asesores, name='paginaweb-public-asesores'),
     path('asesores/<slug:slug>/', views.public_asesor_detail, name='paginaweb-public-asesor-detail'),
     path('asesores/<slug:slug>/qr.png', views.asesor_qr_png, name='paginaweb-asesor-qr'),
+    path('pqrs/', views.public_create_pqrs, name='paginaweb-public-pqrs-create'),
 
     # Endpoints Administración
     path('admin/settings/', views.admin_settings, name='paginaweb-admin-settings'),

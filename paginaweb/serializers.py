@@ -1,7 +1,7 @@
 import re
 from django.conf import settings
 from rest_framework import serializers
-from .models import PaginawebProducto, PaginawebSetting, AsesorPerfil
+from .models import PaginawebProducto, PaginawebSetting, AsesorPerfil, PqrsTicket
 
 CATEGORIES = [
     {"slug": "sofas", "name": "Sofás & Módulos", "icon": "sofa"},
@@ -132,3 +132,61 @@ class AsesorAdminSerializer(serializers.ModelSerializer):
 
     def validate_foto(self, value):
         return validate_foto_path(value)
+
+
+class PqrsPublicCreateSerializer(serializers.ModelSerializer):
+    """
+    Creación pública de un ticket desde el formulario de "Contacto".
+    Solo expone los campos que el cliente diligencia.
+    """
+    class Meta:
+        model = PqrsTicket
+        fields = ['tipo', 'asunto', 'nombre', 'email', 'telefono', 'mensaje']
+
+    def validate_nombre(self, value):
+        value = (value or '').strip()
+        if not value:
+            raise serializers.ValidationError("El nombre es obligatorio.")
+        return value
+
+    def validate_mensaje(self, value):
+        value = (value or '').strip()
+        if not value:
+            raise serializers.ValidationError("El mensaje es obligatorio.")
+        return value
+
+    def validate_telefono(self, value):
+        return (value or '').strip()
+
+    def validate_asunto(self, value):
+        return (value or '').strip()
+
+
+class PqrsAdminSerializer(serializers.ModelSerializer):
+    """
+    Representación para la pestaña "PQRS" de Gestión Web. El contenido
+    enviado por el cliente es de solo lectura; el admin únicamente puede
+    cambiar `estado` (las respuestas se agregan mediante la acción
+    `responder`, no editando el serializer directamente).
+    """
+    radicado = serializers.ReadOnlyField()
+    tipoDisplay = serializers.CharField(source='get_tipo_display', read_only=True)
+    estadoDisplay = serializers.CharField(source='get_estado_display', read_only=True)
+    respondidoPor = serializers.CharField(source='respondido_por', read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+
+    class Meta:
+        model = PqrsTicket
+        fields = [
+            'id', 'radicado', 'tipo', 'tipoDisplay', 'asunto', 'nombre', 'email',
+            'telefono', 'mensaje', 'estado', 'estadoDisplay', 'respuestas',
+            'respondidoPor', 'createdAt', 'updatedAt',
+        ]
+        read_only_fields = ['id', 'tipo', 'asunto', 'nombre', 'email', 'telefono', 'mensaje', 'respuestas']
+
+    def validate_estado(self, value):
+        valid = {choice[0] for choice in PqrsTicket.ESTADO_CHOICES}
+        if value not in valid:
+            raise serializers.ValidationError("Estado inválido.")
+        return value

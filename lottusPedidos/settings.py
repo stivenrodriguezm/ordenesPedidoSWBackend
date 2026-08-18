@@ -273,6 +273,25 @@ SIRV_CLIENT_ID = os.environ.get('SIRV_CLIENT_ID', '')
 SIRV_CLIENT_SECRET = os.environ.get('SIRV_CLIENT_SECRET', '')
 SIRV_PUBLIC_DOMAIN = os.environ.get('SIRV_PUBLIC_DOMAIN', 'lottus.sirv.com')
 
+# Correo (PQRS y notificaciones transaccionales). Sin EMAIL_HOST_USER /
+# EMAIL_HOST_PASSWORD configurados se usa el backend de consola (los correos
+# se imprimen en el log del servidor) para no romper el flujo en desarrollo
+# local sin credenciales SMTP reales.
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+if EMAIL_HOST_USER and EMAIL_HOST_PASSWORD:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
+EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() in ('true', '1', 't')
+EMAIL_USE_SSL = os.environ.get('EMAIL_USE_SSL', 'False').lower() in ('true', '1', 't')
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL') or EMAIL_HOST_USER or 'no-reply@muebleslottus.com'
+
+# Correo interno que recibe la notificación de cada PQRS nuevo (equipo LOTTUS)
+PQRS_NOTIFY_EMAIL = os.environ.get('PQRS_NOTIFY_EMAIL', 'ventas@lottus.com.co')
+
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
