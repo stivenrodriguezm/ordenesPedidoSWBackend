@@ -290,7 +290,7 @@ EMAIL_USE_SSL = os.environ.get('EMAIL_USE_SSL', 'False').lower() in ('true', '1'
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL') or EMAIL_HOST_USER or 'no-reply@muebleslottus.com'
 
 # Correo interno que recibe la notificación de cada PQRS nuevo (equipo LOTTUS)
-PQRS_NOTIFY_EMAIL = os.environ.get('PQRS_NOTIFY_EMAIL', 'ventas@lottus.com.co')
+PQRS_NOTIFY_EMAIL = os.environ.get('PQRS_NOTIFY_EMAIL', 'muebleslottus@gmail.com')
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
