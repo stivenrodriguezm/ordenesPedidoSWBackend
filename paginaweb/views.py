@@ -23,7 +23,7 @@ from .serializers import (
 from .sirv import upload_to_sirv, SirvUploadError
 from .image_utils import convert_raw_to_jpeg, RawConversionError, RAW_EXTENSIONS
 from . import emails as pqrs_emails
-from ordenes.permissions import IsAdministradorRole
+from ordenes.permissions import check_feature_permission
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,15 @@ def public_settings(request):
 class PaginawebProductoAdminViewSet(viewsets.ModelViewSet):
     queryset = PaginawebProducto.objects.all()
     serializer_class = PaginawebProductoSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdministradorRole]
+
+    def get_permissions(self):
+        if self.action == 'create':
+            return [permissions.IsAuthenticated(), check_feature_permission('CREAR_PRODUCTO_WEB')()]
+        if self.action in ['update', 'partial_update']:
+            return [permissions.IsAuthenticated(), check_feature_permission('EDITAR_PRODUCTO_WEB')()]
+        if self.action == 'destroy':
+            return [permissions.IsAuthenticated(), check_feature_permission('ELIMINAR_PRODUCTO_WEB')()]
+        return [permissions.IsAuthenticated(), check_feature_permission('GESTION_WEB')()]
 
     def perform_create(self, serializer):
         data = self.request.data
@@ -149,7 +157,7 @@ class PaginawebProductoAdminViewSet(viewsets.ModelViewSet):
 
 
 @api_view(['POST', 'GET'])
-@permission_classes([permissions.IsAuthenticated, IsAdministradorRole])
+@permission_classes([permissions.IsAuthenticated, check_feature_permission('GESTION_WEB')])
 def admin_settings(request):
     """
     POST /api/paginaweb/admin/settings/
@@ -159,6 +167,9 @@ def admin_settings(request):
         settings_objs = PaginawebSetting.objects.all()
         settings_dict = {obj.key: obj.value for obj in settings_objs}
         return Response({"settings": settings_dict})
+
+    if not check_feature_permission('EDITAR_CONFIGURACION_WEB')().has_permission(request, None):
+        return Response({"error": "No tienes permiso para editar la configuración del sitio."}, status=status.HTTP_403_FORBIDDEN)
 
     data = request.data
     if isinstance(data, dict):
@@ -172,7 +183,7 @@ def admin_settings(request):
 
 
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated, IsAdministradorRole])
+@permission_classes([permissions.IsAuthenticated, check_feature_permission('GESTION_WEB')])
 def admin_upload_image(request):
     """
     POST /api/paginaweb/upload/
@@ -285,7 +296,11 @@ class AsesorPerfilAdminViewSet(viewsets.ModelViewSet):
     """
     queryset = AsesorPerfil.objects.all()
     serializer_class = AsesorAdminSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdministradorRole]
+
+    def get_permissions(self):
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            return [permissions.IsAuthenticated(), check_feature_permission('ADMINISTRAR_ASESORES_WEB')()]
+        return [permissions.IsAuthenticated(), check_feature_permission('GESTION_WEB')()]
 
     def perform_create(self, serializer):
         data = self.request.data
@@ -309,7 +324,7 @@ class AsesorPerfilAdminViewSet(viewsets.ModelViewSet):
 
 
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated, IsAdministradorRole])
+@permission_classes([permissions.IsAuthenticated, check_feature_permission('ADMINISTRAR_ASESORES_WEB')])
 def admin_upload_asesor_foto(request):
     """
     POST /api/paginaweb/admin/asesores/upload-foto/
@@ -400,7 +415,11 @@ class PqrsAdminViewSet(viewsets.ModelViewSet):
     """
     queryset = PqrsTicket.objects.all()
     serializer_class = PqrsAdminSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdministradorRole]
+
+    def get_permissions(self):
+        if self.action in ['update', 'partial_update', 'responder']:
+            return [permissions.IsAuthenticated(), check_feature_permission('RESPONDER_PQRS')()]
+        return [permissions.IsAuthenticated(), check_feature_permission('GESTION_WEB')()]
 
     def create(self, request, *args, **kwargs):
         return Response(

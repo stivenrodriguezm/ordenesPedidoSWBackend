@@ -309,7 +309,7 @@ class RolePermissionViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         from .models import RolePermission
-        default_roles = ['vendedor', 'administrador', 'auxiliar', 'transportador']
+        default_roles = ['vendedor', 'administrador', 'auxiliar', 'transportador', 'marketing']
         try:
             for role_code in default_roles:
                 RolePermission.objects.get_or_create(role=role_code, defaults={'permissions': []})
