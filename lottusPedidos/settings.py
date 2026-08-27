@@ -75,6 +75,8 @@ CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOWED_ORIGINS = [
+    'https://muebleslottus.com',       # Sitio público (paginaweb) — dominio raíz
+    'https://www.muebleslottus.com',   # Sitio público (paginaweb) — con www
     'https://app.muebleslottus.com',   # Producción Frontend HTTPS
     'https://api.muebleslottus.com',   # Producción Backend HTTPS
     'https://stivenrodriguezm.github.io',   # Sitio público (paginaweb) en GitHub Pages
@@ -115,6 +117,8 @@ CORS_ALLOW_HEADERS = [
 ]
 
 CSRF_TRUSTED_ORIGINS = [
+    'https://muebleslottus.com',       # Sitio público (paginaweb) — dominio raíz
+    'https://www.muebleslottus.com',   # Sitio público (paginaweb) — con www
     'https://app.muebleslottus.com',   # Producción Frontend
     'https://api.muebleslottus.com',   # Producción Backend
 ]
