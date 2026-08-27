@@ -144,14 +144,20 @@ class LineaProductoViewSet(viewsets.ModelViewSet):
     serializer_class = LineaProductoSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter]
     filterset_fields = ['activo']
-    search_fields = ['nombre']
+    # Busca por nombre de la línea/colección (ej. "Detroit") o por nombre de
+    # cualquiera de sus variantes (ej. "Sofá 3p.") — cualquiera de las dos
+    # formas en que el admin suele buscar un producto.
+    search_fields = ['nombre', 'variantes__nombre']
 
     def get_queryset(self):
         qs = self.queryset
         categoria = self.request.query_params.get('categoria')
         if categoria:
-            qs = qs.filter(variantes__categoria=categoria).distinct()
-        return qs
+            qs = qs.filter(variantes__categoria=categoria)
+        # distinct() siempre: tanto el filtro por categoría como la búsqueda
+        # por variantes__nombre atraviesan una relación a-muchos y pueden
+        # duplicar filas de LineaProducto sin esto.
+        return qs.distinct()
 
     def get_permissions(self):
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
