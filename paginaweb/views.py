@@ -2,6 +2,8 @@ from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.views import APIView
+from rest_framework.throttling import ScopedRateThrottle
 from django.conf import settings
 from django.db.models import Q
 from django.http import HttpResponse
@@ -21,9 +23,9 @@ from .serializers import (
     PqrsPublicCreateSerializer, PqrsAdminSerializer, PqrsTrackingSerializer,
 )
 from .sirv import upload_to_sirv, SirvUploadError
-from .image_utils import convert_raw_to_jpeg, RawConversionError, RAW_EXTENSIONS
+from .image_utils import convert_raw_to_jpeg, RawConversionError, RAW_EXTENSIONS, validate_image, InvalidImageError
 from . import emails as pqrs_emails
-from ordenes.permissions import IsAdministradorRole
+from ordenes.permissions import check_feature_permission
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +124,15 @@ def public_settings(request):
 class PaginawebProductoAdminViewSet(viewsets.ModelViewSet):
     queryset = PaginawebProducto.objects.all()
     serializer_class = PaginawebProductoSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdministradorRole]
+
+    def get_permissions(self):
+        if self.action == 'create':
+            return [permissions.IsAuthenticated(), check_feature_permission('CREAR_PRODUCTO_WEB')()]
+        if self.action in ['update', 'partial_update']:
+            return [permissions.IsAuthenticated(), check_feature_permission('EDITAR_PRODUCTO_WEB')()]
+        if self.action == 'destroy':
+            return [permissions.IsAuthenticated(), check_feature_permission('ELIMINAR_PRODUCTO_WEB')()]
+        return [permissions.IsAuthenticated(), check_feature_permission('GESTION_WEB')()]
 
     def perform_create(self, serializer):
         data = self.request.data
@@ -149,7 +159,7 @@ class PaginawebProductoAdminViewSet(viewsets.ModelViewSet):
 
 
 @api_view(['POST', 'GET'])
-@permission_classes([permissions.IsAuthenticated, IsAdministradorRole])
+@permission_classes([permissions.IsAuthenticated, check_feature_permission('GESTION_WEB')])
 def admin_settings(request):
     """
     POST /api/paginaweb/admin/settings/
@@ -159,6 +169,9 @@ def admin_settings(request):
         settings_objs = PaginawebSetting.objects.all()
         settings_dict = {obj.key: obj.value for obj in settings_objs}
         return Response({"settings": settings_dict})
+
+    if not check_feature_permission('EDITAR_CONFIGURACION_WEB')().has_permission(request, None):
+        return Response({"error": "No tienes permiso para editar la configuración del sitio."}, status=status.HTTP_403_FORBIDDEN)
 
     data = request.data
     if isinstance(data, dict):
@@ -172,7 +185,7 @@ def admin_settings(request):
 
 
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated, IsAdministradorRole])
+@permission_classes([permissions.IsAuthenticated, check_feature_permission('GESTION_WEB')])
 def admin_upload_image(request):
     """
     POST /api/paginaweb/upload/
@@ -182,10 +195,13 @@ def admin_upload_image(request):
     if not files:
         return Response({"error": "No se enviaron archivos"}, status=status.HTTP_400_BAD_REQUEST)
 
+    max_size = 15 * 1024 * 1024
     uploaded_urls = []
     for f in files:
+        if f.size > max_size:
+            return Response({"error": f"'{f.name}' supera el máximo de 15 MB"}, status=status.HTTP_400_BAD_REQUEST)
+
         ext = os.path.splitext(f.name)[1].lower()
-        content_type = f.content_type
         file_bytes = f.read()
 
         if ext in RAW_EXTENSIONS:
@@ -201,8 +217,18 @@ def admin_upload_image(request):
                 )
             ext = '.jpg'
             content_type = 'image/jpeg'
-        elif ext not in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif']:
-            ext = '.jpg'
+        else:
+            # No confiar en la extensión ni el content-type declarados por el
+            # cliente: se verifica que los bytes sean realmente una imagen
+            # decodificable antes de subirlos a Sirv (evita subir un archivo
+            # arbitrario disfrazado con extensión .jpg).
+            try:
+                ext, content_type = validate_image(file_bytes)
+            except InvalidImageError:
+                return Response(
+                    {"error": f"'{f.name}' no es una imagen válida."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         filename = f"paginaweb/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
         try:
@@ -285,7 +311,12 @@ class AsesorPerfilAdminViewSet(viewsets.ModelViewSet):
     """
     queryset = AsesorPerfil.objects.all()
     serializer_class = AsesorAdminSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdministradorRole]
+
+    def get_permissions(self):
+        # Ver la "Paleta de Vendedores" ya requiere el mismo permiso que
+        # administrarla — GESTION_WEB por sí solo ya no basta, para que un
+        # rol sin este permiso ni siquiera pueda listar los asesores.
+        return [permissions.IsAuthenticated(), check_feature_permission('ADMINISTRAR_ASESORES_WEB')()]
 
     def perform_create(self, serializer):
         data = self.request.data
@@ -309,7 +340,7 @@ class AsesorPerfilAdminViewSet(viewsets.ModelViewSet):
 
 
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated, IsAdministradorRole])
+@permission_classes([permissions.IsAuthenticated, check_feature_permission('ADMINISTRAR_ASESORES_WEB')])
 def admin_upload_asesor_foto(request):
     """
     POST /api/paginaweb/admin/asesores/upload-foto/
@@ -323,12 +354,15 @@ def admin_upload_asesor_foto(request):
     if f.size > max_size:
         return Response({"error": "La imagen supera el máximo de 5 MB"}, status=status.HTTP_400_BAD_REQUEST)
 
-    ext = os.path.splitext(f.name)[1].lower()
-    if ext not in ['.jpg', '.jpeg', '.png', '.webp']:
-        ext = '.jpg'
+    file_bytes = f.read()
+    try:
+        ext, content_type = validate_image(file_bytes)
+    except InvalidImageError:
+        return Response({"error": "El archivo no es una imagen válida."}, status=status.HTTP_400_BAD_REQUEST)
+
     filename = f"asesores/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
     try:
-        url = upload_to_sirv(f.read(), filename, f.content_type)
+        url = upload_to_sirv(file_bytes, filename, content_type)
     except SirvUploadError:
         logger.exception("Error subiendo foto de asesor a Sirv")
         return Response({"error": "No se pudo subir la imagen. Intenta de nuevo."}, status=status.HTTP_502_BAD_GATEWAY)
@@ -340,55 +374,66 @@ def admin_upload_asesor_foto(request):
 # PQRS — Peticiones, Quejas, Reclamos y Sugerencias (formulario de Contacto)
 # ============================================================
 
-@api_view(['POST'])
-@permission_classes([permissions.AllowAny])
-def public_create_pqrs(request):
+class PublicCreatePqrsView(APIView):
     """
     POST /api/paginaweb/pqrs/
     Crea un ticket desde el formulario público de "Contacto" y envía el
     correo de confirmación al cliente (más una notificación interna).
+    Throttle propio y bajo (ver 'pqrs_create' en settings) para que un bot no
+    pueda inundar el buzón de PQRS ni el correo de un tercero con envíos
+    automatizados.
     """
-    serializer = PqrsPublicCreateSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    ticket = serializer.save(id=str(uuid.uuid4()))
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'pqrs_create'
 
-    pqrs_emails.send_confirmation_email(ticket)
-    pqrs_emails.send_internal_notification(ticket)
+    def post(self, request):
+        serializer = PqrsPublicCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        ticket = serializer.save(id=str(uuid.uuid4()))
 
-    return Response({
-        "ok": True,
-        "radicado": ticket.radicado,
-        "message": "Hemos recibido tu solicitud. Revisa tu correo para ver la confirmación.",
-    }, status=status.HTTP_201_CREATED)
+        pqrs_emails.send_confirmation_email(ticket)
+        pqrs_emails.send_internal_notification(ticket)
+
+        return Response({
+            "ok": True,
+            "radicado": ticket.radicado,
+            "message": "Hemos recibido tu solicitud. Revisa tu correo para ver la confirmación.",
+        }, status=status.HTTP_201_CREATED)
 
 
-@api_view(['POST'])
-@permission_classes([permissions.AllowAny])
-def public_track_pqrs(request):
+class PublicTrackPqrsView(APIView):
     """
     POST /api/paginaweb/pqrs/rastrear/  { "radicado": "PQRS-XXXXXXXX", "email": "..." }
     Consulta pública de seguimiento. Exige radicado + correo juntos (no solo
     el radicado) para que no cualquiera pueda leer el caso de otra persona
     adivinando/probando radicados — el correo actúa como segundo factor,
     igual que en los portales de PQRS típicos que piden radicado + documento.
+    Throttle propio y bajo (ver 'pqrs_track' en settings) para frenar el
+    fuerza bruta de radicados/correos.
     """
-    radicado = (request.data.get('radicado') or '').strip().upper()
-    email = (request.data.get('email') or '').strip().lower()
-    if not radicado or not email:
-        return Response(
-            {"error": "Ingresa el radicado y el correo con el que lo creaste."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'pqrs_track'
 
-    prefix = radicado[5:] if radicado.startswith('PQRS-') else radicado
-    if len(prefix) < 6:
-        return Response({"error": "No encontramos un PQRS con esos datos."}, status=status.HTTP_404_NOT_FOUND)
+    def post(self, request):
+        radicado = (request.data.get('radicado') or '').strip().upper()
+        email = (request.data.get('email') or '').strip().lower()
+        if not radicado or not email:
+            return Response(
+                {"error": "Ingresa el radicado y el correo con el que lo creaste."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-    ticket = PqrsTicket.objects.filter(id__istartswith=prefix, email__iexact=email).first()
-    if not ticket:
-        return Response({"error": "No encontramos un PQRS con esos datos."}, status=status.HTTP_404_NOT_FOUND)
+        prefix = radicado[5:] if radicado.startswith('PQRS-') else radicado
+        if len(prefix) < 6:
+            return Response({"error": "No encontramos un PQRS con esos datos."}, status=status.HTTP_404_NOT_FOUND)
 
-    return Response(PqrsTrackingSerializer(ticket).data)
+        ticket = PqrsTicket.objects.filter(id__istartswith=prefix, email__iexact=email).first()
+        if not ticket:
+            return Response({"error": "No encontramos un PQRS con esos datos."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(PqrsTrackingSerializer(ticket).data)
 
 
 class PqrsAdminViewSet(viewsets.ModelViewSet):
@@ -400,7 +445,12 @@ class PqrsAdminViewSet(viewsets.ModelViewSet):
     """
     queryset = PqrsTicket.objects.all()
     serializer_class = PqrsAdminSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdministradorRole]
+
+    def get_permissions(self):
+        # Ver los tickets PQRS ya requiere el mismo permiso que responderlos
+        # — GESTION_WEB por sí solo ya no basta, para que un rol sin este
+        # permiso ni siquiera pueda listarlos.
+        return [permissions.IsAuthenticated(), check_feature_permission('RESPONDER_PQRS')()]
 
     def create(self, request, *args, **kwargs):
         return Response(

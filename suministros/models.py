@@ -162,6 +162,7 @@ class FacturaProveedor(models.Model):
         ('pendiente', 'Pendiente'),
         ('atrasada', 'Atrasada'),
         ('pago_en_proceso', 'Pago en proceso'),
+        ('anulada', 'Anulada'),
     ]
     # No es unique=True a nivel global: distintos proveedores numeran sus propias
     # facturas de forma independiente, así que es normal y esperado que el mismo

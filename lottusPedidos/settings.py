@@ -141,6 +141,9 @@ if not DEBUG:
     SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     X_FRAME_OPTIONS = 'DENY'
+    # Redirección forzada a HTTPS a nivel de Django, como respaldo por si el
+    # proxy/nginx llegara a no redirigir HTTP->HTTPS por sí mismo.
+    SECURE_SSL_REDIRECT = True
 else:
     CSRF_COOKIE_SECURE = False
     SESSION_COOKIE_SECURE = False
@@ -158,6 +161,7 @@ INSTALLED_APPS = [
     'ordenes',
     'suministros',
     'paginaweb',
+    'listaprecios',
     'django_extensions',
     'django_filters',
 ]
@@ -263,7 +267,7 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-# URL pública del sitio (webLottusPrueba) — usada para construir enlaces
+# URL pública del sitio (webLottus) — usada para construir enlaces
 # absolutos (perfil de asesor, QR) fuera del dominio del API.
 PUBLIC_SITE_URL = os.environ.get('PUBLIC_SITE_URL', 'http://localhost:4000').rstrip('/')
 
@@ -312,6 +316,8 @@ REST_FRAMEWORK = {
         'anon': '1000/day',
         'user': '10000/day',
         'login': '10/min',
+        'pqrs_create': '5/hour',
+        'pqrs_track': '20/hour',
     }
 }
 

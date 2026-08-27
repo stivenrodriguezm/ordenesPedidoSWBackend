@@ -129,6 +129,13 @@ def dashboard_stats(request):
         }
         return Response(data)
 
+    # Dashboard general: requiere el permiso explícito (administrador lo tiene
+    # siempre vía check_feature_permission) — sin esto, cualquier rol
+    # autenticado (marketing, transportador, etc.) podía ver las cifras
+    # globales del negocio con solo pegarle a este endpoint.
+    if not check_feature_permission('VER_DASHBOARD_GENERAL')().has_permission(request, None):
+        return Response({'detail': 'No tienes permiso para ver este dashboard.'}, status=403)
+
     # For admin/auxiliar: return global stats
     ventas = Venta.objects.exclude(estado='anulado')
     ventas_dia = ventas.filter(fecha_venta=today).aggregate(total=Sum('valor_total'))['total'] or 0
@@ -160,6 +167,11 @@ def sales_chart_data(request):
     current_year = today.year
     last_year = current_year - 1
     user = request.user
+
+    # Salvo cuando el propio vendedor pide sus datos, esto es el gráfico
+    # global (o el de otro vendedor puntual) del dashboard general.
+    if user.role != 'vendedor' and not check_feature_permission('VER_DASHBOARD_GENERAL')().has_permission(request, None):
+        return Response({'detail': 'No tienes permiso para ver este gráfico.'}, status=403)
 
     ventas = Venta.objects.exclude(estado='anulado')
 
@@ -309,7 +321,7 @@ class RolePermissionViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         from .models import RolePermission
-        default_roles = ['vendedor', 'administrador', 'auxiliar', 'transportador']
+        default_roles = ['vendedor', 'administrador', 'auxiliar', 'transportador', 'marketing']
         try:
             for role_code in default_roles:
                 RolePermission.objects.get_or_create(role=role_code, defaults={'permissions': []})
@@ -1029,10 +1041,11 @@ class ClientePagination(StandardResultsSetPagination):
 class ClienteFilter(django_filters.FilterSet):
     query = django_filters.CharFilter(method='filter_by_query', label='Buscar')
     search = django_filters.CharFilter(method='filter_by_query', label='Buscar')
+    cedula = django_filters.CharFilter(field_name='cedula', lookup_expr='exact')
 
     class Meta:
         model = Cliente
-        fields = ['query', 'search']
+        fields = ['query', 'search', 'cedula']
 
     def filter_by_query(self, queryset, name, value):
         if not value or not str(value).strip():
@@ -1497,6 +1510,127 @@ def crear_recibo_caja(request):
 
     return Response(ReciboCajaSerializer(recibo).data, status=status.HTTP_201_CREATED)
 
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated, check_feature_permission('EDITAR_RECIBO')])
+@transaction.atomic
+def editar_recibo_caja(request, recibo_id):
+    """Edita un recibo existente. Por diseño, los pagos ya 'Confirmado' (que ya
+    sumaron a Caja y al abono/saldo de la venta) nunca se tocan aquí — Caja es un
+    libro de solo-agregar sin operación de edición/reversión en todo el sistema.
+    Solo se pueden editar/quitar líneas 'Pendiente' y agregar líneas nuevas
+    (una línea nueva en Efectivo se confirma al instante, igual que al crear)."""
+    try:
+        recibo = ReciboCaja.objects.select_related('venta').prefetch_related('pagos').get(id=recibo_id)
+    except ReciboCaja.DoesNotExist:
+        return Response({"error": "Recibo no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+    data = request.data
+    pagos_pendientes_data = data.get('pagos_pendientes')
+    if not isinstance(pagos_pendientes_data, list):
+        return Response({"error": "Formato de pagos inválido."}, status=status.HTTP_400_BAD_REQUEST)
+
+    pagos_existentes = list(recibo.pagos.all())
+    pagos_confirmados = [p for p in pagos_existentes if p.estado == 'Confirmado']
+    pagos_pendientes_actuales = {p.id: p for p in pagos_existentes if p.estado != 'Confirmado'}
+
+    # Venta: solo se puede cambiar si el recibo todavía no tiene pagos confirmados
+    # (evita dejar contabilidad ya aplicada colgando de la venta equivocada).
+    venta_id = data.get('venta')
+    if venta_id is not None:
+        try:
+            venta_id_int = int(venta_id)
+        except (TypeError, ValueError):
+            return Response({"error": "Venta inválida."}, status=status.HTTP_400_BAD_REQUEST)
+        if venta_id_int != recibo.venta_id:
+            if pagos_confirmados:
+                return Response({"error": "No se puede cambiar la venta de un recibo con pagos ya confirmados."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                recibo.venta = Venta.objects.get(id=venta_id_int)
+            except Venta.DoesNotExist:
+                return Response({"error": "Venta no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+    fecha_str_input = data.get('fecha')
+    if fecha_str_input:
+        try:
+            recibo.fecha = datetime.strptime(fecha_str_input, '%Y-%m-%d').date()
+        except (ValueError, TypeError):
+            return Response({"error": "La fecha debe tener formato YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+
+    recibo.nota = data.get('nota') or None
+    recibo.save(update_fields=['venta', 'fecha', 'nota'])
+
+    medios_validos = {c[0] for c in PagoReciboCaja.MEDIO_PAGO_CHOICES}
+    ids_enviados = set()
+    lineas_parseadas = []  # (pago_existente_o_None, metodo, valor)
+    for pago in pagos_pendientes_data:
+        metodo = pago.get('metodo_pago')
+        if metodo not in medios_validos:
+            return Response({"error": f"Método de pago inválido: {metodo}"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            valor = Decimal(str(pago.get('valor', 0)))
+        except (InvalidOperation, TypeError):
+            valor = Decimal('0')
+        if valor <= 0:
+            return Response({"error": "Cada pago debe tener un valor mayor a cero."}, status=status.HTTP_400_BAD_REQUEST)
+
+        pago_id = pago.get('id')
+        pago_existente = None
+        if pago_id is not None:
+            try:
+                pago_existente = pagos_pendientes_actuales[int(pago_id)]
+            except (KeyError, TypeError, ValueError):
+                return Response({"error": "Uno de los pagos a editar ya no existe o ya fue confirmado."}, status=status.HTTP_400_BAD_REQUEST)
+            ids_enviados.add(pago_existente.id)
+        lineas_parseadas.append((pago_existente, metodo, valor))
+
+    if not pagos_confirmados and not lineas_parseadas:
+        return Response({"error": "El recibo debe tener al menos un pago."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Las líneas pendientes existentes que ya no vienen en la lista se eliminan
+    # (nunca tuvieron efecto en Caja/venta, así que borrarlas es seguro).
+    for pago_id, pago in pagos_pendientes_actuales.items():
+        if pago_id not in ids_enviados:
+            pago.delete()
+
+    usuario_nombre = request.user.first_name or request.user.username
+    fecha_str = recibo.fecha.strftime('%d-%b-%Y').lower()
+
+    for pago_existente, metodo, valor in lineas_parseadas:
+        if pago_existente is not None:
+            pago_existente.metodo_pago = metodo
+            pago_existente.valor = valor
+            pago_existente.save(update_fields=['metodo_pago', 'valor'])
+        else:
+            if metodo == 'Efectivo':
+                confirmacion_text = f"Confirmado el {fecha_str} por {usuario_nombre}"
+                PagoReciboCaja.objects.create(
+                    recibo=recibo, metodo_pago=metodo, valor=valor,
+                    estado='Confirmado', confirmacion=confirmacion_text
+                )
+                recibo.venta.abono = F('abono') + valor
+                recibo.venta.saldo = F('saldo') - valor
+                recibo.venta.save(update_fields=['abono', 'saldo'])
+                recibo.venta.refresh_from_db(fields=['abono', 'saldo'])
+
+                caja_data = {
+                    'concepto': f"OC. {recibo.venta.id}, RC. {recibo.id}",
+                    'valor': valor,
+                    'tipo': 'ingreso',
+                }
+                caja_serializer = CajaSerializer(data=caja_data, context={'request': request})
+                caja_serializer.is_valid(raise_exception=True)
+                caja_serializer.save()
+            else:
+                PagoReciboCaja.objects.create(recibo=recibo, metodo_pago=metodo, valor=valor, estado='Pendiente')
+
+    # Recargar sin la caché de prefetch original: las líneas borradas/creadas
+    # arriba dejarían datos obsoletos (p. ej. un pago borrado queda con pk=None
+    # en el objeto ya cacheado) si se serializara el `recibo` tal cual.
+    recibo_actualizado = ReciboCaja.objects.select_related('venta').prefetch_related('pagos').get(id=recibo.id)
+    return Response(ReciboCajaSerializer(recibo_actualizado).data, status=status.HTTP_200_OK)
+
+
 class ProveedorTelaViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         from .permissions import check_feature_permission
@@ -1550,6 +1684,31 @@ class PedidoTelaViewSet(viewsets.ModelViewSet):
             ).distinct()
         else:
             queryset = queryset.none()
+
+        # Búsqueda de texto libre: intencionalmente ignora los filtros de
+        # Proveedor/Estado de los popovers (que el usuario no relaciona con la
+        # caja de búsqueda) para que buscar por cualquiera de las columnas de
+        # la tabla (Proveedor, Fabricante, Usuario, Vendedor, ID, Orden
+        # Asociada, Venta) siempre encuentre todo lo que exista, sin importar
+        # qué haya quedado marcado/desmarcado en esos filtros.
+        search = (self.request.query_params.get('search') or '').strip()
+        if search:
+            search_q = (
+                Q(proveedor__nombre_empresa__icontains=search) |          # Proveedor (de la tela)
+                Q(usuario__first_name__icontains=search) |                # Usuario (quien creó el pedido)
+                Q(orden_asociada__proveedor__nombre_empresa__icontains=search) |  # Fabricante (proveedor de la OP)
+                Q(orden_asociada__venta__vendedor__first_name__icontains=search) |  # Vendedor
+                Q(orden_asociada__venta__vendedores_compartidos__first_name__icontains=search)  # Vendedor compartido
+            )
+            if search.isdigit():
+                search_q |= (
+                    Q(id=int(search)) |                          # ID del pedido de tela (PT)
+                    Q(orden_asociada_id=int(search)) |            # Orden Asociada
+                    Q(orden_asociada__venta_id=int(search))       # Venta
+                )
+            # .distinct() evita filas duplicadas por el JOIN a través del M2M
+            # vendedores_compartidos cuando el pedido matchea por esa vía.
+            return queryset.filter(search_q).distinct()
 
         # Filter by provider
         proveedor_id = self.request.query_params.get('proveedor')

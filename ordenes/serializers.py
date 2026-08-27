@@ -2,6 +2,7 @@ from rest_framework import serializers
 import logging
 from decimal import Decimal
 from django.db import transaction
+from django.utils import timezone
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -45,6 +46,12 @@ class UserManageSerializer(serializers.ModelSerializer):
             except DjangoValidationError as e:
                 raise serializers.ValidationError({"password": e.messages})
             instance.set_password(password)
+        if not instance.date_joined:
+            # Algunas cuentas antiguas fueron insertadas directo en la BD (fuera
+            # del ORM) sin `date_joined`, y esa columna es NOT NULL: guardar la
+            # instancia tal cual revienta con IntegrityError. Se rellena aquí
+            # con un valor razonable en vez de dejar la edición del usuario rota.
+            instance.date_joined = timezone.now()
         instance.save()
         return instance
 
@@ -353,7 +360,7 @@ class ComprobanteEgresoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ComprobanteEgreso
-        fields = ['id', 'proveedor', 'proveedor_nombre', 'proveedor_otro_nombre', 'medio_pago', 'estado', 'valor', 'descripcion', 'fecha', 'concepto', 'recibido_por', 'facturas_detalle']
+        fields = ['id', 'proveedor', 'proveedor_nombre', 'proveedor_otro_nombre', 'medio_pago', 'estado', 'valor', 'descripcion', 'fecha', 'concepto', 'recibido_por', 'facturas_detalle', 'otros_conceptos']
 
     def get_proveedor_nombre(self, obj):
         try:

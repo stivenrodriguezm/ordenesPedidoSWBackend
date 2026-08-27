@@ -8,6 +8,7 @@ class CustomUser(AbstractUser):
         ('administrador', 'Administrador'),
         ('auxiliar', 'Auxiliar'),
         ('transportador', 'Transportador'),
+        ('marketing', 'Marketing'),
     )
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='vendedor')
 
@@ -191,6 +192,11 @@ class ComprobanteEgreso(models.Model):
     descripcion = models.TextField(blank=True, null=True)
     concepto = models.CharField(max_length=255, default='', blank=True)
     recibido_por = models.CharField(max_length=255, blank=True, default='')
+    # Desglose estructurado de conceptos libres (envíos, instalaciones, etc.)
+    # que no corresponden a una factura: [{"descripcion": str, "valor": number}].
+    # Permite renderizarlos como lista/tabla en el imprimible en vez de texto
+    # concatenado dentro de `descripcion`.
+    otros_conceptos = models.JSONField(default=list, blank=True)
 
 class ProveedorTela(models.Model):
     nombre_empresa = models.CharField(max_length=255, unique=True, default='N/A')

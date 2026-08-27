@@ -18,6 +18,7 @@ urlpatterns = [
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("api/suministros/", include("suministros.urls")),
     path("api/paginaweb/", include("paginaweb.urls")),
+    path("api/listaprecios/", include("listaprecios.urls")),
     path("api/", include("ordenes.urls")),  # Incluye las rutas de la app ordenes
     path("admin/", admin.site.urls),
 ]

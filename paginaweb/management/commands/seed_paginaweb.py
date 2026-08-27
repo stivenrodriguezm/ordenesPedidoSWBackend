@@ -5,11 +5,11 @@ from django.conf import settings
 from paginaweb.models import PaginawebProducto, PaginawebSetting
 
 class Command(BaseCommand):
-    help = 'Poblar datos iniciales del catálogo web desde webLottusPrueba/data'
+    help = 'Poblar datos iniciales del catálogo web desde webLottus/data'
 
     def handle(self, *args, **options):
         base_dir = settings.BASE_DIR
-        data_dir = os.path.join(base_dir.parent, 'webLottusPrueba', 'data')
+        data_dir = os.path.join(base_dir.parent, 'webLottus', 'data')
         
         products_file = os.path.join(data_dir, 'products.json')
         settings_file = os.path.join(data_dir, 'settings.json')
