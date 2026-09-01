@@ -59,10 +59,10 @@ def upload_to_sirv(file_bytes, filename, content_type=None):
                 "Authorization": f"Bearer {token}",
                 "Content-Type": content_type or "application/octet-stream",
             },
-            # Fotos en alta resolución pueden pesar varias decenas de MB — con
-            # una conexión lenta la subida a Sirv puede tardar más que unos
-            # pocos segundos, así que este timeout es generoso a propósito.
-            timeout=90,
+            # Fotos en alta resolución (y sobre todo videos, hasta 100 MB) con
+            # una conexión lenta pueden tardar bastante más que unos pocos
+            # segundos en subir — timeout generoso a propósito.
+            timeout=180,
         )
     except requests.exceptions.RequestException as e:
         raise SirvUploadError(f"No se pudo conectar con Sirv para subir el archivo: {e}")

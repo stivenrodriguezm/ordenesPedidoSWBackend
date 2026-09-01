@@ -23,7 +23,10 @@ from .serializers import (
     PqrsPublicCreateSerializer, PqrsAdminSerializer, PqrsTrackingSerializer,
 )
 from .sirv import upload_to_sirv, SirvUploadError
-from .image_utils import convert_raw_to_jpeg, RawConversionError, RAW_EXTENSIONS, validate_image, InvalidImageError
+from .image_utils import (
+    convert_raw_to_jpeg, RawConversionError, RAW_EXTENSIONS,
+    validate_image, InvalidImageError, validate_video, InvalidVideoError,
+)
 from . import emails as pqrs_emails
 from ordenes.permissions import check_feature_permission
 
@@ -195,11 +198,12 @@ def admin_upload_image(request):
     if not files:
         return Response({"error": "No se enviaron archivos"}, status=status.HTTP_400_BAD_REQUEST)
 
-    max_size = 15 * 1024 * 1024
+    max_image_size = 15 * 1024 * 1024
+    max_video_size = 100 * 1024 * 1024
     uploaded_urls = []
     for f in files:
-        if f.size > max_size:
-            return Response({"error": f"'{f.name}' supera el máximo de 15 MB"}, status=status.HTTP_400_BAD_REQUEST)
+        if f.size > max_video_size:
+            return Response({"error": f"'{f.name}' supera el máximo de 100 MB"}, status=status.HTTP_400_BAD_REQUEST)
 
         ext = os.path.splitext(f.name)[1].lower()
         file_bytes = f.read()
@@ -219,16 +223,25 @@ def admin_upload_image(request):
             content_type = 'image/jpeg'
         else:
             # No confiar en la extensión ni el content-type declarados por el
-            # cliente: se verifica que los bytes sean realmente una imagen
-            # decodificable antes de subirlos a Sirv (evita subir un archivo
-            # arbitrario disfrazado con extensión .jpg).
+            # cliente: se verifica que los bytes sean realmente una imagen o
+            # un video decodificable antes de subirlos a Sirv (evita subir un
+            # archivo arbitrario disfrazado con extensión .jpg/.mp4). La
+            # galería del sitio soporta ambos en el mismo campo "images".
             try:
                 ext, content_type = validate_image(file_bytes)
+                if f.size > max_image_size:
+                    return Response(
+                        {"error": f"'{f.name}' supera el máximo de 15 MB para imágenes"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
             except InvalidImageError:
-                return Response(
-                    {"error": f"'{f.name}' no es una imagen válida."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                try:
+                    ext, content_type = validate_video(file_bytes)
+                except InvalidVideoError:
+                    return Response(
+                        {"error": f"'{f.name}' no es una imagen ni un video válido (usa JPG, PNG, WEBP, MP4, MOV o WEBM)."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
         filename = f"paginaweb/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
         try:

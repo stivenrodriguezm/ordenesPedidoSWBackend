@@ -37,6 +37,38 @@ _FORMAT_TO_EXT = {
 }
 
 
+class InvalidVideoError(Exception):
+    pass
+
+
+def validate_video(file_bytes):
+    """Verifica que ``file_bytes`` sea un video real reconocible (MP4/MOV/WebM)
+    inspeccionando la firma binaria del archivo — no la extensión ni el
+    content-type que haya declarado el cliente. Devuelve (extensión,
+    content-type) según el contenedor detectado.
+
+    No valida el códec interno (requeriría un parser completo o ffprobe, que
+    no están disponibles aquí); el objetivo es descartar archivos que no son
+    video en absoluto, igual que ``validate_image`` para fotos.
+    """
+    if len(file_bytes) < 12:
+        raise InvalidVideoError("El archivo es demasiado pequeño para ser un video válido.")
+
+    head = file_bytes[:12]
+    # MP4/MOV/M4V comparten el contenedor ISO Base Media: tras 4 bytes de
+    # tamaño de caja viene la firma ASCII 'ftyp'.
+    if head[4:8] == b'ftyp':
+        brand = head[8:12]
+        if brand.startswith(b'qt'):
+            return '.mov', 'video/quicktime'
+        return '.mp4', 'video/mp4'
+    # WebM/Matroska: cabecera EBML.
+    if head[:4] == b'\x1a\x45\xdf\xa3':
+        return '.webm', 'video/webm'
+
+    raise InvalidVideoError("El archivo no es un video soportado (usa MP4, MOV o WebM).")
+
+
 def validate_image(file_bytes):
     """Verifica que ``file_bytes`` sea una imagen real decodificable (no un
     archivo con extensión falsificada) y devuelve la extensión y content-type
