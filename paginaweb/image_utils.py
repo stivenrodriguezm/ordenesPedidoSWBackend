@@ -92,6 +92,60 @@ def validate_image(file_bytes):
     return _FORMAT_TO_EXT[fmt], _FORMAT_TO_CONTENT_TYPE[fmt]
 
 
+MAX_UPLOAD_DIMENSION = 3500  # px — más que suficiente para cualquier pantalla,
+# incluida una 4K a pantalla completa; una foto más grande que esto no aporta
+# nada visible en la web, solo peso.
+MAX_UPLOAD_BYTES = 9_500_000  # margen bajo el límite real de subida de
+# Cloudinary en el plan gratis (10 MB exactos) — ver media_limits de la cuenta.
+
+
+def optimize_image_for_upload(file_bytes, ext, content_type):
+    """Redimensiona y/o recomprime la imagen solo si hace falta para caber
+    bajo el límite de subida de Cloudinary, sin sacrificar calidad visible:
+    Cloudinary igual reoptimiza todo en la entrega (f_auto,q_auto), así que
+    subir un original de 20-40 MB de una cámara no mejora en nada lo que
+    finalmente ve el visitante — solo hacía fallar la subida.
+
+    Devuelve (bytes, extensión, content-type), iguales a los de entrada si
+    ya cabía sin tocar nada.
+    """
+    if len(file_bytes) <= MAX_UPLOAD_BYTES:
+        try:
+            with Image.open(io.BytesIO(file_bytes)) as img:
+                if max(img.size) <= MAX_UPLOAD_DIMENSION:
+                    return file_bytes, ext, content_type
+        except Exception:
+            return file_bytes, ext, content_type
+
+    with Image.open(io.BytesIO(file_bytes)) as img:
+        img.load()
+        fmt = img.format
+        if max(img.size) > MAX_UPLOAD_DIMENSION:
+            img.thumbnail((MAX_UPLOAD_DIMENSION, MAX_UPLOAD_DIMENSION), Image.LANCZOS)
+
+        has_alpha = img.mode in ('RGBA', 'LA') and img.getextrema()[-1][0] < 255
+
+        if fmt == 'PNG' and has_alpha:
+            # No se puede pasar a JPEG sin perder la transparencia real —
+            # se deja como PNG optimizado, aunque pese más.
+            buf = io.BytesIO()
+            img.save(buf, format='PNG', optimize=True)
+            return buf.getvalue(), '.png', 'image/png'
+
+        # Cualquier otro caso (incluido PNG sin transparencia real) se
+        # recomprime como JPEG, bajando calidad de forma progresiva hasta
+        # entrar en el límite.
+        rgb = img.convert('RGB')
+        quality = 92
+        buf = io.BytesIO()
+        rgb.save(buf, format='JPEG', quality=quality, optimize=True)
+        while buf.tell() > MAX_UPLOAD_BYTES and quality > 55:
+            quality -= 8
+            buf = io.BytesIO()
+            rgb.save(buf, format='JPEG', quality=quality, optimize=True)
+        return buf.getvalue(), '.jpg', 'image/jpeg'
+
+
 def convert_raw_to_jpeg(file_bytes, quality=92):
     """Revela un archivo RAW de cámara y lo devuelve como bytes JPEG."""
     try:

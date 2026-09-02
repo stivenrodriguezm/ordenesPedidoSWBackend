@@ -26,6 +26,7 @@ from .cloudinary_client import upload_to_cloudinary, CloudinaryUploadError
 from .image_utils import (
     convert_raw_to_jpeg, RawConversionError, RAW_EXTENSIONS,
     validate_image, InvalidImageError, validate_video, InvalidVideoError,
+    optimize_image_for_upload,
 )
 from . import emails as pqrs_emails
 from ordenes.permissions import check_feature_permission
@@ -198,7 +199,7 @@ def admin_upload_image(request):
     if not files:
         return Response({"error": "No se enviaron archivos"}, status=status.HTTP_400_BAD_REQUEST)
 
-    max_image_size = 15 * 1024 * 1024
+    max_image_size = 40 * 1024 * 1024
     max_video_size = 100 * 1024 * 1024
     uploaded_urls = []
     for f in files:
@@ -221,19 +222,26 @@ def admin_upload_image(request):
                 )
             ext = '.jpg'
             content_type = 'image/jpeg'
+            file_bytes, ext, content_type = optimize_image_for_upload(file_bytes, ext, content_type)
         else:
             # No confiar en la extensión ni el content-type declarados por el
             # cliente: se verifica que los bytes sean realmente una imagen o
-            # un video decodificable antes de subirlos a Sirv (evita subir un
-            # archivo arbitrario disfrazado con extensión .jpg/.mp4). La
-            # galería del sitio soporta ambos en el mismo campo "images".
+            # un video decodificable antes de subirlos a Cloudinary (evita
+            # subir un archivo arbitrario disfrazado con extensión .jpg/.mp4).
+            # La galería del sitio soporta ambos en el mismo campo "images".
             try:
                 ext, content_type = validate_image(file_bytes)
                 if f.size > max_image_size:
                     return Response(
-                        {"error": f"'{f.name}' supera el máximo de 15 MB para imágenes"},
+                        {"error": f"'{f.name}' supera el máximo de 40 MB para imágenes"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
+                # Cloudinary (plan gratis) rechaza cualquier imagen de más de
+                # 10 MB tal cual — se redimensiona/recomprime solo si hace
+                # falta para caber, sin pérdida de calidad perceptible (una
+                # foto no necesita más resolución que la de la pantalla más
+                # grande en la que se va a mostrar).
+                file_bytes, ext, content_type = optimize_image_for_upload(file_bytes, ext, content_type)
             except InvalidImageError:
                 try:
                     ext, content_type = validate_video(file_bytes)
