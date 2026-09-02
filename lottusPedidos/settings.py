@@ -281,6 +281,14 @@ SIRV_CLIENT_ID = os.environ.get('SIRV_CLIENT_ID', '')
 SIRV_CLIENT_SECRET = os.environ.get('SIRV_CLIENT_SECRET', '')
 SIRV_PUBLIC_DOMAIN = os.environ.get('SIRV_PUBLIC_DOMAIN', 'lottus.sirv.com')
 
+# Cloudinary (CDN de imágenes/video) — usado por paginaweb.cloudinary_client
+# para subir imágenes y videos de Gestión Web. Cloudinary optimiza formato y
+# calidad automáticamente en la entrega (f_auto,q_auto), a diferencia de Sirv
+# que sirve el archivo tal cual se subió.
+CLOUDINARY_CLOUD_NAME = os.environ.get('CLOUDINARY_CLOUD_NAME', '')
+CLOUDINARY_API_KEY = os.environ.get('CLOUDINARY_API_KEY', '')
+CLOUDINARY_API_SECRET = os.environ.get('CLOUDINARY_API_SECRET', '')
+
 # Correo (PQRS y notificaciones transaccionales). Sin EMAIL_HOST_USER /
 # EMAIL_HOST_PASSWORD configurados se usa el backend de consola (los correos
 # se imprimen en el log del servidor) para no romper el flujo en desarrollo

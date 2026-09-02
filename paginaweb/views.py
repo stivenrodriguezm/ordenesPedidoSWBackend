@@ -22,7 +22,7 @@ from .serializers import (
     AsesorPublicSerializer, AsesorAdminSerializer,
     PqrsPublicCreateSerializer, PqrsAdminSerializer, PqrsTrackingSerializer,
 )
-from .sirv import upload_to_sirv, SirvUploadError
+from .cloudinary_client import upload_to_cloudinary, CloudinaryUploadError
 from .image_utils import (
     convert_raw_to_jpeg, RawConversionError, RAW_EXTENSIONS,
     validate_image, InvalidImageError, validate_video, InvalidVideoError,
@@ -245,9 +245,9 @@ def admin_upload_image(request):
 
         filename = f"paginaweb/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
         try:
-            url = upload_to_sirv(file_bytes, filename, content_type)
-        except SirvUploadError:
-            logger.exception("Error subiendo imagen a Sirv")
+            url = upload_to_cloudinary(file_bytes, filename, content_type)
+        except CloudinaryUploadError:
+            logger.exception("Error subiendo imagen a Cloudinary")
             return Response({"error": "No se pudo subir la imagen. Intenta de nuevo."}, status=status.HTTP_502_BAD_GATEWAY)
         uploaded_urls.append(url)
 
@@ -375,9 +375,9 @@ def admin_upload_asesor_foto(request):
 
     filename = f"asesores/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
     try:
-        url = upload_to_sirv(file_bytes, filename, content_type)
-    except SirvUploadError:
-        logger.exception("Error subiendo foto de asesor a Sirv")
+        url = upload_to_cloudinary(file_bytes, filename, content_type)
+    except CloudinaryUploadError:
+        logger.exception("Error subiendo foto de asesor a Cloudinary")
         return Response({"error": "No se pudo subir la imagen. Intenta de nuevo."}, status=status.HTTP_502_BAD_GATEWAY)
 
     return Response({"ok": True, "url": url})
