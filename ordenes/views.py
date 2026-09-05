@@ -1429,6 +1429,172 @@ def confirmar_comprobante_egreso(request, id):
     return Response({"message": "Transferencia de egreso confirmada exitosamente.", "id": egreso.id, "estado": "Pagado"}, status=status.HTTP_200_OK)
 
 
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated, check_feature_permission('EDITAR_COMPROBANTE_EGRESO')])
+@transaction.atomic
+def editar_comprobante_egreso(request, id):
+    """Edita un comprobante de egreso existente, incluyendo la posibilidad de
+    revertir uno ya 'Pagado'. A diferencia de Recibos de Caja, aquí sí se permite
+    tocar movimientos ya contabilizados porque Caja es un libro de solo-agregar:
+    en vez de borrar/editar la fila original, una reversión de pago en efectivo
+    se contabiliza como un nuevo movimiento de 'ingreso' compensatorio (y si sigue
+    pagado mismo por efectivo pero cambia el valor, se revierte el viejo y se
+    postea el nuevo) — así el saldo/total_acumulado se mantiene correcto y queda
+    rastro auditable de la edición.
+    """
+    from django.db.models import Prefetch
+    from suministros.models import FacturaProveedor, Inventario
+    try:
+        egreso = ComprobanteEgreso.objects.select_for_update().select_related('proveedor').get(id=id)
+    except ComprobanteEgreso.DoesNotExist:
+        return Response({"detail": "Comprobante de Egreso no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+    data = request.data
+    try:
+        recibido_por = (data.get('recibido_por') or '').strip()
+        if not recibido_por:
+            return Response({"detail": "El campo 'Quien recibe' es obligatorio."}, status=status.HTTP_400_BAD_REQUEST)
+
+        proveedor_id = data.get('proveedor') or None
+        proveedor_otro_nombre = (data.get('proveedor_otro_nombre') or '').strip()
+        if not proveedor_id and not proveedor_otro_nombre:
+            return Response({"detail": "Debes seleccionar un proveedor o indicar el nombre en 'Otro'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        nuevo_estado = data.get('estado') or egreso.estado
+        if nuevo_estado not in ('Pagado', 'Por Confirmar Pago'):
+            return Response({"detail": "Estado inválido."}, status=status.HTTP_400_BAD_REQUEST)
+
+        nuevo_medio_pago = data.get('medio_pago') or egreso.medio_pago
+        if nuevo_medio_pago not in dict(ComprobanteEgreso.MEDIO_PAGO_CHOICES):
+            return Response({"detail": "Medio de pago inválido."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            nuevo_valor = Decimal(str(data.get('valor')))
+        except (InvalidOperation, TypeError):
+            return Response({"detail": "Valor inválido."}, status=status.HTTP_400_BAD_REQUEST)
+        if nuevo_valor <= 0:
+            return Response({"detail": "El valor debe ser mayor a cero."}, status=status.HTTP_400_BAD_REQUEST)
+
+        facturas_ids_raw = data.get('facturas_ids', []) or []
+        if not proveedor_id:
+            # Proveedor "Otro": no puede tener facturas asociadas.
+            facturas_ids_raw = []
+        try:
+            facturas_deseadas = {int(f) for f in facturas_ids_raw}
+        except (TypeError, ValueError):
+            return Response({"detail": "Formato de facturas inválido."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # --- Snapshot del estado viejo, antes de mutar nada ---
+        old_estado = egreso.estado
+        old_medio_pago = egreso.medio_pago
+        old_valor = egreso.valor
+        old_efectivo_pagado = old_estado == 'Pagado' and old_medio_pago == 'Efectivo'
+        nuevo_efectivo_pagado = nuevo_estado == 'Pagado' and nuevo_medio_pago == 'Efectivo'
+
+        # --- Sincronizar facturas vinculadas (mismo patrón que editar_recibo_caja:
+        # el payload manda el set completo deseado, se calcula el diff) ---
+        facturas_actuales = set(
+            FacturaProveedor.objects.filter(comprobante_egreso=egreso).values_list('id', flat=True)
+        )
+        a_quitar = facturas_actuales - facturas_deseadas
+        a_agregar = facturas_deseadas - facturas_actuales
+        a_mantener = facturas_actuales & facturas_deseadas
+
+        if a_agregar:
+            agregar_qs = FacturaProveedor.objects.filter(id__in=a_agregar)
+            if proveedor_id:
+                agregar_qs = agregar_qs.filter(proveedor_id=proveedor_id)
+            disponibles_ids = set(agregar_qs.filter(estado='pendiente').values_list('id', flat=True))
+            if disponibles_ids != a_agregar:
+                return Response(
+                    {"detail": "Una o más facturas seleccionadas ya no están disponibles (pendientes) para este proveedor."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        estado_factura_final = 'pagada' if nuevo_estado == 'Pagado' else 'pago_en_proceso'
+        fecha_pago_final = date.today() if nuevo_estado == 'Pagado' else None
+
+        if a_quitar:
+            FacturaProveedor.objects.filter(id__in=a_quitar).update(
+                estado='pendiente', comprobante_egreso=None, fecha_pago=None,
+            )
+        if a_agregar:
+            FacturaProveedor.objects.filter(id__in=a_agregar).update(
+                estado=estado_factura_final, comprobante_egreso=egreso, fecha_pago=fecha_pago_final,
+            )
+        if a_mantener:
+            FacturaProveedor.objects.filter(id__in=a_mantener).update(
+                estado=estado_factura_final, fecha_pago=fecha_pago_final,
+            )
+
+        # --- Actualizar campos propios del comprobante ---
+        fecha_str_input = data.get('fecha')
+        if fecha_str_input:
+            try:
+                egreso.fecha = datetime.strptime(fecha_str_input, '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                return Response({"detail": "La fecha debe tener formato YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if proveedor_id:
+            try:
+                egreso.proveedor = Proveedor.objects.get(id=proveedor_id)
+            except Proveedor.DoesNotExist:
+                return Response({"detail": "Proveedor no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+            egreso.proveedor_otro_nombre = ''
+        else:
+            egreso.proveedor = None
+            egreso.proveedor_otro_nombre = proveedor_otro_nombre
+
+        egreso.recibido_por = recibido_por
+        egreso.medio_pago = nuevo_medio_pago
+        egreso.valor = nuevo_valor
+        egreso.concepto = (data.get('concepto') or '').strip() or egreso.concepto
+        egreso.descripcion = data.get('descripcion', egreso.descripcion)
+        if 'otros_conceptos' in data:
+            egreso.otros_conceptos = data.get('otros_conceptos') or []
+        egreso.estado = nuevo_estado
+        egreso.save()
+
+        # --- Sincronizar Caja (solo Efectivo la toca; Transferencia/Otro nunca
+        # generan movimiento de Caja, igual que en la creación) ---
+        prov_nombre = recibido_por or (
+            egreso.proveedor.nombre_empresa if egreso.proveedor else (proveedor_otro_nombre or 'Proveedor')
+        )
+
+        def _post_caja(tipo, valor, motivo):
+            caja_data = {
+                'concepto': f"{motivo}, CE. {egreso.id} ({prov_nombre})",
+                'valor': valor,
+                'tipo': tipo,
+            }
+            caja_serializer = CajaSerializer(data=caja_data, context={'request': request})
+            caja_serializer.is_valid(raise_exception=True)
+            caja_serializer.save()
+
+        if old_efectivo_pagado and not nuevo_efectivo_pagado:
+            _post_caja('ingreso', old_valor, 'Reversión de pago')
+        elif not old_efectivo_pagado and nuevo_efectivo_pagado:
+            _post_caja('egreso', nuevo_valor, 'Pago a proveedor (edición)')
+        elif old_efectivo_pagado and nuevo_efectivo_pagado and old_valor != nuevo_valor:
+            _post_caja('ingreso', old_valor, 'Reversión de pago (ajuste por edición)')
+            _post_caja('egreso', nuevo_valor, 'Pago a proveedor (edición)')
+
+        items_qs = Inventario.objects.select_related('referencia', 'categoria', 'subcategoria')
+        facturas_qs = FacturaProveedor.objects.prefetch_related(Prefetch('items_inventario', queryset=items_qs))
+        fresh = ComprobanteEgreso.objects.select_related('proveedor').prefetch_related(
+            Prefetch('facturas', queryset=facturas_qs)
+        ).get(id=egreso.id)
+        return Response(ComprobanteEgresoSerializer(fresh).data, status=status.HTTP_200_OK)
+    except ValidationError as e:
+        detail = getattr(e, 'detail', str(e))
+        if isinstance(detail, dict):
+            return Response(detail, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": str(detail)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("Error inesperado editando comprobante de egreso")
+        return Response({"detail": "Error interno del servidor."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, check_feature_permission('CREAR_RECIBO')])
 @transaction.atomic
