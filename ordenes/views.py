@@ -826,7 +826,12 @@ class EditarVentaClienteView(APIView):
                 if not submitted_keys.issubset(allowed_keys):
                     return Response({"error": "Solo tienes permiso para modificar los estados autorizados."}, status=status.HTTP_403_FORBIDDEN)
 
-            if venta_data.get('estado') == 'anulado' and venta.estado != 'anulado':
+            # Nota: el valor real en BD es 'anulada' (Venta.ESTADO_CHOICES), no 'anulado' —
+            # se compara con startswith('anulad') en vez de una igualdad exacta para no
+            # dejar este gate de permiso muerto si el valor exacto vuelve a cambiar.
+            nuevo_estado_raw = (venta_data.get('estado') or '').lower()
+            estado_actual_raw = (venta.estado or '').lower()
+            if nuevo_estado_raw.startswith('anulad') and not estado_actual_raw.startswith('anulad'):
                 has_anular = check_feature_permission('ANULAR_ORDEN_PEDIDO')().has_permission(request, self)
                 if not (request.user.role == 'administrador' or has_anular):
                     return Response({"error": "No tienes permiso para anular ventas u órdenes."}, status=status.HTTP_403_FORBIDDEN)
@@ -846,6 +851,13 @@ class EditarVentaClienteView(APIView):
             return Response({"message": "Venta actualizada.", "venta_id": venta.id}, status=200)
         except Venta.DoesNotExist:
             return Response({"error": "Venta no encontrada."}, status=404)
+        except ValidationError as e:
+            # Antes esto caía en el except Exception de abajo y devolvía un 500 genérico
+            # para lo que en realidad es un dato inválido del cliente (400) — p.ej. el bug
+            # real que motivó este fix: el frontend mandaba estado='anulado' cuando el único
+            # valor válido en Venta.ESTADO_CHOICES es 'anulada'.
+            detail = getattr(e, 'detail', str(e))
+            return Response(detail if isinstance(detail, dict) else {"error": str(detail)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception:
             logging.getLogger(__name__).exception("Error inesperado editando venta %s", id)
             return Response({"error": "Error interno del servidor."}, status=500)
