@@ -2,7 +2,7 @@
 
 import logging
 from rest_framework import viewsets, status, generics
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, BasePermission
 from rest_framework.views import APIView
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -644,6 +644,63 @@ def detalle_orden_completo(request, orden_id):
     except Exception as e:
         logger.error(f"Error en detalle_orden_completo {orden_id}: {e}", exc_info=True)
         return Response({"error": "Error al obtener la orden"}, status=500)
+
+
+class _PuedeCrearOrdenPermission(BasePermission):
+    """Mismo criterio que la acción 'create' de OrdenPedidoViewSet — se
+    reutiliza aquí para gatear la subida de la foto de Feria del Hogar, ya
+    que solo tiene sentido para quien puede crear el pedido al que se anexa."""
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if request.user.role == 'administrador':
+            return True
+        from .models import RolePermission
+        rp = RolePermission.objects.filter(role=request.user.role).first()
+        if rp:
+            p = rp.permissions
+            return ('CREAR_ORDEN' in p or 'CREAR_PROPIAS_ORDENES' in p or 'CREAR_ORDENES_OTROS' in p)
+        return False
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, _PuedeCrearOrdenPermission])
+def subir_imagen_pedido_feria(request):
+    """
+    POST /api/ordenes-pedido/feria-hogar/subir-imagen/
+    Sube la foto de un pedido de Feria del Hogar a Cloudinary (mismo mecanismo
+    que las imágenes de Gestión Web) y devuelve su URL — se guarda luego en
+    OrdenPedido.imagen_feria_hogar como parte del payload normal de creación.
+    """
+    import uuid
+    from paginaweb.cloudinary_client import upload_to_cloudinary, CloudinaryUploadError
+    from paginaweb.image_utils import validate_image, InvalidImageError, optimize_image_for_upload
+
+    f = request.FILES.get('imagen') or request.FILES.get('file') or request.FILES.get('image')
+    if not f:
+        return Response({"error": "No se envió ningún archivo"}, status=status.HTTP_400_BAD_REQUEST)
+
+    max_size = 15 * 1024 * 1024
+    if f.size > max_size:
+        return Response({"error": "La imagen supera el máximo de 15 MB"}, status=status.HTTP_400_BAD_REQUEST)
+
+    file_bytes = f.read()
+    try:
+        ext, content_type = validate_image(file_bytes)
+    except InvalidImageError:
+        return Response({"error": "El archivo no es una imagen válida."}, status=status.HTTP_400_BAD_REQUEST)
+
+    file_bytes, ext, content_type = optimize_image_for_upload(file_bytes, ext, content_type)
+
+    filename = f"pedidos_feria_hogar/{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
+    try:
+        url = upload_to_cloudinary(file_bytes, filename, content_type)
+    except CloudinaryUploadError:
+        logger.exception("Error subiendo imagen de pedido Feria del Hogar a Cloudinary")
+        return Response({"error": "No se pudo subir la imagen. Intenta de nuevo."}, status=status.HTTP_502_BAD_GATEWAY)
+
+    return Response({"ok": True, "url": url})
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_ORDENES')])

@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     caja_view,
     ReferenciaViewSet, ProveedorViewSet, OrdenPedidoViewSet, DetallePedidoViewSet,
-    listar_pedidos, detalles_pedido, detalle_orden_completo, CrearVentaClienteView, EditarVentaClienteView,
+    listar_pedidos, detalles_pedido, detalle_orden_completo, subir_imagen_pedido_feria, CrearVentaClienteView, EditarVentaClienteView,
     listar_ventas, detalle_venta, anadir_observacion_venta, anadir_remision_a_venta,
     ver_remisiones_de_venta, listar_clientes, obtener_cliente, ventas_y_observaciones_cliente,
     anadir_observacion_cliente, listar_recibos_caja, editar_eliminar_observacion_venta, editar_eliminar_observacion_cliente, 
@@ -32,6 +32,7 @@ urlpatterns = [
     path('listar-pedidos/', listar_pedidos, name='listar-pedidos'),
     path('pedidos/<int:orden_id>/detalles/', detalles_pedido, name='detalles-pedido'),
     path('ordenes-pedido/<int:orden_id>/completo/', detalle_orden_completo, name='detalle-orden-completo'),
+    path('ordenes-pedido/feria-hogar/subir-imagen/', subir_imagen_pedido_feria, name='subir-imagen-pedido-feria'),
     path('ventas/crear/', CrearVentaClienteView.as_view(), name='crear-venta-cliente'),
     path('ventas/<int:id>/editar/', EditarVentaClienteView.as_view(), name='editar-venta-cliente'),
     path('ventas/', listar_ventas, name='listar-ventas'),

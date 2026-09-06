@@ -104,6 +104,10 @@ class OrdenPedido(models.Model):
     orden_venta = models.CharField(max_length=50, blank=True, null=True)
     es_exhibicion = models.BooleanField(default=False)
     es_feria_hogar = models.BooleanField(default=False)
+    # URL de Cloudinary de la foto del pedido de Feria del Hogar (opcional,
+    # solo tiene sentido cuando es_feria_hogar=True). Mismo mecanismo de
+    # subida que las imágenes de paginaweb (ver paginaweb/cloudinary_client.py).
+    imagen_feria_hogar = models.URLField(max_length=500, blank=True, null=True)
 
     def __str__(self):
         return f"Orden {self.id} para {self.proveedor.nombre_empresa}"

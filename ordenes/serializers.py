@@ -113,7 +113,7 @@ class OrdenPedidoListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'proveedor_nombre', 'fecha_pedido', 'fecha_esperada',
             'estado', 'observacion', 'tela', 'venta', 'costo',
-            'vendedor', 'orden_venta', 'es_exhibicion', 'es_feria_hogar'
+            'vendedor', 'orden_venta', 'es_exhibicion', 'es_feria_hogar', 'imagen_feria_hogar'
         ]
 
     def get_vendedor(self, obj):
@@ -136,7 +136,8 @@ class OrdenPedidoSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'proveedor', 'proveedor_nombre', 'fecha_pedido', 'fecha_esperada',
             'estado', 'observacion', 'tela', 'venta', 'costo',
-            'vendedor', 'detalles', 'orden_venta', 'es_exhibicion', 'es_feria_hogar', 'telas_asociadas'
+            'vendedor', 'detalles', 'orden_venta', 'es_exhibicion', 'es_feria_hogar',
+            'imagen_feria_hogar', 'telas_asociadas'
         ]
         extra_kwargs = {
             'proveedor': {'write_only': True, 'queryset': Proveedor.objects.all()},
