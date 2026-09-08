@@ -312,6 +312,8 @@ class ReciboCajaSerializer(serializers.ModelSerializer):
         if not pagos:
             return 'Pendiente'
         estados = {p.estado for p in pagos}
+        if estados == {'Anulado'}:
+            return 'Anulado'
         if estados == {'Confirmado'}:
             return 'Confirmado'
         if 'Confirmado' in estados and len(pagos) > 1:

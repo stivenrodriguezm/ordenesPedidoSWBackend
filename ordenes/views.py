@@ -1760,14 +1760,17 @@ def editar_recibo_caja(request, recibo_id):
     except ReciboCaja.DoesNotExist:
         return Response({"error": "Recibo no encontrado."}, status=status.HTTP_404_NOT_FOUND)
 
+    pagos_existentes = list(recibo.pagos.all())
+    if pagos_existentes and all(p.estado == 'Anulado' for p in pagos_existentes):
+        return Response({"error": "Este recibo está anulado y no se puede editar."}, status=status.HTTP_400_BAD_REQUEST)
+
     data = request.data
     pagos_pendientes_data = data.get('pagos_pendientes')
     if not isinstance(pagos_pendientes_data, list):
         return Response({"error": "Formato de pagos inválido."}, status=status.HTTP_400_BAD_REQUEST)
 
-    pagos_existentes = list(recibo.pagos.all())
     pagos_confirmados = [p for p in pagos_existentes if p.estado == 'Confirmado']
-    pagos_pendientes_actuales = {p.id: p for p in pagos_existentes if p.estado != 'Confirmado'}
+    pagos_pendientes_actuales = {p.id: p for p in pagos_existentes if p.estado == 'Pendiente'}
 
     # Venta: solo se puede cambiar si el recibo todavía no tiene pagos confirmados
     # (evita dejar contabilidad ya aplicada colgando de la venta equivocada).
@@ -1862,6 +1865,59 @@ def editar_recibo_caja(request, recibo_id):
     # Recargar sin la caché de prefetch original: las líneas borradas/creadas
     # arriba dejarían datos obsoletos (p. ej. un pago borrado queda con pk=None
     # en el objeto ya cacheado) si se serializara el `recibo` tal cual.
+    recibo_actualizado = ReciboCaja.objects.select_related('venta').prefetch_related('pagos').get(id=recibo.id)
+    return Response(ReciboCajaSerializer(recibo_actualizado).data, status=status.HTTP_200_OK)
+
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated, check_feature_permission('EDITAR_RECIBO')])
+@transaction.atomic
+def anular_recibo_caja(request, recibo_id):
+    """Anula un recibo completo (nunca se borra). Revierte lo que las líneas
+    'Confirmado' ya hayan aplicado — abono/saldo de la venta siempre, y un
+    movimiento compensatorio de Caja ('egreso') solo para las líneas en
+    Efectivo, ya que Caja solo registra efectivo real (mismo criterio que
+    crear/editar_recibo_caja y la reversión de ComprobanteEgreso). Las líneas
+    'Pendiente' no tienen efectos que revertir. Todas las líneas, sin importar
+    su estado previo, quedan marcadas 'Anulado' para que ya no puedan
+    confirmarse ni volver a contarse — el agregado `estado` del recibo pasa a
+    'Anulado' en cuanto todas sus líneas lo están (ReciboCajaSerializer.get_estado)."""
+    try:
+        recibo = ReciboCaja.objects.select_related('venta').prefetch_related('pagos').get(id=recibo_id)
+    except ReciboCaja.DoesNotExist:
+        return Response({"error": "Recibo no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+    pagos = list(recibo.pagos.select_for_update())
+    if not pagos:
+        return Response({"error": "Este recibo no tiene pagos registrados."}, status=status.HTTP_400_BAD_REQUEST)
+    if all(p.estado == 'Anulado' for p in pagos):
+        return Response({"error": "Este recibo ya está anulado."}, status=status.HTTP_400_BAD_REQUEST)
+
+    usuario_nombre = request.user.first_name or request.user.username
+    fecha_str = date.today().strftime('%d-%b-%Y').lower()
+    anulacion_text = f"Anulado el {fecha_str} por {usuario_nombre}"
+
+    for pago in pagos:
+        if pago.estado == 'Confirmado':
+            recibo.venta.abono = F('abono') - pago.valor
+            recibo.venta.saldo = F('saldo') + pago.valor
+            recibo.venta.save(update_fields=['abono', 'saldo'])
+            recibo.venta.refresh_from_db(fields=['abono', 'saldo'])
+
+            if pago.metodo_pago == 'Efectivo':
+                caja_data = {
+                    'concepto': f"Reversión RC. {recibo.id} (anulado)",
+                    'valor': pago.valor,
+                    'tipo': 'egreso',
+                }
+                caja_serializer = CajaSerializer(data=caja_data, context={'request': request})
+                caja_serializer.is_valid(raise_exception=True)
+                caja_serializer.save()
+
+        pago.estado = 'Anulado'
+        pago.confirmacion = f"{pago.confirmacion} | {anulacion_text}" if pago.confirmacion else anulacion_text
+        pago.save(update_fields=['estado', 'confirmacion'])
+
     recibo_actualizado = ReciboCaja.objects.select_related('venta').prefetch_related('pagos').get(id=recibo.id)
     return Response(ReciboCajaSerializer(recibo_actualizado).data, status=status.HTTP_200_OK)
 
@@ -2028,6 +2084,8 @@ def confirmar_pago_recibo(request, pago_id):
 
     if pago.estado == 'Confirmado':
         return Response({"message": "El pago ya está confirmado."}, status=status.HTTP_200_OK)
+    if pago.estado == 'Anulado':
+        return Response({"error": "Este pago pertenece a un recibo anulado y no se puede confirmar."}, status=status.HTTP_400_BAD_REQUEST)
 
     # Get current date and admin user
     fecha_confirmacion = date.today()

@@ -159,6 +159,7 @@ class PagoReciboCaja(models.Model):
     ESTADO_CHOICES = [
         ('Pendiente', 'Pendiente'),
         ('Confirmado', 'Confirmado'),
+        ('Anulado', 'Anulado'),
     ]
     recibo = models.ForeignKey(ReciboCaja, on_delete=models.CASCADE, related_name='pagos')
     metodo_pago = models.CharField(max_length=50, choices=MEDIO_PAGO_CHOICES, db_index=True)

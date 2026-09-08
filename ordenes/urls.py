@@ -8,7 +8,7 @@ from .views import (
     ver_remisiones_de_venta, listar_clientes, obtener_cliente, ventas_y_observaciones_cliente,
     anadir_observacion_cliente, listar_recibos_caja, editar_eliminar_observacion_venta, editar_eliminar_observacion_cliente, 
     listar_comprobantes_egreso, crear_comprobante_egreso, confirmar_comprobante_egreso, editar_comprobante_egreso, crear_recibo_caja,
-    editar_recibo_caja, confirmar_pago_recibo, listar_vendedores, UserDetailView, cambiar_contrasena,
+    editar_recibo_caja, anular_recibo_caja, confirmar_pago_recibo, listar_vendedores, UserDetailView, cambiar_contrasena,
     dashboard_stats, sales_chart_data, cierre_caja, listar_ventas_pendientes_ids,
     vendedor_recent_activity, listar_transportadores,
     ProveedorTelaViewSet, PedidoTelaViewSet, DetallePedidoTelaViewSet, DireccionEntregaViewSet, UserViewSet, RolePermissionViewSet
@@ -51,6 +51,7 @@ urlpatterns = [
     path('comprobantes-egreso/<int:id>/editar/', editar_comprobante_egreso, name='editar-comprobante-egreso'),
     path('recibos-caja/crear/', crear_recibo_caja, name='crear-recibo-caja'),
     path('recibos-caja/<int:recibo_id>/editar/', editar_recibo_caja, name='editar-recibo-caja'),
+    path('recibos-caja/<int:recibo_id>/anular/', anular_recibo_caja, name='anular-recibo-caja'),
     path('recibos-caja/pagos/<int:pago_id>/confirmar/', confirmar_pago_recibo, name='confirmar-pago-recibo'),
     path('vendedores/', listar_vendedores, name='listar-vendedores'),
     path('user/', UserDetailView.as_view(), name='user-detail'),
