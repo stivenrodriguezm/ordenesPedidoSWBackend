@@ -242,8 +242,20 @@ class RemisionSuministro(models.Model):
     ciudad = models.CharField(max_length=100, blank=True)
     barrio = models.CharField(max_length=100, blank=True)
     
+    # Venta "principal" (la primera elegida). Se conserva para compatibilidad con el
+    # listado, el calendario y el PDF; el conjunto completo de ventas entregadas en esta
+    # remisión vive en `ventas` (casi siempre es una sola).
     orden_asociada = models.ForeignKey(Venta, on_delete=models.SET_NULL, null=True, blank=True, related_name='remisiones_suministros')
+    ventas = models.ManyToManyField(Venta, related_name='remisiones_suministros_multi', blank=True)
     estado = models.CharField(max_length=50, choices=ESTADO_CHOICES, default='creada', db_index=True)
+
+    # Datos del cliente propios de la remisión: se autocompletan desde la venta pero el
+    # vendedor puede corregirlos (p. ej. quien recibe o un teléfono distinto).
+    cliente_nombre = models.CharField(max_length=255, blank=True)
+    cliente_documento = models.CharField(max_length=30, blank=True)
+    cliente_telefono1 = models.CharField(max_length=30, blank=True)
+    cliente_telefono2 = models.CharField(max_length=30, blank=True)
+    creado_por = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='remisiones_creadas')
     
     sin_saldo = models.BooleanField(default=False)
     saldo = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -259,3 +271,45 @@ class RemisionSuministro(models.Model):
 
     def __str__(self):
         return f"Remisión Suministro {self.id}"
+
+
+class RemisionItemManual(models.Model):
+    """Producto a entregar escrito a mano (el inventario todavía no está completo).
+    Puede venir de una línea de orden de pedido de la venta (`detalle_pedido`), lo que
+    permite saber qué líneas ya se remisionaron para no volver a sugerirlas."""
+    remision = models.ForeignKey(RemisionSuministro, on_delete=models.CASCADE, related_name='items_manuales')
+    descripcion = models.CharField(max_length=255)
+    cantidad = models.PositiveIntegerField(default=1)
+    observacion = models.TextField(blank=True)
+    venta = models.ForeignKey(Venta, on_delete=models.SET_NULL, null=True, blank=True, related_name='items_remision_manuales')
+    detalle_pedido = models.ForeignKey('ordenes.DetallePedido', on_delete=models.SET_NULL, null=True, blank=True, related_name='items_remision_manuales')
+
+    class Meta:
+        ordering = ['id']
+
+    def __str__(self):
+        return f"{self.cantidad}x {self.descripcion} (Remisión {self.remision_id})"
+
+
+class RemisionEvento(models.Model):
+    """Historial de la remisión: quién la creó, reprogramó, despachó, entregó o anuló."""
+    TIPO_CHOICES = [
+        ('creada', 'Creada'),
+        ('editada', 'Editada'),
+        ('despachada', 'Despachada'),
+        ('finalizada', 'Entregada'),
+        ('devuelta', 'Devuelta'),
+        ('anulada', 'Anulada'),
+        ('reprogramada', 'Devuelta a programada'),
+    ]
+    remision = models.ForeignKey(RemisionSuministro, on_delete=models.CASCADE, related_name='eventos')
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES)
+    detalle = models.TextField(blank=True)
+    usuario = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='eventos_remision')
+    fecha = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['fecha', 'id']
+
+    def __str__(self):
+        return f"Remisión {self.remision_id}: {self.tipo}"

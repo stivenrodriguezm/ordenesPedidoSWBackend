@@ -1,14 +1,16 @@
 import random
 from django.db import transaction
+from django.db.models import Q
 from rest_framework import serializers
 from .models import (
     Categoria, Subcategoria, Inventario,
-    FacturaProveedor, DetalleFactura, RemisionSuministro,
+    FacturaProveedor, DetalleFactura, RemisionSuministro, RemisionItemManual, RemisionEvento,
     GrupoInventario, GrupoInventarioComponente,
     Sede, Zona, HistorialTraslado, CostoAdicionalInventario,
     ItemInventarioTelaCuero
 )
 from ordenes.models import Venta, Referencia
+from ordenes.permissions import check_feature_permission
 
 
 class CategoriaSerializer(serializers.ModelSerializer):
@@ -646,52 +648,221 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
 # RemisionSuministro
 # ---------------------------------------------------------------------------
 
+# Estados de remisión que "retienen" sus productos: mientras la remisión esté en uno de
+# estos estados, sus ítems de inventario no pueden ir en otra remisión.
+REMISION_ESTADOS_ACTIVOS = ('creada', 'despachada')
+# Estados que cuentan como "ya remisionado/entregado" (todo menos anulada/devuelta).
+REMISION_ESTADOS_VIGENTES = ('creada', 'despachada', 'finalizada')
+
+
+# Qué estado puede seguir a cuál. Finalizada, devuelta y anulada son definitivos.
+REMISION_TRANSICIONES = {
+    'creada': {'despachada', 'finalizada', 'anulada'},
+    'despachada': {'finalizada', 'devuelta', 'creada'},
+    'finalizada': set(),
+    'devuelta': set(),
+    'anulada': set(),
+}
+
+
+def tiene_permiso(request, codigo):
+    """Permiso dinámico del rol (el administrador siempre lo tiene)."""
+    if request is None or not getattr(request, 'user', None) or not request.user.is_authenticated:
+        return False
+    return check_feature_permission(codigo)().has_permission(request, None)
+
+
+def ventas_remisionables_para(request):
+    """Ventas sin entregar que el usuario puede remisionar: todas con
+    CREAR_REMISION_TODAS_VENTAS; si no, solo sus ventas propias o compartidas."""
+    qs = Venta.objects.filter(estado='pendiente')
+    if not tiene_permiso(request, 'CREAR_REMISION_TODAS_VENTAS'):
+        user = request.user
+        qs = qs.filter(Q(vendedor=user) | Q(vendedores_compartidos=user)).distinct()
+    return qs
+
+
+def items_retenidos_por_remision(item_ids, excluir_remision_id=None):
+    """{id_referencia: id de la remisión activa que ya lo tiene} para los ítems dados."""
+    through = RemisionSuministro.inventario_items.through.objects.filter(
+        inventario_id__in=list(item_ids),
+        remisionsuministro__estado__in=REMISION_ESTADOS_ACTIVOS,
+    )
+    if excluir_remision_id:
+        through = through.exclude(remisionsuministro_id=excluir_remision_id)
+    return dict(through.values_list('inventario_id', 'remisionsuministro_id'))
+
+
+class RemisionItemManualSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RemisionItemManual
+        fields = ['id', 'descripcion', 'cantidad', 'observacion', 'venta', 'detalle_pedido']
+        read_only_fields = ['id']
+        extra_kwargs = {
+            'observacion': {'required': False, 'allow_blank': True},
+            'venta': {'required': False, 'allow_null': True},
+            'detalle_pedido': {'required': False, 'allow_null': True},
+        }
+
+    def validate_descripcion(self, value):
+        value = (value or '').strip()
+        if not value:
+            raise serializers.ValidationError('Escribe qué producto se entrega.')
+        return value
+
+    def validate_cantidad(self, value):
+        if value < 1:
+            raise serializers.ValidationError('La cantidad debe ser al menos 1.')
+        return value
+
+
 class RemisionSuministroSerializer(serializers.ModelSerializer):
     inventario_items = serializers.PrimaryKeyRelatedField(
         many=True,
         queryset=Inventario.objects.all(),
         required=False
     )
-    vendedor_nombre = serializers.ReadOnlyField(source='vendedor.username')
+    ventas = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=Venta.objects.all(),
+        required=False
+    )
+    items_manuales = RemisionItemManualSerializer(many=True, required=False)
+    vendedor_nombre = serializers.SerializerMethodField()
     transportador_usuario_nombre = serializers.ReadOnlyField(source='transportador_usuario.first_name')
+    creado_por_nombre = serializers.SerializerMethodField()
 
     class Meta:
         model = RemisionSuministro
         fields = [
             'id', 'fecha_creacion', 'fecha_entrega', 'hora_desde', 'hora_hasta',
-            'direccion_entrega', 'ciudad', 'barrio', 'orden_asociada', 'estado',
+            'direccion_entrega', 'ciudad', 'barrio', 'orden_asociada', 'ventas', 'estado',
             'sin_saldo', 'saldo', 'metodo_pago', 'transportador_usuario', 'transportador_usuario_nombre',
             'transportador', 'vendedor', 'vendedor_nombre', 'observacion',
-            'inventario_items', 'nota_transportador', 'costo_entrega'
+            'cliente_nombre', 'cliente_documento', 'cliente_telefono1', 'cliente_telefono2',
+            'inventario_items', 'items_manuales', 'nota_transportador', 'costo_entrega',
+            'creado_por', 'creado_por_nombre',
         ]
+        read_only_fields = ['creado_por']
 
+    def get_creado_por_nombre(self, obj):
+        u = obj.creado_por
+        return (u.first_name or u.username) if u else None
+
+    def get_vendedor_nombre(self, obj):
+        u = obj.vendedor
+        return (u.first_name or u.username) if u else None
+
+    def validate(self, attrs):
+        if self.instance is not None:
+            return self._validar_edicion(attrs)
+
+        request = self.context.get('request')
+
+        ventas = list(attrs.get('ventas') or [])
+        orden = attrs.get('orden_asociada')
+        if orden and orden not in ventas:
+            ventas.insert(0, orden)
+        attrs['ventas'] = ventas
+        if ventas and not orden:
+            attrs['orden_asociada'] = ventas[0]
+
+        for venta in ventas:
+            if venta.estado == 'entregado':
+                raise serializers.ValidationError({'ventas': f'La venta {venta.id} ya fue entregada; no se le pueden crear más remisiones.'})
+            if venta.estado == 'anulada':
+                raise serializers.ValidationError({'ventas': f'La venta {venta.id} está anulada.'})
+        if request is not None and not ventas and not tiene_permiso(request, 'CREAR_REMISION_TODAS_VENTAS'):
+            raise serializers.ValidationError({'ventas': 'Elige la venta que vas a entregar.'})
+        if request is not None and ventas:
+            permitidas = set(ventas_remisionables_para(request).filter(id__in=[v.id for v in ventas]).values_list('id', flat=True))
+            ajenas = [str(v.id) for v in ventas if v.id not in permitidas]
+            if ajenas:
+                raise serializers.ValidationError({'ventas': f'Solo puedes remisionar tus ventas propias o compartidas ({", ".join(ajenas)}).'})
+
+        if not attrs.get('fecha_entrega'):
+            raise serializers.ValidationError({'fecha_entrega': 'Indica la fecha de entrega.'})
+        self._validar_horas(attrs.get('hora_desde'), attrs.get('hora_hasta'))
+
+        items = attrs.get('inventario_items') or []
+        manuales = attrs.get('items_manuales') or []
+        if not items and not manuales:
+            raise serializers.ValidationError({'productos': 'Agrega al menos un producto a entregar.'})
+
+        if items:
+            retenidos = items_retenidos_por_remision(i.pk for i in items)
+            for item in items:
+                if item.pk in retenidos:
+                    raise serializers.ValidationError({
+                        'inventario_items': f'El producto {item.pk} ya está en la remisión #{retenidos[item.pk]}.'
+                    })
+                if item.disponibilidad in ('despachado', 'entregado'):
+                    raise serializers.ValidationError({
+                        'inventario_items': f'El producto {item.pk} ya fue {item.get_disponibilidad_display().lower()}.'
+                    })
+        return attrs
+
+    @staticmethod
+    def _validar_horas(desde, hasta):
+        if desde and hasta and hasta <= desde:
+            raise serializers.ValidationError({'hora_hasta': 'La hora final debe ser posterior a la inicial.'})
+
+    def _validar_edicion(self, attrs):
+        inst = self.instance
+        nuevo = attrs.get('estado', inst.estado)
+        if nuevo != inst.estado and nuevo not in REMISION_TRANSICIONES.get(inst.estado, set()):
+            etiquetas = dict(RemisionSuministro.ESTADO_CHOICES)
+            raise serializers.ValidationError({
+                'estado': f'Una remisión {etiquetas.get(inst.estado, inst.estado).lower()} no puede pasar a {etiquetas.get(nuevo, nuevo).lower()}.'
+            })
+        # Costo del flete y nota del transportador se pueden registrar incluso ya entregada;
+        # el resto de datos (programación, cliente, cobro) solo mientras esté activa.
+        campos_edicion = set(attrs) - {'estado', 'nota_transportador', 'costo_entrega', 'inventario_items', 'items_manuales', 'ventas'}
+        if campos_edicion and inst.estado not in REMISION_ESTADOS_ACTIVOS:
+            raise serializers.ValidationError(f'La remisión está {inst.get_estado_display().lower()}; ya no se puede editar.')
+        if 'fecha_entrega' in attrs and not attrs['fecha_entrega']:
+            raise serializers.ValidationError({'fecha_entrega': 'Indica la fecha de entrega.'})
+        self._validar_horas(attrs.get('hora_desde', inst.hora_desde), attrs.get('hora_hasta', inst.hora_hasta))
+        return attrs
+
+    @transaction.atomic
     def create(self, validated_data):
         inventario_items_data = validated_data.pop('inventario_items', [])
+        ventas_data = validated_data.pop('ventas', [])
+        manuales_data = validated_data.pop('items_manuales', [])
+        request = self.context.get('request')
+        if request is not None and request.user.is_authenticated:
+            validated_data['creado_por'] = request.user
+
         remision = super().create(validated_data)
+        if ventas_data:
+            remision.ventas.set(ventas_data)
         if inventario_items_data:
             remision.inventario_items.set(inventario_items_data)
             # La disponibilidad ('por_despachar') la actualiza perform_create del viewset en bulk
+        if manuales_data:
+            RemisionItemManual.objects.bulk_create([
+                RemisionItemManual(remision=remision, **m) for m in manuales_data
+            ])
         return remision
 
     def update(self, instance, validated_data):
-        validated_data.pop('inventario_items', None)  # no permitir cambiar items en PATCH
+        # Los productos y las ventas se fijan al crear; un PATCH no los cambia.
+        validated_data.pop('inventario_items', None)
+        validated_data.pop('items_manuales', None)
+        validated_data.pop('ventas', None)
         return super().update(instance, validated_data)
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
 
-        # Cliente — ya traído por select_related en el viewset, sin queries extra
-        if instance.orden_asociada_id and instance.orden_asociada and instance.orden_asociada.cliente:
-            c = instance.orden_asociada.cliente
-            representation['cliente_nombre'] = c.nombre
-            representation['cliente_documento'] = c.cedula
-            representation['cliente_telefono1'] = c.telefono1
-            representation['cliente_telefono2'] = c.telefono2
-        else:
-            representation['cliente_nombre'] = 'Cliente Nuevo'
-            representation['cliente_documento'] = ''
-            representation['cliente_telefono1'] = ''
-            representation['cliente_telefono2'] = ''
+        # Cliente: lo guardado en la remisión manda; las remisiones antiguas (sin esos
+        # campos) siguen tomando el cliente de la venta principal.
+        c = instance.orden_asociada.cliente if (instance.orden_asociada_id and instance.orden_asociada) else None
+        representation['cliente_nombre'] = instance.cliente_nombre or (c.nombre if c else '') or 'Cliente Nuevo'
+        representation['cliente_documento'] = instance.cliente_documento or (c.cedula if c else '') or ''
+        representation['cliente_telefono1'] = instance.cliente_telefono1 or (c.telefono1 if c else '') or ''
+        representation['cliente_telefono2'] = instance.cliente_telefono2 or (c.telefono2 if c else '') or ''
 
         # inventario_items_detalle: solo usamos campos ya en el objeto prefetcheado.
         # Usamos el prefetch_cache si existe (puesto por el viewset), sin llamadas extra.
@@ -716,4 +887,23 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
                 'grupo_observacion': item.grupo.observacion if item.grupo else '',
             })
         representation['inventario_items_detalle'] = items_data
+
+        representation['ventas_detalle'] = [
+            {'id': v.id, 'estado': v.estado} for v in sorted(instance.ventas.all(), key=lambda v: v.id)
+        ]
+        representation['eventos'] = [
+            {
+                'tipo': e.tipo,
+                'tipo_label': e.get_tipo_display(),
+                'detalle': e.detalle,
+                'fecha': e.fecha,
+                'usuario_nombre': (e.usuario.first_name or e.usuario.username) if e.usuario else None,
+            }
+            for e in instance.eventos.all()
+        ]
+
+        request = self.context.get('request')
+        if request is not None and getattr(request.user, 'role', None) != 'transportador' \
+                and not tiene_permiso(request, 'VER_COSTO_ENTREGA_REMISION'):
+            representation.pop('costo_entrega', None)
         return representation
