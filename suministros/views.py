@@ -1,5 +1,5 @@
 import uuid
-from django.db.models import Q
+from django.db.models import Count, Q
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -20,7 +20,7 @@ from .serializers import (
 )
 from rest_framework.permissions import IsAuthenticated, BasePermission
 from ordenes.permissions import check_feature_permission
-from ordenes.models import OrdenPedido, Venta
+from ordenes.models import OrdenPedido, Referencia, Venta
 
 class CategoriaViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
@@ -248,6 +248,44 @@ class DetalleFacturaViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['factura']
 
+def sugerencias_por_referencia(nombres=None):
+    """{nombre de referencia en minúsculas: (categoria_id, subcategoria_id)} para
+    autocompletar productos de remisión. Manda la combinación más frecuente en el
+    inventario (ahí sí está bien clasificado); si la referencia aún no tiene inventario,
+    se usa el catálogo de la referencia cuando la categoría/subcategoría es única."""
+    inventario = Inventario.objects.filter(referencia__isnull=False, categoria__isnull=False)
+    referencias = Referencia.objects.prefetch_related('categorias', 'subcategorias')
+    if nombres is not None:
+        nombres = [n for n in nombres if n]
+        inventario = inventario.filter(referencia__nombre__in=nombres)
+        referencias = referencias.filter(nombre__in=nombres)
+
+    sugerencias = {}
+    conteo = (
+        inventario.values('referencia__nombre', 'categoria_id', 'subcategoria_id')
+        .annotate(n=Count('pk')).order_by('-n')
+    )
+    for fila in conteo:
+        sugerencias.setdefault(fila['referencia__nombre'].strip().lower(), (fila['categoria_id'], fila['subcategoria_id']))
+
+    catalogo = {}
+    for ref in referencias:
+        cats, subs = catalogo.setdefault(ref.nombre.strip().lower(), (set(), set()))
+        cats.update(c.id for c in ref.categorias.all())
+        subs.update((s.id, s.categoria_id) for s in ref.subcategorias.all())
+    for clave, (cats, subs) in catalogo.items():
+        if clave in sugerencias:
+            continue
+        if len(cats) != 1:
+            cats = {c for _, c in subs}
+        categoria = next(iter(cats)) if len(cats) == 1 else None
+        subs_de_categoria = [s for s, c in subs if c == categoria] if categoria else []
+        subcategoria = subs_de_categoria[0] if len(subs_de_categoria) == 1 else None
+        if categoria:
+            sugerencias[clave] = (categoria, subcategoria)
+    return sugerencias
+
+
 class RemisionSuministroViewSet(viewsets.ModelViewSet):
     # Las remisiones nunca se borran ni se reemplazan completas: se editan por partes
     # (PATCH) y se anulan, para conservar el historial y liberar bien el inventario.
@@ -287,6 +325,11 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
         # configure VER_REMISIONES. Las reglas finas de edición viven en partial_update().
         if self.action in ['create', 'ventas_disponibles', 'datos_ventas', 'inventario_disponible']:
             return [IsAuthenticated(), check_feature_permission('CREAR_REMISION')()]
+        if self.action == 'catalogo':
+            class CatalogoPermission(BasePermission):
+                def has_permission(self, request, view):
+                    return tiene_permiso(request, 'CREAR_REMISION') or tiene_permiso(request, 'EDITAR_REMISION')
+            return [IsAuthenticated(), CatalogoPermission()]
 
         class RemisionViewPermission(BasePermission):
             def has_permission(self, request, view):
@@ -314,6 +357,8 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
         ).prefetch_related(
             'ventas',
             'items_manuales',
+            'items_manuales__categoria',
+            'items_manuales__subcategoria',
             'eventos',
             'eventos__usuario',
             'inventario_items',
@@ -556,6 +601,9 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
                 remision__estado__in=REMISION_ESTADOS_VIGENTES,
             ).values_list('detalle_pedido_id', 'remision_id')
         )
+        sugerencias = sugerencias_por_referencia(
+            {d.referencia.nombre for o in ordenes for d in o.detalles.all() if d.referencia}
+        )
         pedidos_por_venta = {i: [] for i in ids}
         for orden in ordenes:
             for det in orden.detalles.all():
@@ -573,6 +621,8 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
                     'orden_estado_label': orden.get_estado_display(),
                     'proveedor_nombre': orden.proveedor.nombre_empresa if orden.proveedor else '',
                     'referencia_nombre': det.referencia.nombre if det.referencia else '',
+                    'categoria': sugerencias.get(det.referencia.nombre.strip().lower(), (None, None))[0] if det.referencia else None,
+                    'subcategoria': sugerencias.get(det.referencia.nombre.strip().lower(), (None, None))[1] if det.referencia else None,
                     'cantidad': det.cantidad,
                     'especificaciones': det.especificaciones or '',
                     'en_inventario': en_inventario,
@@ -616,6 +666,25 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
                 'remisiones_previas': sorted(remisiones_previas.get(venta_id, []), key=lambda r: r['id']),
             })
         return Response(data)
+
+    @action(detail=False, methods=['get'])
+    def catalogo(self, request):
+        """Categorías con sus subcategorías y referencias conocidas (sin repetir por
+        proveedor) con su categoría/subcategoría sugerida, para describir productos."""
+        categorias = [
+            {'id': c.id, 'nombre': c.nombre, 'subcategorias': [
+                {'id': s.id, 'nombre': s.nombre} for s in sorted(c.subcategorias.all(), key=lambda s: s.nombre.lower())
+            ]}
+            for c in Categoria.objects.prefetch_related('subcategorias').order_by('nombre')
+        ]
+        sugerencias = sugerencias_por_referencia()
+        referencias = {}
+        for nombre in Referencia.objects.order_by('nombre').values_list('nombre', flat=True):
+            clave = nombre.strip().lower()
+            if clave and clave not in referencias:
+                categoria, subcategoria = sugerencias.get(clave, (None, None))
+                referencias[clave] = {'nombre': nombre.strip(), 'categoria': categoria, 'subcategoria': subcategoria}
+        return Response({'categorias': categorias, 'referencias': list(referencias.values())})
 
     @action(detail=False, methods=['get'], url_path='inventario-disponible')
     def inventario_disponible(self, request):
@@ -671,6 +740,16 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
         return str(valor)
 
     @staticmethod
+    def _resumen_productos(remision):
+        """Productos escritos o de pedido, legibles para el historial."""
+        partes = []
+        for m in RemisionItemManual.objects.filter(remision=remision).select_related('subcategoria'):
+            nombre = m.referencia or (m.subcategoria.nombre if m.subcategoria else '') or m.descripcion[:40]
+            detalle = f' ({m.descripcion[:60]})' if m.descripcion and nombre != m.descripcion[:40] else ''
+            partes.append(f'{m.cantidad} × {nombre}{detalle}')
+        return ' · '.join(partes) or 'ninguno'
+
+    @staticmethod
     def _liberar_items(items):
         """Productos de vuelta en bodega (remisión anulada o devuelta): los de una venta
         quedan como 'cliente' y los demás como 'exhibicion', listos para otra remisión."""
@@ -683,6 +762,7 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
         remision = serializer.instance
         enviados = [c for c in serializer.validated_data if c in self.CAMPOS_HISTORIAL]
         antes = {c: self._valor_legible(remision, c) for c in enviados}
+        productos_antes = self._resumen_productos(remision) if 'items_manuales' in serializer.validated_data else None
         old_estado = remision.estado
 
         remision = serializer.save()
@@ -696,6 +776,10 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
                     cambios.append(f'{self.CAMPOS_HISTORIAL[campo]}: {despues}')
                 else:
                     cambios.append(f'{self.CAMPOS_HISTORIAL[campo]}: {antes[campo]} → {despues}')
+        if productos_antes is not None:
+            productos_despues = self._resumen_productos(remision)
+            if productos_despues != productos_antes:
+                cambios.append(f'Productos: {productos_despues}')
 
         if old_estado != new_estado:
             items = remision.inventario_items.all()

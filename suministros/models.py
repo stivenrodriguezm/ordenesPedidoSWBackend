@@ -277,13 +277,18 @@ class RemisionSuministro(models.Model):
 
 
 class RemisionItemManual(models.Model):
-    """Producto a entregar escrito a mano (el inventario todavía no está completo).
-    Puede venir de una línea de orden de pedido de la venta (`detalle_pedido`), lo que
-    permite saber qué líneas ya se remisionaron para no volver a sugerirlas."""
+    """Producto a entregar que no sale del inventario: una línea de orden de pedido de la
+    venta (`detalle_pedido`) o un producto escrito a mano (el inventario todavía no está
+    completo). Categoría, subcategoría y referencia se sugieren desde el inventario; la
+    descripción es la que ve el cliente y siempre se puede editar, porque el texto del
+    pedido está escrito para el proveedor. `detalle_pedido` permite saber qué líneas ya se
+    remisionaron para no volver a sugerirlas."""
     remision = models.ForeignKey(RemisionSuministro, on_delete=models.CASCADE, related_name='items_manuales')
-    descripcion = models.CharField(max_length=255)
+    categoria = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    subcategoria = models.ForeignKey(Subcategoria, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    referencia = models.CharField(max_length=255, blank=True)
+    descripcion = models.TextField(blank=True)
     cantidad = models.PositiveIntegerField(default=1)
-    observacion = models.TextField(blank=True)
     venta = models.ForeignKey(Venta, on_delete=models.SET_NULL, null=True, blank=True, related_name='items_remision_manuales')
     detalle_pedido = models.ForeignKey('ordenes.DetallePedido', on_delete=models.SET_NULL, null=True, blank=True, related_name='items_remision_manuales')
 
@@ -291,7 +296,7 @@ class RemisionItemManual(models.Model):
         ordering = ['id']
 
     def __str__(self):
-        return f"{self.cantidad}x {self.descripcion} (Remisión {self.remision_id})"
+        return f"{self.cantidad}x {self.referencia or self.descripcion[:40]} (Remisión {self.remision_id})"
 
 
 class RemisionEvento(models.Model):

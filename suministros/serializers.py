@@ -694,26 +694,53 @@ def items_retenidos_por_remision(item_ids, excluir_remision_id=None):
 
 
 class RemisionItemManualSerializer(serializers.ModelSerializer):
+    # Al editar una remisión: con `id` se actualiza esa línea, sin `id` se crea una nueva.
+    id = serializers.IntegerField(required=False)
+    categoria_nombre = serializers.SerializerMethodField()
+    subcategoria_nombre = serializers.SerializerMethodField()
+
     class Meta:
         model = RemisionItemManual
-        fields = ['id', 'descripcion', 'cantidad', 'observacion', 'venta', 'detalle_pedido']
-        read_only_fields = ['id']
+        fields = [
+            'id', 'categoria', 'categoria_nombre', 'subcategoria', 'subcategoria_nombre',
+            'referencia', 'descripcion', 'cantidad', 'venta', 'detalle_pedido',
+        ]
         extra_kwargs = {
-            'observacion': {'required': False, 'allow_blank': True},
+            'categoria': {'required': False, 'allow_null': True},
+            'subcategoria': {'required': False, 'allow_null': True},
+            'referencia': {'required': False, 'allow_blank': True},
+            'descripcion': {'required': False, 'allow_blank': True},
             'venta': {'required': False, 'allow_null': True},
             'detalle_pedido': {'required': False, 'allow_null': True},
         }
 
-    def validate_descripcion(self, value):
-        value = (value or '').strip()
-        if not value:
-            raise serializers.ValidationError('Escribe qué producto se entrega.')
-        return value
+    def get_categoria_nombre(self, obj):
+        return obj.categoria.nombre if obj.categoria else ''
+
+    def get_subcategoria_nombre(self, obj):
+        return obj.subcategoria.nombre if obj.subcategoria else ''
 
     def validate_cantidad(self, value):
         if value < 1:
             raise serializers.ValidationError('La cantidad debe ser al menos 1.')
         return value
+
+    def validate(self, attrs):
+        attrs['referencia'] = (attrs.get('referencia') or '').strip()
+        attrs['descripcion'] = (attrs.get('descripcion') or '').strip()
+        categoria = attrs.get('categoria')
+        subcategoria = attrs.get('subcategoria')
+        if subcategoria and categoria and subcategoria.categoria_id != categoria.id:
+            raise serializers.ValidationError({
+                'subcategoria': f'"{subcategoria.nombre}" no pertenece a la categoría {categoria.nombre}.'
+            })
+        if subcategoria and not categoria:
+            attrs['categoria'] = subcategoria.categoria
+        if not (attrs['referencia'] or attrs['descripcion'] or subcategoria):
+            raise serializers.ValidationError(
+                'Indica al menos la referencia, la subcategoría o la descripción de cada producto.'
+            )
+        return attrs
 
 
 class RemisionSuministroSerializer(serializers.ModelSerializer):
@@ -817,9 +844,11 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
             })
         # Costo del flete y nota del transportador se pueden registrar incluso ya entregada;
         # el resto de datos (programación, cliente, cobro) solo mientras esté activa.
-        campos_edicion = set(attrs) - {'estado', 'nota_transportador', 'costo_entrega', 'inventario_items', 'items_manuales', 'ventas'}
+        campos_edicion = set(attrs) - {'estado', 'nota_transportador', 'costo_entrega', 'inventario_items', 'ventas'}
         if campos_edicion and inst.estado not in REMISION_ESTADOS_ACTIVOS:
             raise serializers.ValidationError(f'La remisión está {inst.get_estado_display().lower()}; ya no se puede editar.')
+        if 'items_manuales' in attrs and not attrs['items_manuales'] and not inst.inventario_items.exists():
+            raise serializers.ValidationError({'productos': 'La remisión debe quedar con al menos un producto.'})
         if 'fecha_entrega' in attrs and not attrs['fecha_entrega']:
             raise serializers.ValidationError({'fecha_entrega': 'Indica la fecha de entrega.'})
         self._validar_horas(attrs.get('hora_desde', inst.hora_desde), attrs.get('hora_hasta', inst.hora_hasta))
@@ -842,16 +871,43 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
             # La disponibilidad ('por_despachar') la actualiza perform_create del viewset en bulk
         if manuales_data:
             RemisionItemManual.objects.bulk_create([
-                RemisionItemManual(remision=remision, **m) for m in manuales_data
+                RemisionItemManual(remision=remision, **{k: v for k, v in m.items() if k != 'id'})
+                for m in manuales_data
             ])
         return remision
 
+    @transaction.atomic
     def update(self, instance, validated_data):
-        # Los productos y las ventas se fijan al crear; un PATCH no los cambia.
+        # Las ventas y los productos de inventario se fijan al crear (mueven la
+        # disponibilidad del inventario). Los productos escritos o de pedido sí se editan.
         validated_data.pop('inventario_items', None)
-        validated_data.pop('items_manuales', None)
         validated_data.pop('ventas', None)
-        return super().update(instance, validated_data)
+        manuales = validated_data.pop('items_manuales', None)
+        instance = super().update(instance, validated_data)
+        if manuales is not None:
+            self._sincronizar_manuales(instance, manuales)
+        return instance
+
+    @staticmethod
+    def _sincronizar_manuales(remision, manuales):
+        """Deja la remisión con exactamente estas líneas: actualiza las que traen `id`,
+        crea las nuevas y borra las que ya no vienen."""
+        existentes = {m.id: m for m in RemisionItemManual.objects.filter(remision=remision)}
+        conservar = set()
+        nuevos = []
+        for datos in manuales:
+            datos = dict(datos)
+            item = existentes.get(datos.pop('id', None))
+            if item:
+                for campo, valor in datos.items():
+                    setattr(item, campo, valor)
+                item.save()
+                conservar.add(item.id)
+            else:
+                nuevos.append(RemisionItemManual(remision=remision, **datos))
+        RemisionItemManual.objects.filter(remision=remision).exclude(id__in=conservar).delete()
+        RemisionItemManual.objects.bulk_create(nuevos)
+        getattr(remision, '_prefetched_objects_cache', {}).pop('items_manuales', None)
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
