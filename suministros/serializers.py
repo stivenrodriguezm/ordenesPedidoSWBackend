@@ -738,7 +738,7 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
             'id', 'fecha_creacion', 'fecha_entrega', 'hora_desde', 'hora_hasta',
             'direccion_entrega', 'ciudad', 'barrio', 'orden_asociada', 'ventas', 'estado',
             'sin_saldo', 'saldo', 'metodo_pago', 'transportador_usuario', 'transportador_usuario_nombre',
-            'transportador', 'vendedor', 'vendedor_nombre', 'observacion',
+            'transportador', 'vendedor', 'vendedor_nombre', 'observacion', 'novedades',
             'cliente_nombre', 'cliente_documento', 'cliente_telefono1', 'cliente_telefono2',
             'inventario_items', 'items_manuales', 'nota_transportador', 'costo_entrega',
             'creado_por', 'creado_por_nombre',

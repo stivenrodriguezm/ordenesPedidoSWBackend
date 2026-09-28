@@ -276,6 +276,7 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
         'metodo_pago': 'Método de pago',
         'vendedor': 'Asesor',
         'observacion': 'Indicaciones',
+        'novedades': 'Novedades',
         'costo_entrega': 'Costo del flete',
         'nota_transportador': 'Nota del transportador',
     }
@@ -691,7 +692,7 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
         for campo in enviados:
             despues = self._valor_legible(remision, campo)
             if despues != antes[campo]:
-                if campo in ('observacion', 'nota_transportador'):
+                if campo in ('observacion', 'novedades', 'nota_transportador'):
                     cambios.append(f'{self.CAMPOS_HISTORIAL[campo]}: {despues}')
                 else:
                     cambios.append(f'{self.CAMPOS_HISTORIAL[campo]}: {antes[campo]} → {despues}')

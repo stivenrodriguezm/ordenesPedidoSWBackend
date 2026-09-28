@@ -264,6 +264,9 @@ class RemisionSuministro(models.Model):
     transportador = models.CharField(max_length=100, blank=True) # Fallback para "Otro" o nombres externos
     vendedor = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='remisiones_suministros')
     observacion = models.TextField(blank=True, null=True)
+    # Novedades conocidas al crear la remisión (faltantes, entregas parciales, detalles
+    # aceptados por el cliente…). Se imprimen en el recuadro "Novedades en la entrega".
+    novedades = models.TextField(blank=True, default='')
     
     inventario_items = models.ManyToManyField(Inventario, related_name='remisiones_suministros', blank=True)
     nota_transportador = models.TextField(blank=True, null=True)
