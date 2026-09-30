@@ -367,6 +367,7 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
             'inventario_items__categoria',
             'inventario_items__subcategoria',
             'inventario_items__grupo',
+            'textos_inventario',
         ).order_by('-fecha_creacion', '-id')
 
     # Class-level queryset is needed for DRF router registration

@@ -5,7 +5,7 @@ from rest_framework import serializers
 from .models import (
     Categoria, Subcategoria, Inventario,
     FacturaProveedor, DetalleFactura, RemisionSuministro, RemisionItemManual, RemisionEvento,
-    GrupoInventario, GrupoInventarioComponente,
+    RemisionInventarioTexto, GrupoInventario, GrupoInventarioComponente,
     Sede, Zona, HistorialTraslado, CostoAdicionalInventario,
     ItemInventarioTelaCuero
 )
@@ -755,6 +755,13 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
         required=False
     )
     items_manuales = RemisionItemManualSerializer(many=True, required=False)
+    # {id_referencia: texto}: descripción para el cliente de productos de inventario,
+    # solo en esta remisión (el inventario no cambia). Se lee en inventario_items_detalle.
+    descripciones_inventario = serializers.DictField(
+        child=serializers.CharField(allow_blank=True),
+        required=False,
+        write_only=True,
+    )
     vendedor_nombre = serializers.SerializerMethodField()
     transportador_usuario_nombre = serializers.ReadOnlyField(source='transportador_usuario.first_name')
     creado_por_nombre = serializers.SerializerMethodField()
@@ -767,8 +774,8 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
             'sin_saldo', 'saldo', 'metodo_pago', 'transportador_usuario', 'transportador_usuario_nombre',
             'transportador', 'vendedor', 'vendedor_nombre', 'observacion', 'novedades',
             'cliente_nombre', 'cliente_documento', 'cliente_telefono1', 'cliente_telefono2',
-            'inventario_items', 'items_manuales', 'nota_transportador', 'costo_entrega',
-            'creado_por', 'creado_por_nombre',
+            'inventario_items', 'items_manuales', 'descripciones_inventario',
+            'nota_transportador', 'costo_entrega', 'creado_por', 'creado_por_nombre',
         ]
         read_only_fields = ['creado_por']
 
@@ -827,7 +834,21 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({
                         'inventario_items': f'El producto {item.pk} ya fue {item.get_disponibilidad_display().lower()}.'
                     })
+        if 'descripciones_inventario' in attrs:
+            attrs['descripciones_inventario'] = self._limpiar_descripciones(
+                attrs['descripciones_inventario'], {i.pk for i in items}
+            )
         return attrs
+
+    @staticmethod
+    def _limpiar_descripciones(textos, ids_remision):
+        """Solo textos no vacíos de productos que van en la remisión."""
+        ajenos = [k for k in textos if k not in ids_remision]
+        if ajenos:
+            raise serializers.ValidationError({
+                'descripciones_inventario': f'El producto {ajenos[0]} no está en la remisión.'
+            })
+        return {k: v.strip() for k, v in textos.items() if v.strip()}
 
     @staticmethod
     def _validar_horas(desde, hasta):
@@ -852,6 +873,10 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
         if 'fecha_entrega' in attrs and not attrs['fecha_entrega']:
             raise serializers.ValidationError({'fecha_entrega': 'Indica la fecha de entrega.'})
         self._validar_horas(attrs.get('hora_desde', inst.hora_desde), attrs.get('hora_hasta', inst.hora_hasta))
+        if 'descripciones_inventario' in attrs:
+            attrs['descripciones_inventario'] = self._limpiar_descripciones(
+                attrs['descripciones_inventario'], set(inst.inventario_items.values_list('pk', flat=True))
+            )
         return attrs
 
     @transaction.atomic
@@ -859,6 +884,7 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
         inventario_items_data = validated_data.pop('inventario_items', [])
         ventas_data = validated_data.pop('ventas', [])
         manuales_data = validated_data.pop('items_manuales', [])
+        textos = validated_data.pop('descripciones_inventario', {})
         request = self.context.get('request')
         if request is not None and request.user.is_authenticated:
             validated_data['creado_por'] = request.user
@@ -874,6 +900,8 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
                 RemisionItemManual(remision=remision, **{k: v for k, v in m.items() if k != 'id'})
                 for m in manuales_data
             ])
+        if textos:
+            self._guardar_descripciones(remision, textos)
         return remision
 
     @transaction.atomic
@@ -883,10 +911,23 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
         validated_data.pop('inventario_items', None)
         validated_data.pop('ventas', None)
         manuales = validated_data.pop('items_manuales', None)
+        textos = validated_data.pop('descripciones_inventario', None)
         instance = super().update(instance, validated_data)
         if manuales is not None:
             self._sincronizar_manuales(instance, manuales)
+        if textos is not None:
+            self._guardar_descripciones(instance, textos)
         return instance
+
+    @staticmethod
+    def _guardar_descripciones(remision, textos):
+        """Deja exactamente estos textos; los productos sin texto vuelven al del inventario."""
+        RemisionInventarioTexto.objects.filter(remision=remision).delete()
+        RemisionInventarioTexto.objects.bulk_create([
+            RemisionInventarioTexto(remision=remision, inventario_id=pk, descripcion=texto)
+            for pk, texto in textos.items()
+        ])
+        getattr(remision, '_prefetched_objects_cache', {}).pop('textos_inventario', None)
 
     @staticmethod
     def _sincronizar_manuales(remision, manuales):
@@ -927,6 +968,7 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
         items_qs = prefetched if prefetched is not None else instance.inventario_items.select_related(
             'referencia', 'referencia__proveedor', 'categoria', 'subcategoria'
         ).all()
+        textos = {t.inventario_id: t.descripcion for t in instance.textos_inventario.all()}
         for item in items_qs:
             ref = item.referencia
             items_data.append({
@@ -934,6 +976,7 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
                 'producto_nombre': ref.nombre if ref else '',
                 'variacion': item.variacion or '',
                 'observacion': item.observacion or '',
+                'descripcion_remision': textos.get(item.id_referencia, ''),
                 'categoria_nombre': item.categoria.nombre if item.categoria else '',
                 'subcategoria_nombre': item.subcategoria.nombre if item.subcategoria else '',
                 'proveedor_nombre': (ref.proveedor.nombre_empresa if ref and ref.proveedor else ''),

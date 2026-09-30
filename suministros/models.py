@@ -299,6 +299,23 @@ class RemisionItemManual(models.Model):
         return f"{self.cantidad}x {self.referencia or self.descripcion[:40]} (Remisión {self.remision_id})"
 
 
+class RemisionInventarioTexto(models.Model):
+    """Descripción que ve el cliente para un producto de inventario, solo en esta remisión.
+    Sin fila se imprime la del inventario (variación y observación); el inventario nunca
+    se modifica."""
+    remision = models.ForeignKey(RemisionSuministro, on_delete=models.CASCADE, related_name='textos_inventario')
+    inventario = models.ForeignKey(Inventario, on_delete=models.CASCADE, related_name='+')
+    descripcion = models.TextField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['remision', 'inventario'], name='unique_texto_inventario_por_remision'),
+        ]
+
+    def __str__(self):
+        return f"{self.inventario_id} en remisión {self.remision_id}"
+
+
 class RemisionEvento(models.Model):
     """Historial de la remisión: quién la creó, reprogramó, despachó, entregó o anuló."""
     TIPO_CHOICES = [
