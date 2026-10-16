@@ -1,0 +1,70 @@
+name: CI backend
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    env:
+      # Sin .env ni DB_HOST: settings_test usa SQLite en memoria y anula correo/CDN.
+      DJANGO_ENV_FILE: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Sintaxis Python
+        run: python -m compileall -q ordenes suministros listaprecios paginaweb lottusPedidos
+      - name: Configuración Django
+        run: python manage.py check --settings=lottusPedidos.settings_test
+      - name: Migraciones al día
+        run: python manage.py makemigrations --check --dry-run --settings=lottusPedidos.settings_test
+      - name: Pruebas (regresiones de dinero, permisos e inventario incluidas)
+        run: python manage.py test --settings=lottusPedidos.settings_test --noinput
+
+  concurrencia-mysql:
+    # Carreras reales con conexiones independientes sobre un MySQL desechable.
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root-ci-only
+          MYSQL_USER: lottus_test
+          MYSQL_PASSWORD: lottus-test-ci-only
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot-ci-only"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      DJANGO_ENV_FILE: ""
+      LOTTUS_TEST_MYSQL_HOST: 127.0.0.1
+      LOTTUS_TEST_MYSQL_USER: lottus_test
+      LOTTUS_TEST_MYSQL_PASSWORD: lottus-test-ci-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: Permisos del usuario de pruebas sobre test_lottus
+        run: mysql -h 127.0.0.1 -uroot -proot-ci-only -e "GRANT ALL ON test_lottus.* TO 'lottus_test'@'%'; FLUSH PRIVILEGES;"
+      - run: python manage.py test --settings=lottusPedidos.settings_test_mysql --noinput
+
+  secretos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

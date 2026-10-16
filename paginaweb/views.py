@@ -57,16 +57,15 @@ def public_products(request):
         queryset = queryset.filter(
             Q(name__icontains=needle) |
             Q(short_description__icontains=needle) |
-            Q(description__icontains=needle)
+            Q(description__icontains=needle) |
+            Q(characteristics__icontains=needle) |
+            Q(materials__icontains=needle)
         )
 
     products_list = list(queryset)
 
-    if sort == 'price-asc':
-        products_list.sort(key=lambda p: float(p.price))
-    elif sort == 'price-desc':
-        products_list.sort(key=lambda p: float(p.price), reverse=True)
-    elif sort == 'new':
+    # Sin orden por precio: el precio no se publica (2026-10-08).
+    if sort == 'new':
         products_list.sort(key=lambda p: p.created_at, reverse=True)
     else:
         products_list.sort(key=lambda p: (1 if p.featured else 0, p.created_at), reverse=True)
@@ -415,15 +414,21 @@ class PublicCreatePqrsView(APIView):
     def post(self, request):
         serializer = PqrsPublicCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        ticket = serializer.save(id=str(uuid.uuid4()))
-
-        pqrs_emails.send_confirmation_email(ticket)
-        pqrs_emails.send_internal_notification(ticket)
-
+        from django.db import transaction
+        with transaction.atomic():
+            ticket = serializer.save(id=str(uuid.uuid4()))
+            confirmacion = pqrs_emails.send_confirmation_email(ticket)
+            pqrs_emails.send_internal_notification(ticket)
+        # Los correos salen al confirmar la transacción; se informa el resultado
+        # real: "registrada" no es lo mismo que "correo enviado" (H30).
+        enviado = bool(confirmacion) and type(confirmacion).objects.filter(pk=confirmacion.pk, estado='enviado').exists()
+        mensaje = ("Hemos recibido tu solicitud. Revisa tu correo para ver la confirmación." if enviado else
+                   "Hemos recibido tu solicitud. Guarda tu radicado: el correo de confirmación está pendiente de envío.")
         return Response({
             "ok": True,
             "radicado": ticket.radicado,
-            "message": "Hemos recibido tu solicitud. Revisa tu correo para ver la confirmación.",
+            "correo_confirmacion": "enviado" if enviado else "pendiente",
+            "message": mensaje,
         }, status=status.HTTP_201_CREATED)
 
 
@@ -515,8 +520,13 @@ class PqrsAdminViewSet(viewsets.ModelViewSet):
         }]
         ticket.estado = 'respondido'
         ticket.respondido_por = autor
-        ticket.save()
+        from django.db import transaction
+        with transaction.atomic():
+            ticket.save()
+            correo = pqrs_emails.send_response_email(ticket, mensaje)
 
-        pqrs_emails.send_response_email(ticket, mensaje)
-
-        return Response(PqrsAdminSerializer(ticket).data)
+        data = dict(PqrsAdminSerializer(ticket).data)
+        if correo is not None:
+            correo.refresh_from_db()
+            data['correo_respuesta'] = correo.estado
+        return Response(data)

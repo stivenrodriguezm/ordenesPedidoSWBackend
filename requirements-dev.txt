@@ -1,0 +1,3 @@
+-r requirements.txt
+# Solo pruebas/CI: autenticación caching_sha2 de MySQL 8 con PyMySQL.
+cryptography>=42

@@ -1,4 +1,4 @@
-import random
+from decimal import Decimal
 from django.db import transaction
 from django.db.models import Q
 from rest_framework import serializers
@@ -9,8 +9,9 @@ from .models import (
     Sede, Zona, HistorialTraslado, CostoAdicionalInventario,
     ItemInventarioTelaCuero
 )
-from ordenes.models import Venta, Referencia
+from ordenes.models import Venta, Referencia, DetallePedido
 from ordenes.permissions import check_feature_permission
+from . import movimientos, recepcion
 
 
 class CategoriaSerializer(serializers.ModelSerializer):
@@ -105,6 +106,12 @@ class GrupoInventarioSerializer(serializers.ModelSerializer):
     def get_costo_total(self, obj):
         return sum(item.costo_especifico for item in obj.items_inventario.all())
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not puede_ver_costos_inventario(self):
+            data.pop('costo_total', None)
+        return data
+
     def create(self, validated_data):
         componentes_data = validated_data.pop('componentes', [])
         grupo = GrupoInventario.objects.create(**validated_data)
@@ -147,6 +154,29 @@ class ItemInventarioTelaCueroSerializer(serializers.ModelSerializer):
 # ---------------------------------------------------------------------------
 # Inventario (tabla principal)
 # ---------------------------------------------------------------------------
+
+CAMPOS_COSTO_INVENTARIO = ('costo_especifico', 'costo_total', 'tela_costo_metro', 'costos_adicionales')
+
+
+def puede_ver_costos_inventario(serializer):
+    """Contexto explícito o permiso del usuario de la petición; sin petición
+    (uso interno) se muestran."""
+    if 'ver_costos' in serializer.context:
+        return serializer.context['ver_costos']
+    request = serializer.context.get('request')
+    return request is None or tiene_permiso(request, 'VER_COSTOS_INVENTARIO')
+
+
+def quitar_costos(data):
+    """Elimina del cuerpo los costos (también en telas anidadas): ocultar la
+    columna en React no protege la API (H06)."""
+    for campo in CAMPOS_COSTO_INVENTARIO:
+        data.pop(campo, None)
+    for tc in data.get('telas_cueros') or []:
+        tc.pop('costo_unidad', None)
+        tc.pop('costo_total', None)
+    return data
+
 
 class InventarioSerializer(serializers.ModelSerializer):
     producto_nombre = serializers.SerializerMethodField()
@@ -238,19 +268,8 @@ class InventarioSerializer(serializers.ModelSerializer):
             return None
 
     def get_costo_total(self, obj):
-        try:
-            base = float(obj.costo_especifico or 0)
-            tela = 0
-            if getattr(obj, 'lleva_tela', False):
-                tela = float(obj.tela_costo_metro or 0) * float(obj.tela_cantidad_metros or 0)
-            adicionales = 0
-            try:
-                adicionales = sum(float(c.valor) for c in obj.costos_adicionales.all())
-            except Exception:
-                pass
-            return round(base + tela + adicionales, 2)
-        except Exception:
-            return 0.0
+        from .costos import costo_integral
+        return costo_integral(obj)
 
     def get_vendedor_nombre(self, obj):
         try:
@@ -271,6 +290,14 @@ class InventarioSerializer(serializers.ModelSerializer):
             return None
         return None
 
+    def validate(self, attrs):
+        # Quien no ve costos tampoco los escribe: su formulario los reenvía
+        # vacíos y no deben pisar el costo real del ítem.
+        if not puede_ver_costos_inventario(self):
+            for campo in ('costo_especifico', 'tela_costo_metro'):
+                attrs.pop(campo, None)
+        return attrs
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         try:
@@ -281,6 +308,8 @@ class InventarioSerializer(serializers.ModelSerializer):
             data['telas_cueros'] = ItemInventarioTelaCueroSerializer(instance.telas_cueros.all(), many=True).data
         except Exception:
             data['telas_cueros'] = []
+        if not puede_ver_costos_inventario(self):
+            quitar_costos(data)
         return data
 
 class HistorialTrasladoSerializer(serializers.ModelSerializer):
@@ -320,7 +349,8 @@ class FacturasInventarioReadSerializer(serializers.ModelSerializer):
             'disponibilidad', 'estado_fisico', 'venta', 'venta_id', 'imagen', 'fecha_ingreso', 'grupo_nombre', 'grupo_id',
             'grupo_categoria_nombre', 'grupo_subcategoria_nombre',
             'zona', 'zona_nombre',
-            'lleva_tela', 'tela_referencia', 'tela_color', 'tela_costo_metro', 'tela_cantidad_metros', 'vendedor_nombre'
+            'lleva_tela', 'tela_referencia', 'tela_color', 'tela_costo_metro', 'tela_cantidad_metros', 'vendedor_nombre',
+            'pedido', 'detalle_pedido',
         ]
 
     def get_referencia_nombre(self, obj):
@@ -439,127 +469,225 @@ class DetalleFacturaSerializer(serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
-# Helper: create one Inventario item from a product dict
+# Productos de factura: entrada tipada (P04-02, H11) y edición por identidad
+# (P04-01, H04)
 # ---------------------------------------------------------------------------
 
-def _crear_item_inventario(prod_data, factura):
-    """
-    Crea uno o más items de Inventario desde los datos del producto
-    recibido en el form de Nueva o Editar Factura. No usa DetalleFactura.
-    Soporta 'cantidad' (crea N unidades) y 'grupo_id' (asigna al grupo).
-    """
-    ref_id = prod_data.get('referencia')
-    cat_id = prod_data.get('categoria')
-    subcat_id = prod_data.get('subcategoria')
-    venta_id_str = str(prod_data.get('venta_id') or prod_data.get('venta') or '')
-    grupo_id = prod_data.get('grupo_id') or prod_data.get('grupo')
+DISPONIBILIDADES = {c[0] for c in Inventario.DISPONIBILIDAD_CHOICES}
+ESTADOS_FISICOS = {c[0] for c in Inventario.ESTADO_FISICO_CHOICES}
+# Estados en los que la unidad ya está comprometida con una entrega: la
+# edición de la factura no puede borrarla ni cambiar su venta/disponibilidad.
+DISPONIBILIDAD_PROTEGIDA = {'por_despachar', 'despachado', 'entregado'}
 
-    try:
-        cantidad = int(prod_data.get('cantidad') or 1)
-    except (ValueError, TypeError):
-        cantidad = 1
-    if cantidad < 1:
-        cantidad = 1
 
-    referencia = Referencia.objects.filter(id=ref_id).first() if ref_id else None
-    if not referencia:
+class TelaCueroEntradaSerializer(serializers.Serializer):
+    tipo = serializers.ChoiceField(choices=[c[0] for c in ItemInventarioTelaCuero.TIPO_CHOICES], default='tela')
+    referencia = serializers.CharField(allow_blank=True, required=False, default='', max_length=100)
+    color = serializers.CharField(allow_blank=True, required=False, default='', max_length=50)
+    unidad_medida = serializers.ChoiceField(choices=[c[0] for c in ItemInventarioTelaCuero.UNIDAD_CHOICES], required=False)
+    costo_unidad = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0'), default=0)
+    cantidad = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal('0'), max_value=Decimal('10000'), default=0)
+
+    def validate(self, attrs):
+        attrs.setdefault('unidad_medida', 'metro' if attrs.get('tipo') == 'tela' else 'decimetro')
+        return attrs
+
+
+def _alias(datos, *claves):
+    for k in claves:
+        if k in datos and datos[k] not in (None, ''):
+            return datos[k]
+    return None
+
+
+class ProductoFacturaSerializer(serializers.Serializer):
+    """Una fila del formulario de factura: `cantidad` unidades iguales. Con
+    `id_referencias` (o `id_referencia`) la fila actualiza esas unidades
+    existentes en vez de crear otras."""
+    id_referencias = serializers.ListField(child=serializers.CharField(max_length=50), required=False, default=list)
+    referencia = serializers.PrimaryKeyRelatedField(queryset=Referencia.objects.all())
+    categoria = serializers.PrimaryKeyRelatedField(queryset=Categoria.objects.all(), required=False, allow_null=True)
+    subcategoria = serializers.PrimaryKeyRelatedField(queryset=Subcategoria.objects.all(), required=False, allow_null=True)
+    variacion = serializers.CharField(allow_blank=True, required=False, max_length=255)
+    costo = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0'))
+    cantidad = serializers.IntegerField(min_value=1, max_value=500, default=1)
+    grupo = serializers.PrimaryKeyRelatedField(queryset=GrupoInventario.objects.all(), required=False, allow_null=True)
+    observacion = serializers.CharField(allow_blank=True, required=False)
+    disponibilidad = serializers.ChoiceField(choices=sorted(DISPONIBILIDADES), required=False)
+    estado_fisico = serializers.ChoiceField(choices=sorted(ESTADOS_FISICOS), required=False)
+    zona = serializers.PrimaryKeyRelatedField(queryset=Zona.objects.all(), required=False, allow_null=True)
+    venta = serializers.PrimaryKeyRelatedField(queryset=Venta.objects.all(), required=False, allow_null=True)
+    # Línea de la orden de pedido que se recibe con esta fila (P11-01).
+    detalle_pedido = serializers.PrimaryKeyRelatedField(
+        queryset=DetallePedido.objects.select_related('orden'), required=False, allow_null=True)
+    imagen = serializers.URLField(required=False, allow_null=True, allow_blank=True, max_length=500)
+    telas_cueros = TelaCueroEntradaSerializer(many=True, required=False)
+    tela_referencia = serializers.CharField(allow_blank=True, required=False, max_length=100)
+    tela_color = serializers.CharField(allow_blank=True, required=False, max_length=50)
+    tela_costo_metro = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0'), required=False)
+    tela_cantidad_metros = serializers.DecimalField(max_digits=8, decimal_places=2, min_value=Decimal('0'), required=False)
+    lleva_tela = serializers.BooleanField(required=False)
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict):
+            raise serializers.ValidationError('Cada producto debe ser un objeto.')
+        datos = dict(data)
+        # Nombres alternativos que el frontend ha usado históricamente.
+        for destino, origenes in (
+            ('grupo', ('grupo_id', 'grupo')), ('zona', ('zona', 'zona_id')),
+            ('venta', ('venta_id', 'venta')), ('telas_cueros', ('telas_cueros', 'telasCueros')),
+            ('detalle_pedido', ('detalle_pedido', 'detalle_pedido_id')),
+            ('tela_referencia', ('tela_referencia', 'telaReferencia')), ('tela_color', ('tela_color', 'telaColor')),
+            ('tela_costo_metro', ('tela_costo_metro', 'telaCostoMetro')),
+            ('tela_cantidad_metros', ('tela_cantidad_metros', 'telaCantidadMetros')),
+        ):
+            valor = _alias(datos, *origenes)
+            for o in origenes:
+                datos.pop(o, None)
+            if valor is not None:
+                datos[destino] = valor
+        if datos.get('id_referencia') and not datos.get('id_referencias'):
+            datos['id_referencias'] = [datos['id_referencia']]
+        datos.pop('id_referencia', None)
+        return super().to_internal_value(datos)
+
+    def validate(self, attrs):
+        factura_proveedor = self.context.get('proveedor')
+        ref = attrs['referencia']
+        if factura_proveedor is not None and ref.proveedor_id != factura_proveedor.id:
+            raise serializers.ValidationError({'referencia': f'"{ref.nombre}" no pertenece al proveedor de la factura.'})
+        cat, sub = attrs.get('categoria'), attrs.get('subcategoria')
+        if sub and cat and sub.categoria_id != cat.id:
+            raise serializers.ValidationError({'subcategoria': f'"{sub.nombre}" no pertenece a la categoría {cat.nombre}.'})
+        if sub and not cat:
+            attrs['categoria'] = sub.categoria
+        if len(attrs['id_referencias']) > attrs['cantidad']:
+            raise serializers.ValidationError({'cantidad': 'La cantidad no puede ser menor que las unidades existentes de la fila.'})
+        if 'detalle_pedido' in attrs:
+            self._validar_linea_pedido(attrs, factura_proveedor)
+        if attrs.get('disponibilidad') in movimientos.SOLO_POR_PROCESO and attrs['cantidad'] > len(attrs['id_referencias']):
+            raise serializers.ValidationError({'disponibilidad': 'Una unidad nueva no puede ingresar con esa disponibilidad.'})
+        return attrs
+
+    @staticmethod
+    def _validar_linea_pedido(attrs, proveedor):
+        """La fila recibe una línea de orden de pedido del mismo proveedor; la
+        venta de la orden se hereda (y no puede contradecirse)."""
+        linea = attrs['detalle_pedido']
+        if linea is None:
+            attrs['pedido'] = None
+            return
+        orden = linea.orden
+        if orden.estado == 'anulado':
+            raise serializers.ValidationError({'detalle_pedido': f'La orden de pedido #{orden.pk} está anulada.'})
+        if proveedor is not None and orden.proveedor_id != proveedor.id:
+            raise serializers.ValidationError({'detalle_pedido': f'La orden de pedido #{orden.pk} es de otro proveedor.'})
+        venta = attrs.get('venta')
+        if orden.venta_id:
+            if venta is not None and venta.pk != orden.venta_id:
+                raise serializers.ValidationError({'venta': (
+                    f'La orden de pedido #{orden.pk} es de la venta {orden.venta_id}; la fila indica la venta {venta.pk}.')})
+            if venta is None:
+                attrs['venta'] = orden.venta
+                attrs.setdefault('disponibilidad', 'cliente')
+        attrs['pedido'] = orden
+
+
+VALORES_INICIALES = {
+    'variacion': '', 'observacion': '', 'disponibilidad': 'exhibicion', 'estado_fisico': 'buen_estado',
+    'tela_referencia': '', 'tela_color': '', 'tela_costo_metro': Decimal('0'), 'tela_cantidad_metros': Decimal('0'),
+}
+_CAMPOS_DIRECTOS = ('referencia', 'categoria', 'subcategoria', 'variacion', 'observacion', 'disponibilidad',
+                    'estado_fisico', 'zona', 'venta', 'grupo', 'tela_costo_metro', 'tela_cantidad_metros',
+                    'detalle_pedido', 'pedido')
+
+
+def _valores_item(prod, crear):
+    """Campos del modelo a escribir. Al crear se completan los valores iniciales;
+    al editar solo se tocan los campos que la fila envía."""
+    datos = {**VALORES_INICIALES, **prod} if crear else dict(prod)
+    valores = {c: datos[c] for c in _CAMPOS_DIRECTOS if c in datos}
+    valores['costo_especifico'] = datos['costo']
+    if 'imagen' in datos:
+        valores['imagen'] = datos['imagen'] or None
+    for c in ('tela_referencia', 'tela_color'):
+        if c in datos:
+            valores[c] = datos[c] or None
+    if crear or 'lleva_tela' in datos:
+        valores['lleva_tela'] = bool(datos.get('lleva_tela') or datos.get('tela_referencia') or datos.get('tela_color')
+                                     or (datos.get('tela_costo_metro') or 0) > 0)
+    return valores
+
+
+def _guardar_telas(item, prod, reemplazar):
+    telas = prod.get('telas_cueros')
+    if telas is None and not reemplazar:
         return
-
-    categoria = Categoria.objects.filter(id=cat_id).first() if cat_id else None
-    subcategoria = Subcategoria.objects.filter(id=subcat_id).first() if subcat_id else None
-    venta = Venta.objects.filter(id=venta_id_str).first() if venta_id_str.isdigit() else None
-
-    # Resolver grupo (puede ser id numérico o None)
-    grupo = None
-    if grupo_id:
-        try:
-            grupo = GrupoInventario.objects.filter(id=int(grupo_id)).first()
-        except (ValueError, TypeError):
-            grupo = None
-
-    try:
-        costo_spec = float(prod_data.get('costo') or 0)
-    except (ValueError, TypeError):
-        costo_spec = 0.0
-
-    raw_zona = prod_data.get('zona') or prod_data.get('zona_id')
-    try:
-        zona_id = int(raw_zona) if raw_zona else None
-    except (ValueError, TypeError):
-        zona_id = None
-
-    tela_ref = str(prod_data.get('tela_referencia') or prod_data.get('telaReferencia') or '').strip()
-    tela_col = str(prod_data.get('tela_color') or prod_data.get('telaColor') or '').strip()
-
-    try:
-        tela_costo = float(prod_data.get('tela_costo_metro') or prod_data.get('telaCostoMetro') or 0)
-    except (ValueError, TypeError):
-        tela_costo = 0.0
-
-    try:
-        tela_cant = float(prod_data.get('tela_cantidad_metros') or prod_data.get('telaCantidadMetros') or 0)
-    except (ValueError, TypeError):
-        tela_cant = 0.0
-
-    lleva_tela = bool(prod_data.get('lleva_tela')) or bool(tela_ref) or bool(tela_col) or bool(tela_costo > 0)
-    prefix = (categoria.nombre[:2].upper() if (categoria and getattr(categoria, 'nombre', None)) else 'XX')
-
-    for _ in range(cantidad):
-        gen_id = f"{prefix}{random.randint(1000, 9999)}"
-        while Inventario.objects.filter(id_referencia=gen_id).exists():
-            gen_id = f"{prefix}{random.randint(1000, 9999)}"
-
-        inv_item = Inventario.objects.create(
-            id_referencia=gen_id,
-            referencia=referencia,
-            categoria=categoria,
-            subcategoria=subcategoria,
-            variacion=str(prod_data.get('variacion') or ''),
-            costo_especifico=costo_spec,
-            observacion=str(prod_data.get('observacion') or ''),
-            disponibilidad=str(prod_data.get('disponibilidad') or 'exhibicion'),
-            estado_fisico=str(prod_data.get('estado_fisico') or 'buen_estado'),
-            zona_id=zona_id,
-            venta=venta,
-            factura=factura,
-            factura_manual=factura.id_manual if (factura and getattr(factura, 'id_manual', None)) else '',
-            imagen=prod_data.get('imagen') or None,
-            grupo=grupo,
-            lleva_tela=lleva_tela,
-            tela_referencia=tela_ref if tela_ref else None,
-            tela_color=tela_col if tela_col else None,
-            tela_costo_metro=tela_costo,
-            tela_cantidad_metros=tela_cant,
+    if reemplazar and telas is not None:
+        item.telas_cueros.all().delete()
+    if telas:
+        ItemInventarioTelaCuero.objects.bulk_create([ItemInventarioTelaCuero(inventario=item, **tc) for tc in telas])
+    elif telas is None and not reemplazar and item.lleva_tela and (item.tela_referencia or item.tela_color or (item.tela_costo_metro or 0) > 0):
+        ItemInventarioTelaCuero.objects.create(
+            inventario=item, tipo='tela', referencia=item.tela_referencia or '', color=item.tela_color or '',
+            unidad_medida='metro', costo_unidad=item.tela_costo_metro, cantidad=item.tela_cantidad_metros,
         )
 
-        telas_cueros_list = prod_data.get('telas_cueros') or prod_data.get('telasCueros') or []
-        if isinstance(telas_cueros_list, list) and len(telas_cueros_list) > 0:
-            for tc in telas_cueros_list:
-                if isinstance(tc, dict):
-                    ItemInventarioTelaCuero.objects.create(
-                        inventario=inv_item,
-                        tipo=str(tc.get('tipo') or 'tela'),
-                        referencia=str(tc.get('referencia') or '').strip(),
-                        color=str(tc.get('color') or '').strip(),
-                        unidad_medida=str(tc.get('unidad_medida') or ('metro' if tc.get('tipo') == 'tela' else 'decimetro')),
-                        costo_unidad=float(tc.get('costo_unidad') or tc.get('costoUnidad') or 0),
-                        cantidad=float(tc.get('cantidad') or 0),
-                    )
-        elif lleva_tela and (tela_ref or tela_col or tela_costo > 0):
-            ItemInventarioTelaCuero.objects.create(
-                inventario=inv_item,
-                tipo='tela',
-                referencia=tela_ref,
-                color=tela_col,
-                unidad_medida='metro',
-                costo_unidad=tela_costo,
-                cantidad=tela_cant,
-            )
+
+def _crear_unidades(prod, factura, cantidad, usuario=None):
+    from .identificadores import siguiente_id_inventario
+    valores = _valores_item(prod, crear=True)
+    categoria = valores.get('categoria')
+    prefijo = categoria.nombre[:2].upper() if categoria and categoria.nombre else 'XX'
+    for _ in range(cantidad):
+        item = Inventario.objects.create(
+            id_referencia=siguiente_id_inventario(prefijo), factura=factura,
+            factura_manual=factura.id_manual or '', **valores,
+        )
+        movimientos.ingreso(item, usuario, documento=f'factura:{factura.pk}')
+        _guardar_telas(item, prod, reemplazar=False)
 
 
-# ---------------------------------------------------------------------------
-# FacturaProveedor
-# ---------------------------------------------------------------------------
+def unidad_protegida(item):
+    """Motivo por el que la unidad no puede eliminarse desde la factura, o ''."""
+    if item.disponibilidad in DISPONIBILIDAD_PROTEGIDA:
+        return f'está {item.get_disponibilidad_display().lower()}'
+    if item.remisiones_suministros.exists():
+        return 'está en una remisión'
+    if item.historial_traslados.exists():
+        return 'tiene historial de traslados'
+    if item.movimientos.exclude(tipo__in=('ingreso', 'edicion')).exists():
+        return 'tiene movimientos de inventario registrados'
+    if item.costos_adicionales.exists():
+        return 'tiene costos adicionales registrados'
+    return ''
+
+
+def _actualizar_unidad(item, prod, usuario=None):
+    valores = _valores_item(prod, crear=False)
+    comprometida = item.disponibilidad in DISPONIBILIDAD_PROTEGIDA or item.remisiones_suministros.filter(
+        estado__in=REMISION_ESTADOS_ACTIVOS).exists()
+    if comprometida:
+        cambia_disp = 'disponibilidad' in valores and valores['disponibilidad'] != item.disponibilidad
+        cambia_venta = 'venta' in valores and (valores['venta'].pk if valores['venta'] else None) != item.venta_id
+        if cambia_disp or cambia_venta:
+            raise serializers.ValidationError({'productos': f'El producto {item.pk} está comprometido en una entrega: '
+                                                            'su venta y disponibilidad no se cambian desde la factura.'})
+    try:
+        movimientos.validar_edicion_manual(item, valores.get('disponibilidad'), False, en_remision_activa=False)
+    except serializers.ValidationError as e:
+        raise serializers.ValidationError({'productos': e.detail['disponibilidad']})
+    antes = movimientos.foto(item)
+    zona_anterior = item.zona
+    for campo, valor in valores.items():
+        setattr(item, campo, valor)
+    item.save()
+    movimientos.registrar(item, antes, 'edicion', usuario, motivo='Edición de la factura', documento=f'factura:{item.factura_id}')
+    if 'zona' in valores and (zona_anterior and zona_anterior.pk) != (item.zona and item.zona.pk):
+        HistorialTraslado.objects.create(item_inventario=item, zona_origen=zona_anterior, zona_destino=item.zona,
+                                         usuario=usuario, observacion='Cambio de zona desde la edición de la factura')
+    _guardar_telas(item, prod, reemplazar=True)
+
 
 class FacturaProveedorListSerializer(serializers.ModelSerializer):
     proveedor_nombre = serializers.ReadOnlyField(source='proveedor.nombre_empresa')
@@ -568,16 +696,17 @@ class FacturaProveedorListSerializer(serializers.ModelSerializer):
         model = FacturaProveedor
         fields = [
             'id', 'id_manual', 'valor', 'fecha_factura', 'fecha_pago',
-            'estado', 'proveedor', 'proveedor_nombre', 'observaciones'
+            'estado', 'proveedor', 'proveedor_nombre', 'observaciones',
+            # fecha_pago = límite acordado; fecha_pago_real = cuando quedó pagada (D10f).
+            'fecha_pago_real',
         ]
 
 class FacturaProveedorSerializer(serializers.ModelSerializer):
-    # Write-only: lista de productos recibidos al crear la factura
+    # Write-only: lista de productos (cada uno validado con ProductoFacturaSerializer)
     productos = serializers.ListField(
         child=serializers.DictField(),
         write_only=True,
         required=False,
-        default=list,
     )
     # Read-only: items del inventario vinculados a esta factura
     items_inventario = FacturasInventarioReadSerializer(many=True, read_only=True)
@@ -594,7 +723,13 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
             'items_inventario', # read-only (salida)
             'detalles',         # read-only fallback (salida histórica)
             'comprobante_egreso', # read-only (salida) - vínculo con el comprobante de egreso, si tiene
+            'fecha_pago_real',  # read-only: lo fija el flujo de egresos (D10f)
         ]
+
+    def validate_valor(self, value):
+        if value is not None and value < 0:
+            raise serializers.ValidationError('El valor de la factura no puede ser negativo.')
+        return value
 
     def validate(self, attrs):
         # Una factura ya vinculada a un comprobante de egreso no se puede editar:
@@ -606,42 +741,104 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
                 f'#{self.instance.comprobante_egreso_id} y no puede editarse. '
                 'Para corregirla, primero gestiona el comprobante de egreso asociado.'
             )
+        proveedor = attrs.get('proveedor', getattr(self.instance, 'proveedor', None))
+        crudos = attrs.get('productos')
+        if crudos is None:
+            if self.instance is None:
+                attrs['productos'] = []
+            return attrs
+
+        # Toda fila inválida rechaza la factura completa con su error (U03).
+        productos, errores = [], {}
+        for i, crudo in enumerate(crudos, start=1):
+            ps = ProductoFacturaSerializer(data=crudo, context={'proveedor': proveedor})
+            if ps.is_valid():
+                productos.append(ps.validated_data)
+            else:
+                errores[f'producto_{i}'] = ps.errors
+        if errores:
+            raise serializers.ValidationError({'productos': errores})
+
+        # Ecuación del total (la misma que aplica el formulario): Σ costo × cantidad
+        # de las filas + costo de las unidades entregadas que el formulario no envía.
+        bloqueados = 0
+        enviados = {pk for p in productos for pk in p['id_referencias']}
+        if self.instance is not None:
+            bloqueados = sum(i.costo_especifico for i in self.instance.items_inventario.filter(disponibilidad='entregado').exclude(pk__in=enviados))
+        total = sum(p['costo'] * p['cantidad'] for p in productos) + bloqueados
+        valor = attrs.get('valor', getattr(self.instance, 'valor', None))
+        if productos and valor is not None and total != valor:
+            raise serializers.ValidationError({'valor': f'La suma de los productos ({total:,.0f}) no coincide con el valor de la factura ({valor:,.0f}).'})
+        attrs['productos'] = productos
         return attrs
+
+    def _usuario(self):
+        request = self.context.get('request')
+        return request.user if request is not None and request.user.is_authenticated else None
+
+    @staticmethod
+    def _lineas_de(productos):
+        return [p['detalle_pedido'].pk for p in productos if p.get('detalle_pedido')]
 
     @transaction.atomic
     def create(self, validated_data):
-        productos_data = validated_data.pop('productos', [])
+        productos = validated_data.pop('productos', [])
+        # Líneas de pedido bloqueadas antes de crear unidades (P11-01).
+        lineas = recepcion.bloquear_lineas(self._lineas_de(productos))
         factura = FacturaProveedor.objects.create(**validated_data)
-        for prod_data in productos_data:
-            _crear_item_inventario(prod_data, factura)
+        for prod in productos:
+            if prod['id_referencias']:
+                raise serializers.ValidationError({'productos': 'Una factura nueva no puede reutilizar unidades existentes.'})
+            _crear_unidades(prod, factura, prod['cantidad'], self._usuario())
+        recepcion.verificar_topes(lineas)
+        recepcion.actualizar_ordenes(lineas, self._usuario())
         return factura
 
     @transaction.atomic
     def update(self, instance, validated_data):
-        productos_data = validated_data.pop('productos', None)
+        productos = validated_data.pop('productos', None)
+        lineas = {}
+        if productos is not None:
+            lineas = recepcion.bloquear_lineas(self._lineas_de(productos) + list(recepcion.lineas_de_unidades(instance)))
 
-        # Actualizar campos de la factura
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
-
-        # Si se actualizó el id_manual, actualizarlo en los items de inventario vinculados
         if instance.id_manual is not None:
             instance.items_inventario.update(factura_manual=instance.id_manual or '')
 
-        # Si se envían productos en el update: se reemplazan por completo los
-        # ítems editables (borrar + recrear, igual que en create), en vez de
-        # emparejar por índice. Los ítems que ya fueron entregados se
-        # preservan siempre intactos — el formulario de edición los muestra en
-        # modo solo-lectura y nunca los incluye en `productos_data`. Tener una
-        # venta asociada NO basta para bloquear un ítem: puede pasar tiempo en
-        # bodega antes de entregarse, y en ese lapso debe seguir siendo editable.
-        if productos_data is not None:
-            instance.items_inventario.exclude(disponibilidad='entregado').delete()
-            for prod_data in productos_data:
-                _crear_item_inventario(prod_data, instance)
-
+        if productos is not None:
+            self._sincronizar_productos(instance, productos)
+            recepcion.verificar_topes(lineas)
+            recepcion.actualizar_ordenes(lineas, self._usuario())
         return instance
+
+    def _sincronizar_productos(self, factura, productos):
+        """Altas, cambios y bajas por identificador estable: una unidad existente
+        conserva su PK, QR, historial, telas y vínculos (H04). Las entregadas que
+        el formulario no envía se conservan intactas."""
+        request = self.context.get('request')
+        usuario = request.user if request is not None and request.user.is_authenticated else None
+        existentes = {i.pk: i for i in Inventario.objects.select_for_update().filter(factura=factura).order_by('pk')}
+        usados = set()
+        for prod in productos:
+            for pk in prod['id_referencias']:
+                if pk not in existentes or pk in usados:
+                    raise serializers.ValidationError({'productos': f'El producto {pk} no pertenece a esta factura.'})
+                usados.add(pk)
+                _actualizar_unidad(existentes[pk], prod, usuario)
+            faltan = prod['cantidad'] - len(prod['id_referencias'])
+            if faltan > 0:
+                _crear_unidades(prod, factura, faltan, usuario)
+
+        for pk, item in existentes.items():
+            if pk in usados or item.disponibilidad == 'entregado':
+                continue
+            motivo = unidad_protegida(item)
+            if motivo:
+                raise serializers.ValidationError({'productos': f'No se puede quitar el producto {pk}: {motivo}.'})
+            item.telas_cueros.all().delete()
+            item.delete()
 
 
 # ---------------------------------------------------------------------------
@@ -703,13 +900,14 @@ class RemisionItemManualSerializer(serializers.ModelSerializer):
         model = RemisionItemManual
         fields = [
             'id', 'categoria', 'categoria_nombre', 'subcategoria', 'subcategoria_nombre',
-            'referencia', 'descripcion', 'cantidad', 'venta', 'detalle_pedido',
+            'referencia', 'descripcion', 'tela', 'cantidad', 'venta', 'detalle_pedido',
         ]
         extra_kwargs = {
             'categoria': {'required': False, 'allow_null': True},
             'subcategoria': {'required': False, 'allow_null': True},
             'referencia': {'required': False, 'allow_blank': True},
             'descripcion': {'required': False, 'allow_blank': True},
+            'tela': {'required': False, 'allow_blank': True},
             'venta': {'required': False, 'allow_null': True},
             'detalle_pedido': {'required': False, 'allow_null': True},
         }
@@ -728,6 +926,7 @@ class RemisionItemManualSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         attrs['referencia'] = (attrs.get('referencia') or '').strip()
         attrs['descripcion'] = (attrs.get('descripcion') or '').strip()
+        attrs['tela'] = (attrs.get('tela') or '').strip()
         categoria = attrs.get('categoria')
         subcategoria = attrs.get('subcategoria')
         if subcategoria and categoria and subcategoria.categoria_id != categoria.id:
@@ -762,6 +961,12 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
         required=False,
         write_only=True,
     )
+    # {id_referencia: tapizado} de productos de inventario (material, referencia, color).
+    telas_inventario = serializers.DictField(
+        child=serializers.CharField(allow_blank=True, max_length=200),
+        required=False,
+        write_only=True,
+    )
     vendedor_nombre = serializers.SerializerMethodField()
     transportador_usuario_nombre = serializers.ReadOnlyField(source='transportador_usuario.first_name')
     creado_por_nombre = serializers.SerializerMethodField()
@@ -774,7 +979,7 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
             'sin_saldo', 'saldo', 'metodo_pago', 'transportador_usuario', 'transportador_usuario_nombre',
             'transportador', 'vendedor', 'vendedor_nombre', 'observacion', 'novedades',
             'cliente_nombre', 'cliente_documento', 'cliente_telefono1', 'cliente_telefono2',
-            'inventario_items', 'items_manuales', 'descripciones_inventario',
+            'inventario_items', 'items_manuales', 'descripciones_inventario', 'telas_inventario',
             'nota_transportador', 'costo_entrega', 'creado_por', 'creado_por_nombre',
         ]
         read_only_fields = ['creado_por']
@@ -823,6 +1028,8 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
         if not items and not manuales:
             raise serializers.ValidationError({'productos': 'Agrega al menos un producto a entregar.'})
 
+        if items and request is not None:
+            self._validar_items_autorizados(request, items, ventas)
         if items:
             retenidos = items_retenidos_por_remision(i.pk for i in items)
             for item in items:
@@ -830,23 +1037,39 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({
                         'inventario_items': f'El producto {item.pk} ya está en la remisión #{retenidos[item.pk]}.'
                     })
-                if item.disponibilidad in ('despachado', 'entregado'):
+                if item.disponibilidad in ('despachado', 'entregado', 'devuelto_proveedor'):
                     raise serializers.ValidationError({
                         'inventario_items': f'El producto {item.pk} ya fue {item.get_disponibilidad_display().lower()}.'
                     })
-        if 'descripciones_inventario' in attrs:
-            attrs['descripciones_inventario'] = self._limpiar_descripciones(
-                attrs['descripciones_inventario'], {i.pk for i in items}
-            )
+        for campo in ('descripciones_inventario', 'telas_inventario'):
+            if campo in attrs:
+                attrs[campo] = self._limpiar_descripciones(attrs[campo], {i.pk for i in items}, campo)
         return attrs
 
     @staticmethod
-    def _limpiar_descripciones(textos, ids_remision):
+    def _validar_items_autorizados(request, items, ventas):
+        """Cada producto debe pertenecer a una de las ventas de la remisión, o
+        ser stock libre (sin venta) disponible para asignar (H14)."""
+        ids_ventas = {v.id for v in ventas}
+        for item in items:
+            venta_item = item.venta_id or (item.pedido.venta_id if item.pedido_id and item.pedido else None)
+            if venta_item:
+                if venta_item not in ids_ventas:
+                    raise serializers.ValidationError({
+                        'inventario_items': f'El producto {item.pk} pertenece a la venta {venta_item}, que no está en esta remisión.'
+                    })
+            elif item.disponibilidad not in ('exhibicion', 'consignacion'):
+                raise serializers.ValidationError({
+                    'inventario_items': f'El producto {item.pk} no está disponible para asignar ({item.get_disponibilidad_display().lower()}).'
+                })
+
+    @staticmethod
+    def _limpiar_descripciones(textos, ids_remision, campo='descripciones_inventario'):
         """Solo textos no vacíos de productos que van en la remisión."""
         ajenos = [k for k in textos if k not in ids_remision]
         if ajenos:
             raise serializers.ValidationError({
-                'descripciones_inventario': f'El producto {ajenos[0]} no está en la remisión.'
+                campo: f'El producto {ajenos[0]} no está en la remisión.'
             })
         return {k: v.strip() for k, v in textos.items() if v.strip()}
 
@@ -873,10 +1096,11 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
         if 'fecha_entrega' in attrs and not attrs['fecha_entrega']:
             raise serializers.ValidationError({'fecha_entrega': 'Indica la fecha de entrega.'})
         self._validar_horas(attrs.get('hora_desde', inst.hora_desde), attrs.get('hora_hasta', inst.hora_hasta))
-        if 'descripciones_inventario' in attrs:
-            attrs['descripciones_inventario'] = self._limpiar_descripciones(
-                attrs['descripciones_inventario'], set(inst.inventario_items.values_list('pk', flat=True))
-            )
+        ids = None
+        for campo in ('descripciones_inventario', 'telas_inventario'):
+            if campo in attrs:
+                ids = ids if ids is not None else set(inst.inventario_items.values_list('pk', flat=True))
+                attrs[campo] = self._limpiar_descripciones(attrs[campo], ids, campo)
         return attrs
 
     @transaction.atomic
@@ -885,23 +1109,41 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
         ventas_data = validated_data.pop('ventas', [])
         manuales_data = validated_data.pop('items_manuales', [])
         textos = validated_data.pop('descripciones_inventario', {})
+        telas = validated_data.pop('telas_inventario', {})
         request = self.context.get('request')
         if request is not None and request.user.is_authenticated:
             validated_data['creado_por'] = request.user
+
+        if inventario_items_data:
+            # Comprobación repetida BAJO BLOQUEO (orden estable por PK): entre
+            # validar y guardar otra remisión pudo reservar el mismo producto (H15).
+            pks = sorted(i.pk for i in inventario_items_data)
+            bloqueados = list(Inventario.objects.select_for_update().filter(pk__in=pks).order_by('pk'))
+            retenidos = items_retenidos_por_remision(pks)
+            for item in bloqueados:
+                if item.pk in retenidos:
+                    raise serializers.ValidationError({
+                        'inventario_items': f'El producto {item.pk} ya está en la remisión #{retenidos[item.pk]}.'
+                    })
+                if item.disponibilidad in ('despachado', 'entregado', 'devuelto_proveedor'):
+                    raise serializers.ValidationError({
+                        'inventario_items': f'El producto {item.pk} ya no está disponible ({item.get_disponibilidad_display().lower()}).'
+                    })
 
         remision = super().create(validated_data)
         if ventas_data:
             remision.ventas.set(ventas_data)
         if inventario_items_data:
             remision.inventario_items.set(inventario_items_data)
-            # La disponibilidad ('por_despachar') la actualiza perform_create del viewset en bulk
+            movimientos.aplicar(bloqueados, 'reserva', request.user if request is not None else None,
+                                documento=f'remision:{remision.pk}', disponibilidad='por_despachar')
         if manuales_data:
             RemisionItemManual.objects.bulk_create([
                 RemisionItemManual(remision=remision, **{k: v for k, v in m.items() if k != 'id'})
                 for m in manuales_data
             ])
-        if textos:
-            self._guardar_descripciones(remision, textos)
+        if textos or telas:
+            self._guardar_descripciones(remision, textos, telas)
         return remision
 
     @transaction.atomic
@@ -912,20 +1154,27 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
         validated_data.pop('ventas', None)
         manuales = validated_data.pop('items_manuales', None)
         textos = validated_data.pop('descripciones_inventario', None)
+        telas = validated_data.pop('telas_inventario', None)
         instance = super().update(instance, validated_data)
         if manuales is not None:
             self._sincronizar_manuales(instance, manuales)
-        if textos is not None:
-            self._guardar_descripciones(instance, textos)
+        if textos is not None or telas is not None:
+            actuales = list(instance.textos_inventario.all())
+            if textos is None:
+                textos = {t.inventario_id: t.descripcion for t in actuales if t.descripcion}
+            if telas is None:
+                telas = {t.inventario_id: t.tela for t in actuales if t.tela}
+            self._guardar_descripciones(instance, textos, telas)
         return instance
 
     @staticmethod
-    def _guardar_descripciones(remision, textos):
-        """Deja exactamente estos textos; los productos sin texto vuelven al del inventario."""
+    def _guardar_descripciones(remision, textos, telas=None):
+        """Deja exactamente estos textos y telas; los productos sin texto vuelven al del inventario."""
+        telas = telas or {}
         RemisionInventarioTexto.objects.filter(remision=remision).delete()
         RemisionInventarioTexto.objects.bulk_create([
-            RemisionInventarioTexto(remision=remision, inventario_id=pk, descripcion=texto)
-            for pk, texto in textos.items()
+            RemisionInventarioTexto(remision=remision, inventario_id=pk, descripcion=textos.get(pk, ''), tela=telas.get(pk, ''))
+            for pk in sorted(set(textos) | set(telas))
         ])
         getattr(remision, '_prefetched_objects_cache', {}).pop('textos_inventario', None)
 
@@ -968,15 +1217,20 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
         items_qs = prefetched if prefetched is not None else instance.inventario_items.select_related(
             'referencia', 'referencia__proveedor', 'categoria', 'subcategoria'
         ).all()
-        textos = {t.inventario_id: t.descripcion for t in instance.textos_inventario.all()}
+        filas_texto = list(instance.textos_inventario.all())
+        textos = {t.inventario_id: t.descripcion for t in filas_texto}
+        telas = {t.inventario_id: t.tela for t in filas_texto}
         for item in items_qs:
             ref = item.referencia
             items_data.append({
                 'id_referencia': item.id_referencia,
+                # Para verificar con el QR la carga y la entrega (P11-05).
+                'qr_uuid': str(item.qr_uuid) if item.qr_uuid else None,
                 'producto_nombre': ref.nombre if ref else '',
                 'variacion': item.variacion or '',
                 'observacion': item.observacion or '',
                 'descripcion_remision': textos.get(item.id_referencia, ''),
+                'tela_remision': telas.get(item.id_referencia, ''),
                 'categoria_nombre': item.categoria.nombre if item.categoria else '',
                 'subcategoria_nombre': item.subcategoria.nombre if item.subcategoria else '',
                 'proveedor_nombre': (ref.proveedor.nombre_empresa if ref and ref.proveedor else ''),
@@ -999,6 +1253,18 @@ class RemisionSuministroSerializer(serializers.ModelSerializer):
                 'usuario_nombre': (e.usuario.first_name or e.usuario.username) if e.usuario else None,
             }
             for e in instance.eventos.all()
+        ]
+        # Lo que no se entregó al confirmar (P11-03).
+        representation['no_entregados'] = [
+            {
+                'inventario': n.inventario_id,
+                'item_manual': n.item_manual_id,
+                'cantidad': n.cantidad,
+                'motivo': n.motivo,
+                'motivo_label': n.get_motivo_display(),
+                'detalle': n.detalle,
+            }
+            for n in instance.novedades_entrega.all()
         ]
 
         request = self.context.get('request')

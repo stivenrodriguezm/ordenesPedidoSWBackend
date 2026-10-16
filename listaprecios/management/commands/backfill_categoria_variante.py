@@ -76,6 +76,8 @@ class Command(BaseCommand):
                     notas_extra.append(otra.notas.strip())
 
                 VarianteProducto.objects.filter(linea=otra).update(linea=survivor)
+                from listaprecios.cache_catalogo import invalidar
+                invalidar()  # update() no dispara señales
 
             if fotos_extra:
                 survivor.fotos = (survivor.fotos or []) + fotos_extra

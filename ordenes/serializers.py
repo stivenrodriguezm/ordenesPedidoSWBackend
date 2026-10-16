@@ -1,13 +1,16 @@
+from .permissions import tiene_permiso_codigo
 from rest_framework import serializers
+from suministros.recepcion import recibidas_de
 import logging
 from decimal import Decimal
-from django.db import transaction
+from django.db import models, transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from .models import (
-    CustomUser, Referencia, Proveedor, OrdenPedido, DetallePedido, Cliente, Venta,
+    CustomUser, Referencia, Proveedor, OrdenPedido, DetallePedido, Cliente, Venta, LineaVenta,
     ObservacionVenta, ObservacionCliente, Remision, ReciboCaja, PagoReciboCaja, Caja, ComprobanteEgreso,
     ProveedorTela, PedidoTela, DetallePedidoTela, DireccionEntrega
 )
@@ -15,7 +18,7 @@ from .models import (
 class UserManageSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
-        fields = ['id', 'username', 'first_name', 'last_name', 'role', 'is_active', 'password']
+        fields = ['id', 'username', 'first_name', 'last_name', 'role', 'is_active', 'password', 'acceso_rapido_ia']
         extra_kwargs = {
             'password': {'write_only': True, 'required': False}
         }
@@ -86,10 +89,21 @@ class ProveedorSerializer(serializers.ModelSerializer):
 class DetallePedidoSerializer(serializers.ModelSerializer):
     referencia_nombre = serializers.SerializerMethodField()
     referencia = serializers.SerializerMethodField()
+    # Unidades ya recibidas por factura contra esta línea (P11-01).
+    recibidas = serializers.SerializerMethodField()
+    rechazadas = serializers.SerializerMethodField()
 
     class Meta:
         model = DetallePedido
-        fields = ['id', 'cantidad', 'especificaciones', 'referencia', 'referencia_nombre']
+        fields = ['id', 'cantidad', 'especificaciones', 'referencia', 'referencia_nombre', 'recibidas', 'rechazadas', 'linea_venta']
+
+    def get_rechazadas(self, obj):
+        n = getattr(obj, 'n_rechazadas', None)
+        return n if n is not None else sum(r.cantidad for r in obj.rechazos.all())
+
+    def get_recibidas(self, obj):
+        n = getattr(obj, 'n_recibidas', None)
+        return n if n is not None else recibidas_de(obj)
 
     def get_referencia(self, obj):
         # La referencia puede haber sido eliminada del catálogo (SET_NULL): no debe romper
@@ -99,7 +113,77 @@ class DetallePedidoSerializer(serializers.ModelSerializer):
     def get_referencia_nombre(self, obj):
         return obj.referencia.nombre if obj.referencia else "N/A"
 
-class OrdenPedidoListSerializer(serializers.ModelSerializer):
+class SinCostoSinPermisoMixin:
+    """Quita `costo` de la respuesta salvo que el contexto indique permiso
+    (VER_COSTOS_ORDEN). Ocultar la columna en React no protege la API (H06)."""
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not self.context.get('ver_costos', False):
+            data.pop('costo', None)
+        return data
+
+
+class SinMargenSinPermisoMixin:
+    """Quita `costo_estimado`, `margen` y `margen_total` de la respuesta salvo que el contexto
+    indique permiso (VER_MARGENES). Ocultar en React no protege la API (P12-01)."""
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not self.context.get('ver_margenes', False):
+            data.pop('costo_estimado', None)
+            data.pop('margen', None)
+            data.pop('margen_total', None)
+        return data
+
+
+class DetallePedidoWriteSerializer(serializers.ModelSerializer):
+    """Alta/edición directa de un detalle: cantidad positiva y referencia del
+    mismo proveedor de la orden (H27)."""
+    cantidad = serializers.IntegerField(min_value=1, max_value=10000)
+
+    class Meta:
+        model = DetallePedido
+        fields = ['id', 'orden', 'referencia', 'cantidad', 'especificaciones']
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        if instance.linea_venta_id:
+            linea = instance.linea_venta
+            Venta.objects.select_for_update().get(pk=linea.venta_id)
+            instance = DetallePedido.objects.select_for_update().get(pk=instance.pk)
+            otros = sum(linea.detalles.exclude(pk=instance.pk).exclude(orden__estado='anulado').values_list('cantidad', flat=True))
+            cantidad = validated_data.get('cantidad', instance.cantidad)
+            if cantidad + otros > linea.cantidad:
+                raise serializers.ValidationError('La cantidad supera las unidades vendidas pendientes de pedir.')
+            if validated_data.get('referencia', instance.referencia).pk != instance.referencia_id or validated_data.get('orden', instance.orden).pk != instance.orden_id:
+                raise serializers.ValidationError('Una línea vinculada conserva su referencia y pedido de origen.')
+        return super().update(instance, validated_data)
+
+    def validate(self, attrs):
+        orden = attrs.get('orden', getattr(self.instance, 'orden', None))
+        referencia = attrs.get('referencia', getattr(self.instance, 'referencia', None))
+        if referencia is None:
+            raise serializers.ValidationError({'referencia': 'La referencia es obligatoria.'})
+        if orden and referencia.proveedor_id != orden.proveedor_id:
+            raise serializers.ValidationError({'referencia': 'La referencia no pertenece al proveedor de la orden.'})
+        if self.instance is not None:
+            recibidas = recibidas_de(self.instance)
+            if recibidas and attrs.get('cantidad', self.instance.cantidad) < recibidas:
+                raise serializers.ValidationError({'cantidad': f'Ya se recibieron {recibidas} unidades de esta línea.'})
+            if recibidas and 'orden' in attrs and attrs['orden'].pk != self.instance.orden_id:
+                raise serializers.ValidationError({'orden': 'La línea ya tiene unidades recibidas; no se mueve a otra orden.'})
+        return attrs
+
+
+class DetalleOrdenEntradaSerializer(serializers.Serializer):
+    referencia = serializers.PrimaryKeyRelatedField(queryset=Referencia.objects.all())
+    cantidad = serializers.IntegerField(min_value=1, max_value=10000, default=1)
+    especificaciones = serializers.CharField(allow_blank=True, required=False, default='-')
+    # Línea de la venta que esta compra atiende (P09-03 / P11-04): mismo hilo de
+    # identificadores de la cotización a la entrega.
+    linea_venta = serializers.PrimaryKeyRelatedField(queryset=LineaVenta.objects.all(), required=False, allow_null=True)
+
+
+class OrdenPedidoListSerializer(SinCostoSinPermisoMixin, serializers.ModelSerializer):
     """Serializer ligero para el listado de órdenes — sin N+1 queries.
     No incluye detalles ni telas_asociadas (se cargan bajo demanda al expandir).
     Requiere select_related('proveedor', 'usuario', 'venta__vendedor') en el queryset.
@@ -124,7 +208,7 @@ class OrdenPedidoListSerializer(serializers.ModelSerializer):
         return None
 
 
-class OrdenPedidoSerializer(serializers.ModelSerializer):
+class OrdenPedidoSerializer(SinCostoSinPermisoMixin, serializers.ModelSerializer):
     proveedor_nombre = serializers.SerializerMethodField()
     vendedor = serializers.SerializerMethodField()
     detalles = DetallePedidoSerializer(many=True, read_only=True, required=False)
@@ -174,28 +258,61 @@ class OrdenPedidoSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     "detalles": "No se puede crear una orden de pedido sin productos. Debe incluir al menos un producto."
                 })
+            proveedor = attrs.get('proveedor')
+            detalles, errores = [], {}
             for idx, d in enumerate(detalles_raw):
                 if not isinstance(d, dict) or not d.get('referencia'):
-                    raise serializers.ValidationError({
-                        "detalles": f"El producto #{idx+1} debe tener una referencia válida."
-                    })
+                    errores[idx] = {'referencia': 'Debe tener una referencia válida.'}
+                    continue
+                entrada = DetalleOrdenEntradaSerializer(data=d)
+                if not entrada.is_valid():
+                    errores[idx] = entrada.errors
+                    continue
+                ref = entrada.validated_data['referencia']
+                if proveedor and ref.proveedor_id != proveedor.id:
+                    errores[idx] = {'referencia': f'"{ref.nombre}" no pertenece al proveedor de la orden.'}
+                    continue
+                linea = entrada.validated_data.get('linea_venta')
+                venta = attrs.get('venta')
+                if linea is not None and (venta is None or linea.venta_id != venta.pk):
+                    errores[idx] = {'linea_venta': 'La línea de venta no pertenece a la venta de la orden.'}
+                    continue
+                detalles.append(entrada.validated_data)
+            if errores:
+                # Una fila inválida rechaza la orden completa, con el error por fila (U03).
+                raise serializers.ValidationError({
+                    'detalles': {f'producto_{i + 1}': e for i, e in errores.items()}
+                })
+            self._detalles_validados = detalles
         return attrs
 
     @transaction.atomic
     def create(self, validated_data):
-        detalles_data = self.initial_data.get('detalles', [])
+        venta = validated_data.get('venta')
+        if venta:
+            venta = Venta.objects.select_for_update().get(pk=venta.pk)
+        cantidades = {}
+        for d in self._detalles_validados:
+            linea = d.get('linea_venta')
+            if not linea:
+                if venta and venta.revision_productos:
+                    raise serializers.ValidationError('Selecciona los productos desde el desglose de la venta para conservar su vínculo.')
+                continue
+            linea = LineaVenta.objects.select_for_update().get(pk=linea.pk)
+            if venta.revision_productos and not venta.productos_confirmados:
+                raise serializers.ValidationError('Confirma los productos antes de pedirlos.')
+            cantidades[linea.pk] = cantidades.get(linea.pk, 0) + d['cantidad']
+            pedidas = sum(linea.detalles.exclude(orden__estado='anulado').values_list('cantidad', flat=True))
+            if linea.inventario_origen_id or pedidas + cantidades[linea.pk] > linea.cantidad:
+                raise serializers.ValidationError('La cantidad supera las unidades de venta pendientes de pedir.')
+            if linea.referencia_id and linea.referencia_id != d['referencia'].pk:
+                raise serializers.ValidationError('La referencia no coincide con la línea de venta.')
         orden = OrdenPedido.objects.create(**validated_data)
-        for detalle_data in detalles_data:
-            ref_id = detalle_data.get('referencia')
-            cant = int(detalle_data.get('cantidad', 1))
-            specs = detalle_data.get('especificaciones', '-')
-            if ref_id:
-                DetallePedido.objects.create(
-                    orden=orden,
-                    referencia_id=ref_id,
-                    cantidad=cant,
-                    especificaciones=specs
-                )
+        DetallePedido.objects.bulk_create([
+            DetallePedido(orden=orden, referencia=d['referencia'], cantidad=d['cantidad'],
+                          especificaciones=d.get('especificaciones') or '-', linea_venta=d.get('linea_venta'))
+            for d in self._detalles_validados
+        ])
         return orden
 
 class ClienteSerializer(serializers.ModelSerializer):
@@ -203,13 +320,82 @@ class ClienteSerializer(serializers.ModelSerializer):
         model = Cliente
         fields = '__all__'
 
-class VentaSerializer(serializers.ModelSerializer):
+class LineaVentaSerializer(SinMargenSinPermisoMixin, serializers.ModelSerializer):
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        if request and not tiene_permiso_codigo(request, 'VER_PRECIOS_VENTA'):
+            for key in ('precio_unitario', 'precio_lista_unitario', 'descuento', 'subtotal', 'adicionales', 'motivo_precio'):
+                data.pop(key, None)
+        return data
+
+    margen = serializers.SerializerMethodField(read_only=True)
+
+    def get_margen(self, obj):
+        if obj.costo_estimado is not None:
+            return (obj.subtotal - (obj.costo_estimado * obj.cantidad)).quantize(Decimal('0.01'))
+        return None
+
+    class Meta:
+        model = LineaVenta
+        fields = [
+            'id', 'venta', 'variante', 'referencia', 'producto_nombre', 'variante_nombre',
+            'categoria_nombre', 'grupo_tela', 'especificaciones', 'cantidad',
+            'precio_unitario', 'descuento', 'subtotal', 'costo_estimado', 'margen',
+            'fecha_compromiso', 'estado_entrega', 'opcionales', 'notas', 'created_at',
+            'precio_lista_unitario', 'grupo_catalogo', 'texto_cliente', 'texto_proveedor', 'sin_texto_proveedor',
+            'adicionales', 'motivo_precio', 'inventario_origen',
+            'tipo', 'tela_modo', 'tela_material', 'tela_referencia', 'tela_color', 'tela_proveedor', 'tela_cantidad',
+            'tela_grupo', 'tela_costo', 'conjunto', 'conjunto_nombre', 'conjunto_cantidad',
+        ]
+        read_only_fields = ['id', 'created_at', 'margen']
+
+class VentaSerializer(SinMargenSinPermisoMixin, serializers.ModelSerializer):
+    gestion = serializers.SerializerMethodField(read_only=True)
+
+    def get_gestion(self, obj):
+        from .gestion_venta import estado_gestion
+        return estado_gestion(obj)
+
+    def update(self, instance, validated_data):
+        # D15a: el precio de lista es la suma de los productos (no se digita en la venta).
+        # Si cambia el valor de la venta, se vuelve a repartir entre los productos.
+        nuevo_total = validated_data.get('valor_total', instance.valor_total)
+        lineas = list(instance.lineas.all()) if nuevo_total != instance.valor_total else []
+        if lineas:
+            from .productos_venta import repartir
+            for linea, reparto in zip(lineas, repartir(Decimal(str(nuevo_total)), [(l.precio_lista_unitario or Decimal(0), l.cantidad, l.tipo) for l in lineas])):
+                for campo, valor in reparto.items():
+                    setattr(linea, campo, valor)
+            LineaVenta.objects.bulk_update(lineas, ['precio_unitario', 'descuento', 'subtotal'])
+            instance.revision_productos += 1
+        # Ajuste manual de la gestión (Editar venta): queda quién y cuándo.
+        if 'estado_pedidos' in validated_data and validated_data['estado_pedidos'] != instance.estado_pedidos:
+            request = self.context.get('request')
+            instance.gestion_finalizada_en = timezone.now() if validated_data['estado_pedidos'] else None
+            instance.gestion_finalizada_por = request.user if validated_data['estado_pedidos'] and request else None
+        return super().update(instance, validated_data)
+
+    revision_productos = serializers.IntegerField(read_only=True)
+    productos_confirmados = serializers.BooleanField(read_only=True)
     vendedor_nombre = serializers.CharField(source='vendedor.first_name', read_only=True)
     cliente_nombre = serializers.CharField(source='cliente.nombre', read_only=True)
     vendedores_compartidos_nombres = serializers.SerializerMethodField(read_only=True)
+    lineas = LineaVentaSerializer(many=True, read_only=True)
+    margen_total = serializers.SerializerMethodField(read_only=True)
     
     def get_vendedores_compartidos_nombres(self, obj):
         return ", ".join([v.first_name for v in obj.vendedores_compartidos.all()])
+
+    def get_margen_total(self, obj):
+        lineas = list(obj.lineas.all())
+        lineas_con_costo = [l for l in lineas if l.costo_estimado is not None]
+        if not lineas_con_costo:
+            return None
+        return sum(
+            ((l.subtotal - (l.costo_estimado * l.cantidad)) for l in lineas_con_costo),
+            Decimal('0.00')
+        ).quantize(Decimal('0.01'))
     
     class Meta:
         model = Venta
@@ -225,17 +411,23 @@ class VentaSerializer(serializers.ModelSerializer):
             'cliente', 
             'cliente_nombre', 
             'valor_total', 
+            'valor_lista', 'revision_productos', 'productos_confirmados',
             'abono', 
             'saldo', 
             'fecha_entrega',
             'estado',
             'estado_pedidos',
-            'es_feria_hogar'
+            'gestion',
+            'es_feria_hogar',
+            'es_postferia',
+            'lineas',
+            'margen_total',
         ]
-        read_only_fields = ['abono'] # El abono solo cambia vía recibos de caja; el saldo se recalcula en las vistas
+        read_only_fields = ['abono', 'margen_total', 'valor_lista'] # valor_lista = suma de los productos (D15a). El abono solo cambia vía recibos de caja; el saldo se recalcula en las vistas
         extra_kwargs = {
             'vendedores_compartidos': {'required': False, 'allow_empty': True},
             'valor_total': {'coerce_to_string': False},
+            'valor_lista': {'coerce_to_string': False},
             'abono': {'coerce_to_string': False},
         }
 
@@ -323,44 +515,19 @@ class ReciboCajaSerializer(serializers.ModelSerializer):
 from django.db import transaction, IntegrityError
 
 class CajaSerializer(serializers.ModelSerializer):
+    """Solo salida. Los movimientos se crean exclusivamente con
+    ordenes.servicios.registrar_movimiento_caja (bloqueo de cuenta, importe
+    positivo, saldo no negativo calculado en servidor)."""
     usuario_nombre = serializers.CharField(source='usuario.first_name', read_only=True)
 
     class Meta:
         model = Caja
         fields = ['id', 'fecha_hora', 'concepto', 'tipo', 'valor', 'total_acumulado', 'usuario', 'usuario_nombre']
-        read_only_fields = ['id', 'fecha_hora', 'total_acumulado', 'usuario', 'usuario_nombre']
-
-    def create(self, validated_data):
-        validated_data['usuario'] = self.context['request'].user
-        valor = validated_data.get('valor')
-        tipo = validated_data.get('tipo')
-
-        with transaction.atomic():
-            # Obtener el último movimiento para calcular el nuevo total acumulado
-            last_movement = Caja.objects.select_for_update().order_by('-fecha_hora', '-id').first()
-            last_total = last_movement.total_acumulado if last_movement else 0
-
-            if tipo == 'ingreso':
-                new_total = last_total + valor
-            elif tipo == 'egreso':
-                if valor > last_total:
-                    val_fmt = f"${float(valor):,.0f}".replace(',', '.')
-                    bal_fmt = f"${float(last_total):,.0f}".replace(',', '.')
-                    raise serializers.ValidationError({
-                        "detail": f"Saldo insuficiente en caja. Saldo disponible en efectivo: {bal_fmt}. Intenta retirar: {val_fmt}."
-                    })
-                new_total = last_total - valor
-            else:  # cierre
-                new_total = valor
-            
-            validated_data['total_acumulado'] = new_total
-            
-            return super().create(validated_data)
+        read_only_fields = fields
 
 class ComprobanteEgresoSerializer(serializers.ModelSerializer):
     proveedor_nombre = serializers.SerializerMethodField()
     facturas_detalle = serializers.SerializerMethodField()
-
     class Meta:
         model = ComprobanteEgreso
         fields = ['id', 'proveedor', 'proveedor_nombre', 'proveedor_otro_nombre', 'medio_pago', 'estado', 'valor', 'descripcion', 'fecha', 'concepto', 'recibido_por', 'facturas_detalle', 'otros_conceptos']
@@ -423,27 +590,60 @@ class ClienteDetalleSerializer(serializers.ModelSerializer):
         model = Cliente
         fields = ['id', 'nombre', 'cedula', 'correo', 'direccion', 'ciudad', 'telefono1', 'telefono2', 'observaciones']
 
-class VentaDetalleSerializer(serializers.ModelSerializer):
+class VentaDetalleSerializer(SinMargenSinPermisoMixin, serializers.ModelSerializer):
+    gestion = serializers.SerializerMethodField(read_only=True)
+
+    def get_gestion(self, obj):
+        from .gestion_venta import estado_gestion
+        return estado_gestion(obj)
+
     cliente = ClienteDetalleSerializer(read_only=True)
     observaciones_venta = ObservacionVentaSerializer(many=True, read_only=True, source='observaciones')
     # recibos = ReciboCajaSerializer(many=True, read_only=True) # REMOVED FOR PERFORMANCE
     remisiones = RemisionSerializer(many=True, read_only=True)
     ordenes_pedido = OrdenPedidoSerializer(many=True, read_only=True)
+    lineas = LineaVentaSerializer(many=True, read_only=True)
+    cotizaciones = serializers.SerializerMethodField(read_only=True)
+    margen_total = serializers.SerializerMethodField(read_only=True)
+    revision_productos = serializers.IntegerField(read_only=True)
+    productos_confirmados = serializers.BooleanField(read_only=True)
     vendedor_nombre = serializers.CharField(source='vendedor.first_name', read_only=True)
     cliente_nombre = serializers.CharField(source='cliente.nombre', read_only=True)
     vendedores_compartidos_nombres = serializers.SerializerMethodField(read_only=True)
 
     def get_vendedores_compartidos_nombres(self, obj):
         return ", ".join([v.first_name for v in obj.vendedores_compartidos.all()])
+
+    def get_margen_total(self, obj):
+        lineas = list(obj.lineas.all())
+        lineas_con_costo = [l for l in lineas if l.costo_estimado is not None]
+        if not lineas_con_costo:
+            return None
+        return sum(
+            ((l.subtotal - (l.costo_estimado * l.cantidad)) for l in lineas_con_costo),
+            Decimal('0.00')
+        ).quantize(Decimal('0.01'))
+
+    def get_cotizaciones(self, obj):
+        return [
+            {
+                'id': c.id,
+                'numero': c.numero,
+                'fecha_creacion': c.fecha_creacion,
+                'total': c.total,
+                'estado': c.estado,
+            }
+            for c in obj.cotizaciones.all()
+        ]
     
     class Meta:
         model = Venta
         fields = [
             'id', 'cliente', 'vendedor', 'vendedores_compartidos', 'vendedores_compartidos_nombres', 
-            'traslado', 'sede', 'valor_total', 'abono', 'saldo', 
-            'fecha_venta', 'fecha_entrega', 'estado', 'estado_pedidos', 
-            'observaciones_venta', 'remisiones', 'ordenes_pedido', 
-            'vendedor_nombre', 'cliente_nombre'
+            'traslado', 'sede', 'valor_total', 'valor_lista', 'revision_productos', 'productos_confirmados', 'abono', 'saldo', 
+            'fecha_venta', 'fecha_entrega', 'estado', 'estado_pedidos', 'gestion', 'es_postferia', 
+            'observaciones_venta', 'remisiones', 'ordenes_pedido', 'lineas', 'cotizaciones',
+            'margen_total', 'vendedor_nombre', 'cliente_nombre'
         ]
 
 class ProveedorTelaSerializer(serializers.ModelSerializer):
@@ -452,9 +652,12 @@ class ProveedorTelaSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class DetallePedidoTelaSerializer(serializers.ModelSerializer):
+    # Producto de la venta al que corresponde esta tela (pedido hecho desde Ventas).
+    linea_venta = serializers.PrimaryKeyRelatedField(queryset=LineaVenta.objects.all(), required=False, allow_null=True)
+
     class Meta:
         model = DetallePedidoTela
-        fields = ['id', 'tela', 'cantidad', 'observacion']
+        fields = ['id', 'tela', 'cantidad', 'observacion', 'linea_venta']
 
 class PedidoTelaSerializer(serializers.ModelSerializer):
     proveedor_nombre = serializers.SerializerMethodField()
@@ -467,6 +670,7 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
     orden_proveedor_nombre = serializers.SerializerMethodField()
     venta_id = serializers.SerializerMethodField()
     venta_vendedor_nombre = serializers.SerializerMethodField()
+    venta = serializers.PrimaryKeyRelatedField(queryset=Venta.objects.all(), required=False, allow_null=True, write_only=True)
 
     class Meta:
         model = PedidoTela
@@ -474,7 +678,7 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
             'id', 'usuario', 'usuario_nombre', 'proveedor', 'proveedor_nombre',
             'direccion_entrega', 'fecha_creacion', 'estado', 'observacion',
             'orden_asociada_id', 'detalles', 'orden_id', 'orden_proveedor_nombre', 'venta_id',
-            'venta_vendedor_nombre'
+            'venta_vendedor_nombre', 'venta'
         ]
         read_only_fields = ['fecha_creacion', 'usuario', 'id']
 
@@ -501,15 +705,67 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
         return obj.orden_asociada.id if obj.orden_asociada else None
 
     def get_venta_id(self, obj):
+        if obj.venta_id:
+            return obj.venta_id
         return obj.orden_asociada.venta.id if obj.orden_asociada and obj.orden_asociada.venta else None
 
     def get_venta_vendedor_nombre(self, obj):
-        venta = obj.orden_asociada.venta if obj.orden_asociada else None
+        venta = obj.venta or (obj.orden_asociada.venta if obj.orden_asociada else None)
         if not venta:
             return None
         nombres = [venta.vendedor.first_name] if venta.vendedor and venta.vendedor.first_name else []
         nombres += [v.first_name for v in venta.vendedores_compartidos.all() if v.first_name]
         return ", ".join(nombres) if nombres else None
+
+    def _lineas_de_venta(self, validated_data, detalles_data):
+        """Pedido hecho desde Ventas: los productos son de esa venta, visible para quien
+        pide, y ninguno tiene ya su tela pedida (no se pide dos veces)."""
+        from .permissions import ventas_visibles
+        ids = [d['linea_venta'].pk for d in detalles_data if d.get('linea_venta')]
+        venta = validated_data.get('venta')
+        if not ids and not venta:
+            return []
+        lineas = {l.pk: l for l in LineaVenta.objects.select_for_update().filter(pk__in=ids)}
+        if len(set(ids)) != len(ids):
+            raise serializers.ValidationError({'detalles': 'Un producto está repetido.'})
+        venta = venta or next(iter(lineas.values())).venta
+        if any(l.venta_id != venta.pk for l in lineas.values()):
+            raise serializers.ValidationError({'detalles': 'Todos los productos deben ser de la misma venta.'})
+        if not ventas_visibles(self.context['request']).filter(pk=venta.pk).exists():
+            raise serializers.ValidationError({'venta': 'No puedes pedir telas para esta venta.'})
+        ya = DetallePedidoTela.objects.filter(linea_venta_id__in=ids).select_related('linea_venta').first()
+        if ya:
+            raise serializers.ValidationError({'detalles': f'La tela de {ya.linea_venta.producto_nombre} ya se pidió (PT {ya.pedido_id}).'})
+        validated_data['venta'] = venta
+        return list(lineas.values())
+
+    def _marcar_lineas(self, pedido, detalles_data):
+        """El producto queda con lo que realmente se pidió (material, referencia, color,
+        proveedor y cantidad) y la venta cambia de revisión."""
+        from .servicios import auditar
+        for d in detalles_data:
+            linea = d.get('linea_venta')
+            if not linea:
+                continue
+            texto = d['tela'].strip()
+            cuero = texto.upper().startswith('[CUERO]')
+            texto = texto[len('[CUERO]'):].strip() if cuero else texto
+            referencia, _, color = texto.partition(' - Color: ')
+            linea.tela_modo, linea.tela_material = LineaVenta.TELA_APARTE, 'cuero' if cuero else 'tela'
+            linea.tela_referencia, linea.tela_color = referencia.strip()[:255], color.strip()[:255]
+            linea.tela_proveedor, linea.tela_cantidad = pedido.proveedor, d['cantidad']
+            linea.save(update_fields=['tela_modo', 'tela_material', 'tela_referencia', 'tela_color', 'tela_proveedor', 'tela_cantidad'])
+        Venta.objects.filter(pk=pedido.venta_id).update(revision_productos=models.F('revision_productos') + 1)
+        # En /ordenes la tela de la orden pasa a "Pedida" cuando ya se pidió la de todos sus productos.
+        from .productos_venta import estado_tela_de
+        ordenes = OrdenPedido.objects.filter(Q(pk=pedido.orden_asociada_id) | Q(detalles__linea_venta__detalles_tela__pedido=pedido)).distinct()
+        for orden in ordenes.filter(tela__in=['Por pedir', 'Pendiente']):
+            lineas = list(LineaVenta.objects.filter(detalles__orden=orden).select_related('variante').distinct())
+            if lineas and estado_tela_de(lineas) == 'Pedida':
+                orden.tela = 'Pedida'
+                orden.save(update_fields=['tela'])
+        auditar(self.context['request'].user, 'venta.tela_pedida', pedido,
+                {'venta': pedido.venta_id, 'lineas': [d['linea_venta'].pk for d in detalles_data if d.get('linea_venta')]})
 
     def create(self, validated_data):
         detalles_data = validated_data.pop('detalles', [])
@@ -526,10 +782,13 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
                     else:
                         new_id = 1000
 
+                    lineas = self._lineas_de_venta(validated_data, detalles_data)
                     pedido = PedidoTela.objects.create(id=new_id, usuario=usuario, **validated_data)
 
                     for detalle_data in detalles_data:
                         DetallePedidoTela.objects.create(pedido=pedido, **detalle_data)
+                    if lineas:
+                        self._marcar_lineas(pedido, detalles_data)
 
                     return pedido
             except IntegrityError:

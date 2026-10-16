@@ -14,6 +14,11 @@ class PaginawebProducto(models.Model):
     short_description = models.TextField(blank=True, default="", verbose_name="Descripción Corta")
     description = models.TextField(blank=True, default="", verbose_name="Descripción Larga")
     materials = models.TextField(blank=True, default="", verbose_name="Materiales")
+    # Ficha del producto en la web (2026-10-08): 4 secciones de texto con formato sencillo
+    # (**negrilla**, *cursiva*, viñetas "- " o "• ", listas "1. ", "## subtítulo", "---"):
+    # short_description, description, characteristics y materials. Precio, `features` y
+    # `dimensions` ya no se muestran (sus datos se copiaron a `characteristics`).
+    characteristics = models.TextField(blank=True, default="", verbose_name="Características")
     dimensions = models.TextField(blank=True, default="", verbose_name="Dimensiones")
     features = models.JSONField(default=list, blank=True, verbose_name="Características")
     images = models.JSONField(default=list, blank=True, verbose_name="Imágenes")
@@ -122,3 +127,27 @@ class PqrsTicket(models.Model):
     def radicado(self):
         # Referencia corta y legible para el cliente (no expone el UUID completo).
         return f"PQRS-{str(self.id)[:8].upper()}"
+
+
+class CorreoSaliente(models.Model):
+    """Bandeja persistente de correos (P07-06, H30). El correo se registra en la
+    misma transacción que el evento que lo origina y se envía después del
+    commit; un fallo SMTP queda como 'fallido' (reintentable con el comando
+    `reintentar_correos`) en vez de reportarse como enviado."""
+    ESTADOS = [('pendiente', 'Pendiente'), ('enviado', 'Enviado'), ('fallido', 'Fallido')]
+    MAX_INTENTOS = 5
+
+    tipo = models.CharField(max_length=40)
+    destinatario = models.EmailField()
+    asunto = models.CharField(max_length=255)
+    html = models.TextField()
+    reply_to = models.EmailField(blank=True, default='')
+    estado = models.CharField(max_length=10, choices=ESTADOS, default='pendiente', db_index=True)
+    intentos = models.PositiveSmallIntegerField(default=0)
+    ultimo_error = models.CharField(max_length=255, blank=True, default='')
+    ticket = models.ForeignKey('PqrsTicket', on_delete=models.SET_NULL, null=True, blank=True, related_name='correos')
+    creado = models.DateTimeField(auto_now_add=True)
+    enviado = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-creado']

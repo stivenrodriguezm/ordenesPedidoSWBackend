@@ -1,0 +1,2 @@
+# Python >= 3.10, separado del entorno de Django (Python 3.9).
+notebooklm-py[cookies]==0.8.4

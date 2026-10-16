@@ -2,16 +2,21 @@ asgiref==3.8.1
 Django==4.2.30
 django-cors-headers==4.3.1
 django-filter==24.2
-djangorestframework==3.15.1
-djangorestframework-simplejwt==5.3.1
-Pillow==10.3.0
-sqlparse==0.5.0
+djangorestframework==3.16.1
+djangorestframework-simplejwt==5.5.1
+Pillow==11.3.0
+sqlparse==0.5.5
 tzdata==2024.1
 gunicorn==22.0.0
-PyMySQL==1.1.0
-python-dotenv==1.0.1
+PyMySQL==1.2.3
+python-dotenv==1.2.1
 django-extensions==3.2.3
 qrcode==7.4.2
-requests==2.32.3
+requests==2.32.5
 rawpy==0.25.1
 openpyxl==3.1.5
+# openpyxl lo usa para leer XML de archivos subidos sin expansión de entidades (P10-03)
+defusedxml==0.7.1
+# Extractos PDF de Davivienda (vienen cifrados con AES: pypdf usa cryptography) (P10-03)
+pypdf==5.4.0
+cryptography==50.0.2

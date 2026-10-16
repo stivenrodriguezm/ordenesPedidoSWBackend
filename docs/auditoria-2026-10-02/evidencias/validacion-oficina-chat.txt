@@ -1,0 +1,14 @@
+P17-10 a P17-13 · Cierre local 2026-10-09
+Frontend localhost:3000; backend localhost:8000; base real de prueba pruebasv3.
+Frontend npm run check: 33 archivos, 169 pruebas correctas, lint 0 errores y 20 avisos previos, Vite correcto (1.67s).
+Backend SQLite: 361 pruebas, 347 correctas y 14 omitidas de MySQL. Concurrencia validada previamente en P17-09; sin nuevos cambios en reservas/cuota/worker.
+Python py_compile: models, migraciones 0061/0064 y test_oficina_ia correctos.
+makemigrations --check --dry-run: No changes detected.
+0064 aplicada sola, con respaldo parcial verificado de zonas/perfiles/django_migrations: pruebasv3_ia_antes_entrenamiento_20261009_001803.sql.gz, permisos 0600.
+Perfiles y conversaciones conservados; 0057/0061 no ejecutadas. No se crearon personas, tareas ni respuestas ficticias en pruebasv3.
+Navegador: Comercial = 122892.85714285716 unidades de planta; cada otra área = 61446.428571428565; 7 escritorios comerciales y 3 en Gerencia. Contorno sin ampliar.
+Social: 1 cafetera, 1 sofá de tres plazas, 3 sillones. Entrenamiento: pantalla, escritorio, 6 sillas.
+Chat mantiene /IA, recupera historial real, cambia de agente y conserva borradores; ampliación explícita funciona.
+Móvil 390x844: panel x=8 a x=372, entrada visible dentro del panel; página sin desbordamiento. Viewport restaurado.
+No se enviaron nuevas consultas a Gemini ni se publicó.
+Capturas: oficina-ia-comercial.png, oficina-ia-chat-integrado.png, oficina-ia-chat-integrado-movil.png.

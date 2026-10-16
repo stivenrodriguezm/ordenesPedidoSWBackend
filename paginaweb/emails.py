@@ -40,23 +40,46 @@ def _shell(preheader, title, body_html):
 """
 
 
-def _send(subject, to_email, html_body, reply_to=None):
-    if not to_email:
-        return False
+def enviar_correo(correo_id):
+    """Intenta enviar un correo de la bandeja. Nunca lanza: deja el estado."""
+    from django.utils import timezone
+    from .models import CorreoSaliente
+    correo = CorreoSaliente.objects.filter(pk=correo_id).exclude(estado='enviado').first()
+    if correo is None:
+        return None
+    correo.intentos += 1
     try:
         msg = EmailMultiAlternatives(
-            subject=subject,
-            body=strip_tags(html_body),
+            subject=correo.asunto,
+            body=strip_tags(correo.html),
             from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[to_email],
-            reply_to=[reply_to] if reply_to else None,
+            to=[correo.destinatario],
+            reply_to=[correo.reply_to] if correo.reply_to else None,
         )
-        msg.attach_alternative(html_body, "text/html")
+        msg.attach_alternative(correo.html, "text/html")
         msg.send(fail_silently=False)
-        return True
-    except Exception:
-        logger.exception("Error enviando correo PQRS a %s", to_email)
-        return False
+        correo.estado, correo.enviado, correo.ultimo_error = 'enviado', timezone.now(), ''
+    except Exception as exc:
+        logger.exception("Error enviando correo %s", correo.pk)
+        # Sin datos personales en el error guardado: solo el tipo de fallo.
+        correo.estado, correo.ultimo_error = 'fallido', type(exc).__name__[:255]
+    correo.save(update_fields=['estado', 'intentos', 'ultimo_error', 'enviado'])
+    return correo
+
+
+def _send(subject, to_email, html_body, reply_to=None, tipo='pqrs', ticket=None):
+    """Registra el correo y lo envía cuando la transacción en curso confirma.
+    Devuelve el registro (su `estado` dice si de verdad salió)."""
+    from django.db import transaction
+    from .models import CorreoSaliente
+    if not to_email:
+        return None
+    correo = CorreoSaliente.objects.create(
+        tipo=tipo, destinatario=to_email, asunto=subject[:255], html=html_body,
+        reply_to=reply_to or '', ticket=ticket,
+    )
+    transaction.on_commit(lambda: enviar_correo(correo.pk))
+    return correo
 
 
 def send_confirmation_email(ticket):
@@ -76,6 +99,7 @@ def send_confirmation_email(ticket):
     """
     html = _shell(f"Radicado {ticket.radicado}", "Hemos recibido tu solicitud", body)
     return _send(
+        tipo='pqrs_confirmacion', ticket=ticket,
         subject=f"[LOTTUS] Confirmación de tu {ticket.get_tipo_display().lower()} · {ticket.radicado}",
         to_email=ticket.email,
         html_body=html,
@@ -99,6 +123,7 @@ def send_internal_notification(ticket):
     """
     html = _shell(f"Radicado {ticket.radicado}", "Nuevo PQRS recibido", body)
     return _send(
+        tipo='pqrs_interno', ticket=ticket,
         subject=f"Nuevo PQRS · {ticket.radicado} · {ticket.nombre}",
         to_email=settings.PQRS_NOTIFY_EMAIL,
         html_body=html,
@@ -118,6 +143,7 @@ def send_response_email(ticket, mensaje):
     """
     html = _shell(f"Radicado {ticket.radicado}", "Respuesta a tu PQRS", body)
     return _send(
+        tipo='pqrs_respuesta', ticket=ticket,
         subject=f"[LOTTUS] Respuesta a tu PQRS · {ticket.radicado}",
         to_email=ticket.email,
         html_body=html,

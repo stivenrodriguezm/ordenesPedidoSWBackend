@@ -1,5 +1,5 @@
 import uuid
-from django.db.models import Count, Q
+from django.db.models import Count, Prefetch, Q
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -12,6 +12,7 @@ from .models import (
 )
 from .serializers import (
     REMISION_ESTADOS_ACTIVOS, REMISION_ESTADOS_VIGENTES, ventas_remisionables_para, tiene_permiso,
+    items_retenidos_por_remision, unidad_protegida,
     CategoriaSerializer, SubcategoriaSerializer,
     InventarioSerializer, FacturaProveedorSerializer, FacturaProveedorListSerializer,
     DetalleFacturaSerializer, RemisionSuministroSerializer, GrupoInventarioSerializer,
@@ -20,12 +21,17 @@ from .serializers import (
 )
 from rest_framework.permissions import IsAuthenticated, BasePermission
 from ordenes.permissions import check_feature_permission
-from ordenes.models import OrdenPedido, Referencia, Venta
+from ordenes.servicios import idempotente
+from django.db import transaction
+from . import entregas, movimientos, recepcion
+from ordenes.gestion_venta import texto_remision, texto_tela
+from ordenes.models import DetallePedido, OrdenPedido, Referencia, Venta
+
 
 class CategoriaViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
-            return [IsAuthenticated(), check_feature_permission('ADMINISTRAR_BASES')()]
+            return [IsAuthenticated(), check_feature_permission('ADMINISTRAR_REFERENCIAS')()]
         return [IsAuthenticated()]
     queryset = Categoria.objects.all()
     serializer_class = CategoriaSerializer
@@ -33,9 +39,10 @@ class CategoriaViewSet(viewsets.ModelViewSet):
 class SubcategoriaViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
-            return [IsAuthenticated(), check_feature_permission('ADMINISTRAR_BASES')()]
+            return [IsAuthenticated(), check_feature_permission('ADMINISTRAR_REFERENCIAS')()]
         return [IsAuthenticated()]
-    queryset = Subcategoria.objects.all()
+    # categoria_nombre en la misma consulta (antes una por subcategoría).
+    queryset = Subcategoria.objects.select_related('categoria')
     serializer_class = SubcategoriaSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter]
     filterset_fields = ['categoria']
@@ -44,7 +51,7 @@ class SubcategoriaViewSet(viewsets.ModelViewSet):
 class SedeViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
-            return [IsAuthenticated(), check_feature_permission('ADMINISTRAR_BASES')()]
+            return [IsAuthenticated(), check_feature_permission('ADMINISTRAR_SEDES')()]
         return [IsAuthenticated()]
     queryset = Sede.objects.all()
     serializer_class = SedeSerializer
@@ -61,7 +68,7 @@ class SedeViewSet(viewsets.ModelViewSet):
 class ZonaViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
-            return [IsAuthenticated(), check_feature_permission('ADMINISTRAR_BASES')()]
+            return [IsAuthenticated(), check_feature_permission('ADMINISTRAR_SEDES')()]
         return [IsAuthenticated()]
     queryset = Zona.objects.select_related('sede').all()
     serializer_class = ZonaSerializer
@@ -87,7 +94,7 @@ class InventarioViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ['create']:
             return [IsAuthenticated(), check_feature_permission('CREAR_ITEM_INVENTARIO')()]
-        elif self.action in ['update', 'partial_update', 'destroy', 'trasladar']:
+        elif self.action in ['update', 'partial_update', 'destroy', 'trasladar', 'devolver_proveedor']:
             return [IsAuthenticated(), check_feature_permission('EDITAR_ITEM_INVENTARIO')()]
         return [IsAuthenticated(), check_feature_permission('VER_INVENTARIO')()]
     queryset = Inventario.objects.select_related(
@@ -138,9 +145,47 @@ class InventarioViewSet(viewsets.ModelViewSet):
         except Inventario.DoesNotExist:
             return Response({'error': 'Ítem no encontrado'}, status=status.HTTP_404_NOT_FOUND)
 
+    @transaction.atomic
+    def perform_create(self, serializer):
+        item = serializer.save()
+        movimientos.ingreso(item, self.request.user, motivo='Alta manual')
+
+    def _bloquear(self):
+        """La unidad bajo bloqueo de fila, leída después de bloquear."""
+        Inventario.objects.select_for_update().filter(pk=self.kwargs.get('pk')).first()
+        return self.get_object()
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        # P11-02: la edición directa no cambia lo que manejan los procesos
+        # (remisión activa, devolución al proveedor) y deja su movimiento.
+        item = Inventario.objects.select_for_update().get(pk=serializer.instance.pk)
+        datos = serializer.validated_data
+        venta = datos['venta'].pk if datos.get('venta') else None
+        movimientos.validar_edicion_manual(
+            item, datos.get('disponibilidad'), venta if 'venta' in datos else False,
+            en_remision_activa=bool(items_retenidos_por_remision([item.pk])),
+        )
+        antes = movimientos.foto(item)
+        zona_antes = item.zona_id
+        item = serializer.save()
+        movimientos.registrar(item, antes, 'edicion', self.request.user, motivo='Edición manual')
+        if zona_antes != item.zona_id:
+            HistorialTraslado.objects.create(item_inventario=item, zona_origen_id=zona_antes, zona_destino=item.zona,
+                                             usuario=self.request.user, observacion='Cambio de zona desde la edición')
+
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        item = self._bloquear()
+        motivo = unidad_protegida(item) or ('ya fue entregado' if item.disponibilidad == 'entregado' else '')
+        if motivo:
+            return Response({'error': f'No se puede eliminar el producto {item.pk}: {motivo}.'}, status=status.HTTP_409_CONFLICT)
+        return super().destroy(request, *args, **kwargs)
+
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def trasladar(self, request, pk=None):
-        item = self.get_object()
+        item = self._bloquear()
         zona_destino_id = request.data.get('zona_destino')
         observacion = request.data.get('observacion', '')
 
@@ -152,22 +197,41 @@ class InventarioViewSet(viewsets.ModelViewSet):
         except Zona.DoesNotExist:
             return Response({'error': 'Zona de destino no existe'}, status=status.HTTP_400_BAD_REQUEST)
 
-        zona_origen = item.zona
-
-        # Actualizar la zona del inventario
-        item.zona = zona_destino
-        item.save()
-
-        # Registrar historial
-        HistorialTraslado.objects.create(
-            item_inventario=item,
-            zona_origen=zona_origen,
-            zona_destino=zona_destino,
-            usuario=request.user,
-            observacion=observacion
-        )
-
+        # Movimiento + historial de traslado (P11-02).
+        movimientos.aplicar([item], 'traslado', request.user, motivo=observacion, zona=zona_destino)
         return Response({'status': 'Traslado exitoso', 'nueva_zona': zona_destino.nombre})
+
+    @action(detail=True, methods=['post'], url_path='devolver-proveedor')
+    @transaction.atomic
+    def devolver_proveedor(self, request, pk=None):
+        """Devolución al proveedor (P11-02): la unidad sale de la disponibilidad y,
+        si estaba ligada a una línea de orden de pedido, esa línea vuelve a quedar
+        pendiente para la reposición."""
+        item = self._bloquear()
+        motivo = str(request.data.get('motivo') or '').strip()
+        if not motivo:
+            return Response({'motivo': ['Indica por qué se devuelve.']}, status=status.HTTP_400_BAD_REQUEST)
+        if item.disponibilidad == 'devuelto_proveedor':
+            return Response({'error': 'Ya fue devuelto al proveedor.'}, status=status.HTTP_409_CONFLICT)
+        retenido = items_retenidos_por_remision([item.pk])
+        if retenido or item.disponibilidad in ('por_despachar', 'despachado', 'entregado'):
+            donde = f'va en la remisión #{retenido[item.pk]}' if retenido else f'está {item.get_disponibilidad_display().lower()}'
+            return Response({'error': f'No se puede devolver: {donde}.'}, status=status.HTTP_409_CONFLICT)
+        movimientos.aplicar([item], 'devolucion_proveedor', request.user, motivo=motivo,
+                            documento=f'factura:{item.factura_id}' if item.factura_id else '',
+                            disponibilidad='devuelto_proveedor')
+        item.refresh_from_db()
+        return Response(self.get_serializer(item).data)
+
+    @action(detail=True, methods=['get'], url_path='movimientos')
+    def historial_movimientos(self, request, pk=None):
+        item = self.get_object()
+        filas = item.movimientos.select_related('usuario').order_by('-fecha', '-id')[:200]
+        return Response([{
+            'tipo': m.tipo, 'tipo_label': m.get_tipo_display(), 'fecha': m.fecha,
+            'usuario': (m.usuario.first_name or m.usuario.username) if m.usuario else None,
+            'antes': m.antes, 'despues': m.despues, 'motivo': m.motivo, 'documento': m.documento,
+        } for m in filas])
 
 
 class CostoAdicionalInventarioViewSet(viewsets.ModelViewSet):
@@ -220,6 +284,12 @@ class FacturaProveedorViewSet(viewsets.ModelViewSet):
                 'items_inventario__venta',
                 'items_inventario__venta__vendedor',
                 'items_inventario__venta__vendedores_compartidos',
+                # Usados por FacturasInventarioReadSerializer: sin ellos eran
+                # ~4 consultas por ítem (P08-04).
+                'items_inventario__grupo__categoria',
+                'items_inventario__grupo__subcategoria',
+                'items_inventario__zona',
+                'items_inventario__telas_cueros',
             )
         return qs.all()
         
@@ -234,6 +304,34 @@ class FacturaProveedorViewSet(viewsets.ModelViewSet):
     search_fields = ['id_manual', 'proveedor__nombre_empresa']
     ordering_fields = ['fecha_factura', 'fecha_pago']
     ordering = ['-fecha_factura', '-id']
+
+    @idempotente('factura.crear')
+    def create(self, request, *args, **kwargs):
+        # Reintentar el mismo envío (red caída, doble envío) no duplica la
+        # factura ni sus ítems de inventario (P08-06).
+        return super().create(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        """Una factura vinculada a un pago o con mercancía comprometida es un
+        documento histórico: no se borra (H12). Antes el DELETE se saltaba el
+        resguardo que sí tenía la edición."""
+        from django.db import transaction
+        from .serializers import unidad_protegida
+        with transaction.atomic():
+            factura = FacturaProveedor.objects.select_for_update().get(pk=self.get_object().pk)
+            if factura.comprobante_egreso_id or factura.estado in ('pagada', 'pago_en_proceso'):
+                return Response({'error': 'La factura tiene un pago asociado y no puede eliminarse.'}, status=status.HTTP_409_CONFLICT)
+            for item in factura.items_inventario.all():
+                motivo = unidad_protegida(item) or ('ya fue entregado' if item.disponibilidad == 'entregado' else '')
+                if motivo:
+                    return Response({'error': f'No se puede eliminar: el producto {item.pk} {motivo}.'}, status=status.HTTP_409_CONFLICT)
+            for item in factura.items_inventario.all():
+                item.telas_cueros.all().delete()
+                item.delete()
+            from ordenes.servicios import auditar
+            auditar(request.user, 'factura.eliminar', factura, {'id_manual': factura.id_manual, 'valor': str(factura.valor)})
+            factura.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 class DetalleFacturaViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
@@ -294,7 +392,7 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
     # Campos de seguimiento (los maneja logística/transportador); el resto es "edición".
     CAMPOS_ESTADO = {'estado', 'nota_transportador', 'costo_entrega'}
     # Datos de la petición que no son campos del modelo sino instrucciones del cambio.
-    CAMPOS_INSTRUCCION = {'cerrar_ventas', 'motivo'}
+    CAMPOS_INSTRUCCION = {'cerrar_ventas', 'motivo', 'no_entregados'}
 
     CAMPOS_HISTORIAL = {
         'fecha_entrega': 'Fecha de entrega',
@@ -361,6 +459,7 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
             'items_manuales__subcategoria',
             'eventos',
             'eventos__usuario',
+            'novedades_entrega',
             'inventario_items',
             'inventario_items__referencia',
             'inventario_items__referencia__proveedor',
@@ -400,7 +499,12 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
             return True
         return False
 
+    @transaction.atomic
     def partial_update(self, request, *args, **kwargs):
+        # Bloqueo de la fila antes de leerla: dos confirmaciones simultáneas (dos
+        # transportadores, o transportador y oficina) se serializan y la segunda
+        # ve el estado que dejó la primera (P11-03).
+        RemisionSuministro.objects.select_for_update().filter(pk=kwargs.get('pk')).first()
         instance = self.get_object()
         user = request.user
         campos = set(request.data.keys()) - self.CAMPOS_INSTRUCCION
@@ -432,13 +536,21 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
 
         if cambia_estado and nuevo_estado in ('anulada', 'devuelta') and not str(request.data.get('motivo') or '').strip():
             return Response({'motivo': ['Indica el motivo.']}, status=status.HTTP_400_BAD_REQUEST)
+        self._no_entregados = []
+        if request.data.get('no_entregados'):
+            if nuevo_estado != 'finalizada':
+                return Response({'no_entregados': ['Los productos no entregados se indican al confirmar la entrega.']},
+                                status=status.HTTP_400_BAD_REQUEST)
+            # Reintento de una confirmación que ya quedó (p. ej. sin señal en el celular):
+            # responde con el estado actual sin volver a registrar nada (P11-05).
+            if cambia_estado:
+                self._no_entregados = entregas.validar_no_entregados(instance, request.data.get('no_entregados'))
         return super().partial_update(request, *args, **kwargs)
 
     def perform_create(self, serializer):
+        # La disponibilidad 'por_despachar' se aplica dentro del serializer, en
+        # la misma transacción que verifica la reserva bajo bloqueo.
         remision = serializer.save()
-        # Update associated inventory items to 'por_despachar'
-        if remision.inventario_items.exists():
-            remision.inventario_items.update(disponibilidad='por_despachar')
         RemisionEvento.objects.create(
             remision=remision,
             tipo='creada',
@@ -487,7 +599,7 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
                 return False, f'Ya va en la remisión #{rem_id}'
             if item.disponibilidad == 'entregado':
                 return False, f'Entregado (remisión #{rem_id})'
-        if item.disponibilidad in ('despachado', 'entregado'):
+        if item.disponibilidad in ('despachado', 'entregado', 'devuelto_proveedor'):
             return False, item.get_disponibilidad_display()
         return True, ''
 
@@ -570,7 +682,7 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
         # Productos de inventario ligados a las ventas (vía factura o vía orden de pedido)
         items = list(
             Inventario.objects.filter(Q(venta_id__in=ids) | Q(pedido__venta_id__in=ids))
-            .select_related('referencia', 'referencia__proveedor', 'categoria', 'subcategoria', 'grupo', 'pedido')
+            .select_related('referencia', 'referencia__proveedor', 'categoria', 'subcategoria', 'grupo', 'pedido', 'detalle_pedido__linea_venta__grupo_catalogo', 'linea_venta_origen__grupo_catalogo')
             .order_by('grupo_id', 'id_referencia')
         )
         rem_por_item = self._remisiones_por_item(i.id_referencia for i in items)
@@ -585,6 +697,9 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
                 continue
             seleccionable, motivo = self._estado_item(item, rem_por_item.get(item.id_referencia))
             d = self._item_inventario_dict(item, venta_id)
+            comercial = item.detalle_pedido.linea_venta if item.detalle_pedido_id and item.detalle_pedido.linea_venta_id else getattr(item, 'linea_venta_origen', None)
+            d['texto_cliente'] = texto_remision(comercial)
+            d['tela'] = texto_tela(comercial)
             d.update({'seleccionable': seleccionable, 'motivo': motivo})
             inventario_por_venta[venta_id].append(d)
             if item.referencia_id:
@@ -593,28 +708,34 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
 
         ordenes = list(
             OrdenPedido.objects.filter(venta_id__in=ids).exclude(estado='anulado')
-            .select_related('proveedor').prefetch_related('detalles__referencia').order_by('id')
+            .select_related('proveedor').prefetch_related(Prefetch(
+                'detalles', queryset=DetallePedido.objects.select_related('referencia', 'linea_venta__grupo_catalogo').annotate(
+                    n_recibidas=recepcion.contar_recibidas()))).order_by('id')
         )
         detalle_ids = [d.id for o in ordenes for d in o.detalles.all()]
-        remisionados = dict(
-            RemisionItemManual.objects.filter(
-                detalle_pedido_id__in=detalle_ids,
-                remision__estado__in=REMISION_ESTADOS_VIGENTES,
-            ).values_list('detalle_pedido_id', 'remision_id')
-        )
+        # Cantidad ya remisionada por línea, descontando lo declarado no entregado (P11-03).
+        remisionados = entregas.comprometido_por_linea(detalle_ids, REMISION_ESTADOS_VIGENTES)
+        # Las unidades ligadas por factura a su línea (P11-01) cuentan solo para esa línea.
+        for orden in ordenes:
+            for det in orden.detalles.all():
+                if det.n_recibidas and det.referencia_id:
+                    key = (orden.venta_id, det.referencia_id)
+                    llegadas[key] = max(llegadas.get(key, 0) - det.n_recibidas, 0)
         sugerencias = sugerencias_por_referencia(
             {d.referencia.nombre for o in ordenes for d in o.detalles.all() if d.referencia}
         )
         pedidos_por_venta = {i: [] for i in ids}
         for orden in ordenes:
             for det in orden.detalles.all():
-                en_inventario = False
-                if det.referencia_id:
+                en_inventario = det.n_recibidas >= det.cantidad
+                if not det.n_recibidas and det.referencia_id:
                     key = (orden.venta_id, det.referencia_id)
                     disponibles = llegadas.get(key, 0)
                     if disponibles >= det.cantidad:
                         en_inventario = True
                         llegadas[key] = disponibles - det.cantidad
+                faltante = det.cantidad - det.n_recibidas
+                remisionada, ultima = remisionados.get(det.id, (0, None))
                 pedidos_por_venta[orden.venta_id].append({
                     'detalle_id': det.id,
                     'orden_id': orden.id,
@@ -625,9 +746,14 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
                     'categoria': sugerencias.get(det.referencia.nombre.strip().lower(), (None, None))[0] if det.referencia else None,
                     'subcategoria': sugerencias.get(det.referencia.nombre.strip().lower(), (None, None))[1] if det.referencia else None,
                     'cantidad': det.cantidad,
-                    'especificaciones': det.especificaciones or '',
+                    'especificaciones': texto_remision(det.linea_venta) if det.linea_venta_id else (det.especificaciones or ''),
+                    'tela': texto_tela(det.linea_venta) if det.linea_venta_id else '',
                     'en_inventario': en_inventario,
-                    'remision_previa': remisionados.get(det.id),
+                    'recibidas': det.n_recibidas,
+                    # Lo recibido se entrega como unidad de inventario; a mano solo va el resto.
+                    # Con entrega parcial lo no entregado vuelve a sugerirse (P11-01/P11-03).
+                    'remision_previa': ultima if remisionada and remisionada >= faltante else None,
+                    'cantidad_por_remisionar': max(faltante - remisionada, 0),
                 })
 
         remisiones_previas = {}
@@ -719,6 +845,9 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
         for item in items:
             seleccionable, motivo = self._estado_item(item, rem_por_item.get(item.id_referencia))
             d = self._item_inventario_dict(item)
+            comercial = item.detalle_pedido.linea_venta if item.detalle_pedido_id and item.detalle_pedido.linea_venta_id else getattr(item, 'linea_venta_origen', None)
+            d['texto_cliente'] = texto_remision(comercial)
+            d['tela'] = texto_tela(comercial)
             d.update({'seleccionable': seleccionable, 'motivo': motivo})
             data.append(d)
         return Response(data)
@@ -751,12 +880,13 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
         return ' · '.join(partes) or 'ninguno'
 
     @staticmethod
-    def _liberar_items(items):
-        """Productos de vuelta en bodega (remisión anulada o devuelta): los de una venta
-        quedan como 'cliente' y los demás como 'exhibicion', listos para otra remisión."""
+    def _liberar_items(items, usuario=None, motivo='', documento=''):
+        """Productos de vuelta en bodega (remisión anulada o devuelta, o no entregados):
+        los de una venta quedan como 'cliente' y los demás como 'exhibicion', listos
+        para otra remisión. Cada uno deja su movimiento (P11-02)."""
         de_venta = Q(venta__isnull=False) | Q(pedido__venta__isnull=False)
-        items.filter(de_venta).update(disponibilidad='cliente')
-        items.exclude(de_venta).update(disponibilidad='exhibicion')
+        movimientos.aplicar(items.filter(de_venta), 'liberacion', usuario, motivo, documento, disponibilidad='cliente')
+        movimientos.aplicar(items.exclude(de_venta), 'liberacion', usuario, motivo, documento, disponibilidad='exhibicion')
 
     def perform_update(self, serializer):
         request = self.request
@@ -784,14 +914,26 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
 
         if old_estado != new_estado:
             items = remision.inventario_items.all()
+            usuario, doc = request.user, f'remision:{remision.pk}'
+            motivo_cambio = str(request.data.get('motivo') or '').strip()
             if new_estado == 'despachada':
-                items.update(disponibilidad='despachado')
+                movimientos.aplicar(items, 'despacho', usuario, documento=doc, disponibilidad='despachado')
             elif new_estado == 'creada':
-                items.update(disponibilidad='por_despachar')
+                movimientos.aplicar(items, 'reserva', usuario, motivo_cambio or 'Devuelta a programada', doc,
+                                    disponibilidad='por_despachar')
             elif new_estado in ('anulada', 'devuelta'):
-                self._liberar_items(items)
+                self._liberar_items(items, usuario, motivo_cambio, doc)
             elif new_estado == 'finalizada':
-                items.update(disponibilidad='entregado')
+                # Lo declarado como no entregado vuelve a bodega, libre para otra remisión (P11-03).
+                no_entregados = getattr(self, '_no_entregados', [])
+                ids_no = [f['inventario'].pk for f in no_entregados if 'inventario' in f]
+                if ids_no:
+                    self._liberar_items(items.filter(pk__in=ids_no), usuario, 'No entregado', doc)
+                items = items.exclude(pk__in=ids_no)
+                movimientos.aplicar(items, 'entrega', usuario, documento=doc, disponibilidad='entregado')
+                if no_entregados:
+                    entregas.guardar_no_entregados(remision, no_entregados, request.user)
+                    cambios.append(entregas.resumen(no_entregados))
                 # Check groups: if all items in a group are delivered, deactivate group
                 grupos = set(item.grupo for item in items if item.grupo)
                 for grupo in grupos:
@@ -803,6 +945,10 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
                 # Opcional: dejar también la(s) venta(s) como entregadas (así no se les pueden
                 # crear más remisiones). Requiere el permiso de ventas correspondiente.
                 cerrar = request.data.get('cerrar_ventas') or []
+                if cerrar and no_entregados:
+                    # Con productos pendientes la venta no está completamente entregada.
+                    cambios.append('La venta no se marcó entregada: quedaron productos pendientes')
+                    cerrar = []
                 if cerrar and tiene_permiso(request, 'EDITAR_ESTADO_VENTA'):
                     ids = [int(x) for x in cerrar if str(x).isdigit()]
                     cerradas = list(
@@ -832,12 +978,15 @@ class GrupoInventarioViewSet(viewsets.ModelViewSet):
         elif self.action in ['update', 'partial_update', 'destroy']:
             return [IsAuthenticated(), check_feature_permission('EDITAR_ITEM_INVENTARIO')()]
         return [IsAuthenticated(), check_feature_permission('VER_INVENTARIO')()]
-    queryset = GrupoInventario.objects.prefetch_related(
+    # categoria/subcategoria del grupo en la misma consulta y de los ítems solo
+    # lo que usan items_count y costo_total: antes eran 2 consultas por grupo
+    # y se traían todas las columnas de cada ítem (P08-04).
+    queryset = GrupoInventario.objects.select_related('categoria', 'subcategoria').prefetch_related(
         'componentes',
         'componentes__referencia',
         'componentes__categoria',
         'componentes__subcategoria',
-        'items_inventario',
+        Prefetch('items_inventario', queryset=Inventario.objects.only('grupo', 'costo_especifico')),
     )
 
     def get_queryset(self):

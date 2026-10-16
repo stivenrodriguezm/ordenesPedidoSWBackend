@@ -1,0 +1,33 @@
+P18 — 2026-10-09 — local, sin despliegue
+
+Backend SQLite: 410 pruebas, OK (21 de MySQL omitidas).
+MySQL 8.4 desechable: 7 pruebas de concurrencia de coordinación/oficina, OK.
+Frontend: 202 pruebas en 37 archivos, OK.
+ESLint: 0 errores / 20 avisos previos.
+Build Vite: correcto.
+py_compile: correcto para los archivos de backend de P18.
+makemigrations --check --dry-run (settings_test): sin cambios pendientes al comprobar.
+
+0067 aplicada sola a u756180748_pruebasv3.
+Respaldo parcial afectado verificado, 0600: pruebasv3_antes_coordinacion_20261009_080609.sql.gz.
+Conteos de tablas previas conservados; 0057/0061 no ejecutadas.
+
+HTTP localhost:8000:
+oficina/coordinacion/ 200
+oficina/informes/1/ 200
+oficina/interacciones/ 200
+asistente/preguntar/ frase de activación 202; informe completado por worker.
+Sesión efímera, sin contraseñas modificadas ni tokens guardados.
+Informe de prueba real: 8 invitados y 801 ventas pendientes, analisis_ia_habilitado=False.
+
+Vista temporal del componente real, captura de datos reales del ERP:
+800 px: portada, gráficos, secciones, búsqueda por asesor, expansión de venta y recorridos reales.
+390 x 844: modal y contenido dentro del ancho, sin desbordamiento del informe.
+Sin mutaciones humanas desde la vista temporal. Eliminada al finalizar.
+
+Gemini real: NO ejecutado. Revisión automática rechazó la prueba por falta de autorización
+explícita para enviar datos internos a ese servicio. Pregunta concreta presentada al usuario.
+Modo ERP activo, análisis externo/memoria desactivados. No se simuló una respuesta en pruebasv3.
+La activación del modelo requiere confirmación explícita en interfaz/API.
+
+No se desplegó a producción. MySQL desechable cerrado; motor ERP local activo.

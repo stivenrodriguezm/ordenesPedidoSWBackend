@@ -67,6 +67,7 @@ class Inventario(models.Model):
         ('por_reparar', 'Por Reparar'),
         ('consignacion', 'Consignación'),
         ('no_venta', 'No a la venta'),
+        ('devuelto_proveedor', 'Devuelto al proveedor'),
     ]
     ESTADO_FISICO_CHOICES = [
         ('buen_estado', 'Buen estado'),
@@ -74,7 +75,7 @@ class Inventario(models.Model):
         ('por_modificar', 'Por modificar'),
     ]
     id_referencia = models.CharField(max_length=50, primary_key=True)
-    referencia = models.ForeignKey(Referencia, on_delete=models.CASCADE, related_name='items_inventario_sum', null=True)
+    referencia = models.ForeignKey(Referencia, on_delete=models.PROTECT, related_name='items_inventario_sum', null=True)
     categoria = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True, blank=True)
     subcategoria = models.ForeignKey(Subcategoria, on_delete=models.SET_NULL, null=True, blank=True)
     variacion = models.CharField(max_length=255, blank=True)
@@ -90,7 +91,11 @@ class Inventario(models.Model):
     factura = models.ForeignKey('FacturaProveedor', on_delete=models.SET_NULL, null=True, blank=True, related_name='items_inventario')
     detalle_factura = models.ForeignKey('DetalleFactura', on_delete=models.SET_NULL, null=True, blank=True, related_name='items_inventario')
     factura_manual = models.CharField(max_length=50, blank=True, null=True)
-    grupo = models.ForeignKey('GrupoInventario', on_delete=models.SET_NULL, null=True, blank=True, related_name='items_inventario')
+    # Línea de la orden de pedido que atiende esta unidad (P11-01, D04): la
+    # factura es la recepción, así se sabe cuánto falta por llegar de cada línea.
+    detalle_pedido = models.ForeignKey('ordenes.DetallePedido', on_delete=models.PROTECT, null=True, blank=True,
+                                       related_name='unidades_recibidas')
+    grupo =models.ForeignKey('GrupoInventario', on_delete=models.SET_NULL, null=True, blank=True, related_name='items_inventario')
     
     fecha_ingreso = models.DateField(default=timezone.localdate)
     imagen = models.URLField(max_length=500, blank=True, null=True)
@@ -172,8 +177,10 @@ class FacturaProveedor(models.Model):
     valor = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     fecha_factura = models.DateTimeField(default=timezone.now, db_index=True)
     fecha_pago = models.DateField(null=True, blank=True)
+    # fecha_pago conserva el contrato histórico: fecha límite acordada.
+    fecha_pago_real = models.DateField(null=True, blank=True, editable=False)
     estado = models.CharField(max_length=50, choices=ESTADO_CHOICES, default='pendiente', db_index=True)
-    proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE, related_name='facturas_suministros', null=True, blank=True)
+    proveedor = models.ForeignKey(Proveedor, on_delete=models.PROTECT, related_name='facturas_suministros', null=True, blank=True)
     observaciones = models.TextField(blank=True, null=True)
     comprobante_egreso = models.ForeignKey(
         'ordenes.ComprobanteEgreso',
@@ -193,7 +200,7 @@ class FacturaProveedor(models.Model):
 
 class DetalleFactura(models.Model):
     factura = models.ForeignKey(FacturaProveedor, on_delete=models.CASCADE, related_name='productos')
-    referencia = models.ForeignKey(Referencia, on_delete=models.CASCADE, null=True)
+    referencia = models.ForeignKey(Referencia, on_delete=models.PROTECT, null=True)
     categoria = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True, blank=True)
     subcategoria = models.ForeignKey(Subcategoria, on_delete=models.SET_NULL, null=True, blank=True)
     variacion = models.CharField(max_length=255, blank=True)
@@ -216,7 +223,7 @@ class DetalleFactura(models.Model):
         return f"Detalle de Factura {self.factura.id_manual}"
 
 class HistorialTraslado(models.Model):
-    item_inventario = models.ForeignKey(Inventario, on_delete=models.CASCADE, related_name='historial_traslados')
+    item_inventario = models.ForeignKey(Inventario, on_delete=models.PROTECT, related_name='historial_traslados')
     zona_origen = models.ForeignKey(Zona, on_delete=models.SET_NULL, null=True, blank=True, related_name='traslados_origen')
     zona_destino = models.ForeignKey(Zona, on_delete=models.SET_NULL, null=True, blank=True, related_name='traslados_destino')
     usuario = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
@@ -288,6 +295,9 @@ class RemisionItemManual(models.Model):
     subcategoria = models.ForeignKey(Subcategoria, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     referencia = models.CharField(max_length=255, blank=True)
     descripcion = models.TextField(blank=True)
+    # Tapizado para el cliente (material, referencia y color), tomado de la línea de venta.
+    # Sin proveedor, precio ni metraje.
+    tela = models.CharField(max_length=200, blank=True, default='')
     cantidad = models.PositiveIntegerField(default=1)
     venta = models.ForeignKey(Venta, on_delete=models.SET_NULL, null=True, blank=True, related_name='items_remision_manuales')
     detalle_pedido = models.ForeignKey('ordenes.DetallePedido', on_delete=models.SET_NULL, null=True, blank=True, related_name='items_remision_manuales')
@@ -305,7 +315,9 @@ class RemisionInventarioTexto(models.Model):
     se modifica."""
     remision = models.ForeignKey(RemisionSuministro, on_delete=models.CASCADE, related_name='textos_inventario')
     inventario = models.ForeignKey(Inventario, on_delete=models.CASCADE, related_name='+')
-    descripcion = models.TextField()
+    # Vacía = la del inventario (la fila puede existir solo por la tela).
+    descripcion = models.TextField(blank=True, default='')
+    tela = models.CharField(max_length=200, blank=True, default='')
 
     class Meta:
         constraints = [
@@ -338,3 +350,87 @@ class RemisionEvento(models.Model):
 
     def __str__(self):
         return f"Remisión {self.remision_id}: {self.tipo}"
+
+
+class NovedadEntrega(models.Model):
+    """Lo que NO se entregó al confirmar una remisión (P11-03, D04). La constancia
+    de la entrega es la confirmación misma (evento 'finalizada' con usuario y
+    fecha); aquí queda, por producto, qué volvió a bodega y por qué. Lo no
+    entregado queda libre para otra remisión; nada se reabre por cambiar una
+    etiqueta mientras la remisión sigue en ruta."""
+    MOTIVO_CHOICES = [
+        ('faltante', 'No iba en el viaje'),
+        ('rechazado', 'El cliente no lo recibió'),
+        ('danado', 'Llegó con daño'),
+        ('otro', 'Otro'),
+    ]
+    remision = models.ForeignKey(RemisionSuministro, on_delete=models.CASCADE, related_name='novedades_entrega')
+    inventario = models.ForeignKey(Inventario, on_delete=models.PROTECT, null=True, blank=True, related_name='novedades_entrega')
+    item_manual = models.ForeignKey(RemisionItemManual, on_delete=models.CASCADE, null=True, blank=True, related_name='novedades_entrega')
+    cantidad = models.PositiveIntegerField(default=1)
+    motivo = models.CharField(max_length=20, choices=MOTIVO_CHOICES)
+    detalle = models.TextField(blank=True)
+    usuario = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    fecha = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['id']
+        constraints = [
+            models.CheckConstraint(
+                check=(models.Q(inventario__isnull=False, item_manual__isnull=True)
+                       | models.Q(inventario__isnull=True, item_manual__isnull=False)),
+                name='novedad_entrega_un_producto'),
+            models.CheckConstraint(check=models.Q(cantidad__gte=1), name='novedad_entrega_cantidad_positiva'),
+            models.UniqueConstraint(fields=['remision', 'inventario'], name='novedad_entrega_unica_inventario'),
+            models.UniqueConstraint(fields=['remision', 'item_manual'], name='novedad_entrega_unica_manual'),
+        ]
+
+    def __str__(self):
+        return f"No entregado en remisión {self.remision_id}: {self.inventario_id or self.item_manual_id}"
+
+
+class MovimientoInventario(models.Model):
+    """Bitácora de cada unidad (P11-02): qué cambió de su disponibilidad, zona,
+    estado físico o venta, quién, por qué y con qué documento. `antes`/`despues`
+    guardan solo los campos que cambiaron (ids para zona y venta). Disponibilidad
+    = situación comercial/logística; estado físico = condición del mueble."""
+    TIPO_CHOICES = [
+        ('ingreso', 'Ingreso'),
+        ('edicion', 'Edición'),
+        ('traslado', 'Traslado'),
+        ('reserva', 'Reservado en remisión'),
+        ('despacho', 'Despachado'),
+        ('entrega', 'Entregado'),
+        ('liberacion', 'Vuelve a bodega'),
+        ('devolucion_proveedor', 'Devuelto al proveedor'),
+    ]
+    item = models.ForeignKey(Inventario, on_delete=models.CASCADE, related_name='movimientos')
+    tipo = models.CharField(max_length=30, choices=TIPO_CHOICES)
+    fecha = models.DateTimeField(auto_now_add=True, db_index=True)
+    usuario = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    antes = models.JSONField(default=dict, blank=True)
+    despues = models.JSONField(default=dict, blank=True)
+    motivo = models.TextField(blank=True)
+    # 'remision:12', 'factura:5'…
+    documento = models.CharField(max_length=40, blank=True)
+
+    class Meta:
+        ordering = ['fecha', 'id']
+
+    def __str__(self):
+        return f"{self.item_id}: {self.tipo}"
+
+
+class RechazoRecepcion(models.Model):
+    """Mercancía que llegó y no se aceptó (P11-01). No se factura ni crea unidades:
+    la línea de la orden sigue pendiente para la reposición; aquí queda cuánto,
+    por qué y quién lo rechazó."""
+    detalle_pedido = models.ForeignKey('ordenes.DetallePedido', on_delete=models.PROTECT, related_name='rechazos')
+    cantidad = models.PositiveIntegerField()
+    motivo = models.TextField()
+    usuario = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='+')
+    fecha = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['fecha', 'id']
+        constraints = [models.CheckConstraint(check=models.Q(cantidad__gte=1), name='rechazo_recepcion_cantidad_positiva')]

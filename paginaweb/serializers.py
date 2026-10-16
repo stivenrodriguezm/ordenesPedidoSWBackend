@@ -13,14 +13,15 @@ CATEGORIES = [
 ]
 
 class PaginawebProductoSerializer(serializers.ModelSerializer):
+    """Ficha web del producto: 4 secciones con formato (corta, larga, características y
+    materiales). Sin precio por ahora (2026-10-08): la columna sigue en la base pero no se
+    publica ni se edita."""
     # Opcional: PaginawebProductoAdminViewSet.perform_create genera el slug
     # automáticamente a partir del nombre cuando no se envía uno explícito —
     # si este campo fuera required=True (el default heredado del SlugField
     # del modelo, que no es blank), la validación rechazaría la creación
     # antes de que ese auto-generado pudiera ejecutarse.
     slug = serializers.SlugField(required=False, allow_blank=True)
-    oldPrice = serializers.DecimalField(source='old_price', max_digits=12, decimal_places=2, required=False, allow_null=True)
-    priceRange = serializers.JSONField(source='price_range', required=False, allow_null=True)
     shortDescription = serializers.CharField(source='short_description', required=False, allow_blank=True)
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
     updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
@@ -28,19 +29,17 @@ class PaginawebProductoSerializer(serializers.ModelSerializer):
     class Meta:
         model = PaginawebProducto
         fields = [
-            'id', 'name', 'slug', 'category', 'price', 'oldPrice', 'old_price',
-            'priceRange', 'price_range', 'variants', 'badge', 'shortDescription',
-            'short_description', 'description', 'materials', 'dimensions',
-            'features', 'images', 'featured', 'active', 'createdAt', 'created_at',
+            'id', 'name', 'slug', 'category', 'variants', 'badge', 'shortDescription',
+            'short_description', 'description', 'characteristics', 'materials',
+            'images', 'featured', 'active', 'createdAt', 'created_at',
             'updatedAt', 'updated_at'
         ]
 
     def to_representation(self, instance):
         ret = super().to_representation(instance)
-        # Asegurar tipos adecuados
-        ret['price'] = float(instance.price) if instance.price is not None else 0.0
-        ret['oldPrice'] = float(instance.old_price) if instance.old_price is not None else None
-        ret['old_price'] = ret['oldPrice']
+        # Las opciones se publican sin precio.
+        ret['variants'] = [{k: v for k, v in (var or {}).items() if 'price' not in k.lower()}
+                           for var in (ret.get('variants') or []) if isinstance(var, dict)]
         return ret
 
 

@@ -1,0 +1,38 @@
+P17-06 a P17-09 · Cierre local 2026-10-09
+Frontend localhost:3000; backend localhost:8000; MySQL real de prueba pruebasv3.
+Ninguna automatización de muestra creada en la base real; ninguna llamada nueva a Gemini real.
+
+FRONTEND · npm run check (lint + vitest + Vite .build-check)
+✖ 20 problems (0 errors, 20 warnings)
+ Test Files  33 passed (33)
+      Tests  166 passed (166)
+✓ built in 1.68s
+
+BACKEND · DJANGO_ENV_FILE="" manage.py test --settings=lottusPedidos.settings_test --noinput
+Found 359 test(s).
+Ran 359 tests in 3.954s
+OK (skipped=14)
+
+CONCURRENCIA · MySQL 8.4 desechable, socket local, sin red
+Found 14 test(s).
+Ran 14 tests in 0.946s
+OK
+Cinco pruebas nuevas de IA + nueve regresiones anteriores. Gemini simulado.
+
+MIGRACIÓN · respaldo parcial de zonas, perfiles y django_migrations, permisos 0600 y gzip verificado
+pruebasv3_ia_antes_programacion_20261008_233631.sql.gz
+Plan exacto: ordenes.0063_automatizaciones_oficina_ia hacia adelante. Aplicada.
+0057_eliminar_bancos y 0061_merge_bancos_y_nomina sin aplicar. Perfiles/conversaciones conservados.
+
+SINTAXIS / ESQUEMA
+py_compile: todos los Python modificados correctos.
+makemigrations --check --dry-run: No changes detected.
+git diff --check: correcto en archivos de implementación revisados.
+
+MOTOR LOCAL · verificación agregada, sin datos de negocio
+Base de prueba fija; 0063 aplicada; 0057 y 0061 sin aplicar.
+Áreas: Gerencia, Oficina, Área comercial, Tecnología, Desarrollo creativo, Zona social
+Tareas configuradas: 0
+Ejecuciones existentes: 0
+Motor actualizado, PID: 17280
+Estado reciente: {'activo': True, 'ultimo_latido': '2026-10-09T04:59:46.275627+00:00', 'zona_horaria': 'America/Bogota'}

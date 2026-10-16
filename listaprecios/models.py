@@ -1,4 +1,7 @@
+from decimal import Decimal
+from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 
 class CategoriaLista(models.Model):
@@ -138,10 +141,16 @@ class VarianteProducto(models.Model):
     metraje_tela = models.DecimalField(
         max_digits=8, decimal_places=2, null=True, blank=True, verbose_name="Metraje de tela (mt.)"
     )
+    decimetraje_cuero = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True, verbose_name="Consumo de cuero (decímetros)"
+    )
     notas = models.JSONField(default=list, blank=True, verbose_name="Notas")
     multiplicador = models.ForeignKey(
         Multiplicador, on_delete=models.PROTECT, null=True, blank=True, related_name='variantes',
         verbose_name="Multiplicador (vacío = usar el general)",
+    )
+    descuento_maximo = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True, verbose_name="Descuento máximo (%)"
     )
 
     class Meta:
@@ -171,6 +180,23 @@ class CargoVariante(models.Model):
     descripcion = models.CharField(max_length=200, verbose_name="Descripción")
     valor = models.DecimalField(max_digits=12, decimal_places=2, verbose_name="Valor")
     opcional = models.BooleanField(default=False, verbose_name="Opcional (seleccionable al cotizar)")
+    # Estado en la lista (2026-10-15): «Opcional habilitado» = opcional que aparece ya
+    # seleccionado al cotizar; «Opcional deshabilitado» = opcional sin seleccionar;
+    # «Obligatorio» = opcional False (siempre en el precio). Solo aplica a opcionales.
+    preseleccionado = models.BooleanField(default=False, verbose_name="Opcional seleccionado de entrada")
+    # Si viene de una variante especial del juego (EspecialLinea), se administra desde ella.
+    especial = models.ForeignKey('EspecialLinea', on_delete=models.CASCADE, null=True, blank=True, related_name='cargos')
+    # «Cojines incluidos» (2026-10-15): cargo fijo «Decorativos x2», sin valor ni edición.
+    # Cada unidad del producto da derecho a 2 productos de la línea Decorativos sin cobro
+    # (en grupo 1 o 2; de grupo 3 en adelante se cobra la diferencia). Ver decorativos.py.
+    TIPO_DECORATIVOS = 'decorativos'
+    TIPO_DIFERENCIA_PRECIO = 'diferencia_precio'
+    TIPO_ESPECIAL_CONFIGURABLE = 'especial_producto'
+    TIPO_CHOICES = [('', 'Cargo'), (TIPO_DECORATIVOS, 'Cojines incluidos (Decorativos x2)'),
+                    (TIPO_DIFERENCIA_PRECIO, 'Diferencia sobre precio de venta'),
+                    (TIPO_ESPECIAL_CONFIGURABLE, 'Especial con costo y multiplicador')]
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES, blank=True, default='')
+    configuracion_especial = models.JSONField(default=dict, blank=True)
 
     class Meta:
         db_table = 'listaprecios_cargo_variante'
@@ -180,6 +206,67 @@ class CargoVariante(models.Model):
 
     def __str__(self):
         return f"{self.descripcion} (${self.valor})"
+
+
+class EspecialLinea(models.Model):
+    """Variante especial de un juego/estilo (2026-10-09): una opción que se le agrega a sus
+    productos, p. ej. «Reclinables eléctricos» en una línea de sofás. Se guarda como un
+    cargo opcional (CargoVariante.especial) en cada variante a la que aplica, con su propio
+    valor por variante; así cotizaciones, ventas y precios la usan como cualquier opcional."""
+    linea = models.ForeignKey(LineaProducto, on_delete=models.CASCADE, related_name='especiales')
+    nombre = models.CharField(max_length=120, verbose_name="Nombre")
+    descripcion = models.CharField(max_length=300, blank=True, default='', verbose_name="Descripción")
+    valor = models.DecimalField(max_digits=12, decimal_places=2, default=0, verbose_name="Valor (costo) por defecto")
+    orden = models.PositiveIntegerField(default=0)
+    # Vacío conserva el cálculo histórico; las nuevas opciones guardan costo, múltiplo y consumos.
+    configuracion = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = 'listaprecios_especial_linea'
+        ordering = ['orden', 'id']
+
+    def __str__(self):
+        return f"{self.nombre} — {self.linea.nombre}"
+
+
+class EspecialCatalogo(models.Model):
+    """Biblioteca común de configuraciones, independiente de sus copias en colecciones."""
+    nombre = models.CharField(max_length=120)
+    configuracion = models.JSONField(default=dict)
+    huella = models.CharField(max_length=64, unique=True)
+    origen = models.CharField(max_length=300, blank=True, default='')
+    creado = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'listaprecios_especial_catalogo'
+        ordering = ['nombre', '-id']
+
+
+class ComponenteJuego(models.Model):
+    """Juego compuesto (2026-10-09): una variante armada con otras de la misma línea, p. ej.
+    «Comedor 6 puestos» = 1 Mesa de 6 + 6 Sillas de comedor. En ventas es un solo producto;
+    su precio es la suma de los componentes (más sus propios cargos)."""
+    juego = models.ForeignKey(VarianteProducto, on_delete=models.CASCADE, related_name='componentes')
+    variante = models.ForeignKey(VarianteProducto, on_delete=models.PROTECT, related_name='en_juegos')
+    cantidad = models.PositiveIntegerField(default=1)
+    orden = models.PositiveIntegerField(default=0)
+    costo_unitario = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        verbose_name='Costo base unitario solo en este conjunto',
+    )
+    multiplicador = models.DecimalField(
+        max_digits=6, decimal_places=3, null=True, blank=True,
+        verbose_name='Multiplicador solo en este conjunto',
+    )
+    adicionales = models.JSONField(default=list, blank=True, verbose_name='Cargos y especiales solo en este conjunto')
+
+    class Meta:
+        db_table = 'listaprecios_componente_juego'
+        ordering = ['orden', 'id']
+        constraints = [models.UniqueConstraint(fields=['juego', 'variante'], name='componente_unico_por_juego')]
+
+    def __str__(self):
+        return f"{self.cantidad} × {self.variante.nombre} en {self.juego.nombre}"
 
 
 class PrecioVariante(models.Model):
@@ -207,3 +294,97 @@ class PrecioVariante(models.Model):
     def __str__(self):
         grupo_nombre = self.grupo.nombre if self.grupo else 'Único'
         return f"{self.variante.nombre} / {grupo_nombre}"
+
+
+class Cotizacion(models.Model):
+    """Documento persistente de cotización (P09-01 / F01).
+    Conserva la snapshot de precios aceptados, opciones y cálculo para que no
+    cambien silenciosamente si se modifican costos o multiplicadores del catálogo.
+    Las cotizaciones en estado 'aceptada' o 'convertida' quedan protegidas contra edición."""
+    ESTADO_BORRADOR = 'borrador'
+    ESTADO_EMITIDA = 'emitida'
+    ESTADO_ACEPTADA = 'aceptada'
+    ESTADO_CONVERTIDA = 'convertida'
+    ESTADO_VENCIDA = 'vencida'
+    ESTADO_RECHAZADA = 'rechazada'
+    ESTADO_CHOICES = [
+        (ESTADO_BORRADOR, 'Borrador'),
+        (ESTADO_EMITIDA, 'Emitida'),
+        (ESTADO_ACEPTADA, 'Aceptada'),
+        (ESTADO_CONVERTIDA, 'Convertida'),
+        (ESTADO_VENCIDA, 'Vencida'),
+        (ESTADO_RECHAZADA, 'Rechazada'),
+    ]
+
+    numero = models.CharField(max_length=50, unique=True, db_index=True, verbose_name="Número de Cotización")
+    cliente = models.ForeignKey(
+        'ordenes.Cliente', on_delete=models.SET_NULL, null=True, blank=True, related_name='cotizaciones'
+    )
+    cliente_nombre = models.CharField(max_length=255, blank=True, default='', verbose_name="Nombre del Cliente")
+    cliente_documento = models.CharField(max_length=50, blank=True, default='', verbose_name="Documento del Cliente")
+    cliente_telefono = models.CharField(max_length=50, blank=True, default='', verbose_name="Teléfono del Cliente")
+    cliente_email = models.CharField(max_length=150, blank=True, default='', verbose_name="Email del Cliente")
+    asesor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='cotizaciones'
+    )
+    asesor_nombre = models.CharField(max_length=255, blank=True, default='', verbose_name="Nombre del Asesor")
+    fecha_creacion = models.DateTimeField(auto_now_add=True, db_index=True)
+    fecha_vencimiento = models.DateField(null=True, blank=True, db_index=True)
+    estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default=ESTADO_EMITIDA, db_index=True)
+    version = models.PositiveIntegerField(default=1, verbose_name="Versión (control de concurrencia)")
+    version_calculo = models.CharField(max_length=50, default='v1.0', verbose_name="Versión de Cálculo")
+    subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    descuento = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    descuento_porcentaje = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0.00'))
+    total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    notas = models.TextField(blank=True, default='', verbose_name="Notas / Términos")
+    venta_asociada = models.ForeignKey(
+        'ordenes.Venta', on_delete=models.SET_NULL, null=True, blank=True, related_name='cotizaciones'
+    )
+    fecha_conversion = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'listaprecios_cotizacion'
+        ordering = ['-id']
+        verbose_name = 'Cotización'
+        verbose_name_plural = 'Cotizaciones'
+
+    def __str__(self):
+        return f"{self.numero} - {self.cliente_nombre or 'Sin cliente'} (${self.total})"
+
+
+class LineaCotizacion(models.Model):
+    """Línea de cotización con snapshot de precio, producto y opciones."""
+    cotizacion = models.ForeignKey(Cotizacion, on_delete=models.CASCADE, related_name='lineas')
+    variante = models.ForeignKey(
+        VarianteProducto, on_delete=models.SET_NULL, null=True, blank=True, related_name='lineas_cotizacion'
+    )
+    linea_nombre = models.CharField(max_length=150, verbose_name="Línea / Colección")
+    variante_nombre = models.CharField(max_length=150, verbose_name="Variante / Producto")
+    categoria_nombre = models.CharField(max_length=100, blank=True, default='', verbose_name="Categoría")
+    grupo_tela = models.ForeignKey(
+        GrupoTela, on_delete=models.SET_NULL, null=True, blank=True, related_name='lineas_cotizacion'
+    )
+    grupo_nombre = models.CharField(max_length=100, blank=True, default='', verbose_name="Grupo de Tela")
+    cantidad = models.PositiveIntegerField(default=1, verbose_name="Cantidad")
+    precio_unitario = models.DecimalField(max_digits=12, decimal_places=2, verbose_name="Precio Unitario")
+    subtotal = models.DecimalField(max_digits=12, decimal_places=2, verbose_name="Subtotal")
+    costo_estimado = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True, verbose_name="Costo estimado unitario"
+    )
+    opcionales = models.JSONField(default=list, blank=True, verbose_name="Opcionales seleccionados")
+    notas = models.TextField(blank=True, default='', verbose_name="Notas del ítem")
+    foto = models.URLField(max_length=500, blank=True, null=True, verbose_name="Foto referencial")
+    # Parte del precio cubierta por los «Decorativos x2» de otro producto de la cotización.
+    incluido = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'), verbose_name="Valor incluido")
+
+    class Meta:
+        db_table = 'listaprecios_linea_cotizacion'
+        ordering = ['id']
+        verbose_name = 'Línea de Cotización'
+        verbose_name_plural = 'Líneas de Cotización'
+
+    def __str__(self):
+        return f"{self.cantidad}x {self.linea_nombre} - {self.variante_nombre} (${self.subtotal})"

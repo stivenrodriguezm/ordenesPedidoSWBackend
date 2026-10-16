@@ -1,0 +1,145 @@
+[
+  {
+    "probe": "negative_cash_income",
+    "status": 201,
+    "balance": "-100.00"
+  },
+  {
+    "probe": "read_only_cash_permission_can_set_balance",
+    "status": 201,
+    "balance": "900000.00"
+  },
+  {
+    "probe": "expense_error_retains_writes",
+    "status": 400,
+    "voucher_count": 1,
+    "invoice_state": "pagada",
+    "voucher_link": 3001,
+    "cash_movements": 0
+  },
+  {
+    "probe": "expense_accepts_other_supplier_and_amount",
+    "status": 201,
+    "invoice_state": "pago_en_proceso",
+    "linked": true
+  },
+  {
+    "probe": "edit_permission_bypasses_payment_approval",
+    "status": 200,
+    "state": "Pagado"
+  },
+  {
+    "probe": "edit_foreign_sale_and_customer_with_state_permission",
+    "detail_status": 403,
+    "edit_status": 200,
+    "state": "entregado",
+    "customer_modified": true
+  },
+  {
+    "probe": "alternate_order_endpoint_bypasses_ownership",
+    "regular_status": 404,
+    "full_status": 200,
+    "cost": "750.00"
+  },
+  {
+    "probe": "inventory_cost_visible_without_cost_permission",
+    "status": 200,
+    "cost": "765.00"
+  },
+  {
+    "probe": "remision_put_bypasses_patch_permission",
+    "patch_status": 403,
+    "put_status": 405
+  },
+  {
+    "probe": "remision_read_permission_can_delete",
+    "status": 405,
+    "inventory_state": "por_despachar"
+  },
+  {
+    "probe": "invoice_edit_deletes_stock_identity_and_history",
+    "status": 200,
+    "old_item_exists": false,
+    "shipment_items": 0,
+    "movement_history": 0
+  },
+  {
+    "probe": "invoice_accepts_invalid_product_and_total",
+    "status": 201,
+    "items": 0
+  },
+  {
+    "probe": "cost_omits_new_fabric_rows",
+    "computed": 100.0,
+    "expected": "160"
+  },
+  {
+    "probe": "shared_sales_three_people",
+    "dashboard_value": 150.0,
+    "expected": "100"
+  },
+  {
+    "probe": "cancelled_sale_in_dashboard",
+    "dashboard_value": 750.0,
+    "expected_excluding_cancelled": "100"
+  },
+  {
+    "probe": "transfer_changed_to_cash_missing_cash_movement",
+    "edit_status": 200,
+    "confirm_status": 200,
+    "sale_paid": "50.00",
+    "cash_movements_created": 0
+  },
+  {
+    "probe": "read_price_permission_allows_bulk_mutation",
+    "status": 200,
+    "multiplier_changed": true
+  },
+  {
+    "probe": "remision_reserves_inventory_of_foreign_sale",
+    "status": 201,
+    "inventory_state": "por_despachar",
+    "original_sale_id": 106,
+    "submitted_sale_id": 105
+  },
+  {
+    "probe": "interleaved_remision_validation_allows_double_reservation",
+    "both_valid": true,
+    "reservations": 2
+  },
+  {
+    "probe": "paid_invoice_delete_bypasses_edit_safeguard",
+    "status": 204,
+    "invoice_exists": false
+  },
+  {
+    "probe": "viewing_role_configuration_removes_aux_default_permissions",
+    "before": 200,
+    "after": 403
+  },
+  {
+    "probe": "supplier_choices_silently_truncated",
+    "status": 200,
+    "returned": 100,
+    "total": 103,
+    "has_next": true
+  },
+  {
+    "probe": "empty_order_is_correctly_rejected",
+    "status": 400
+  },
+  {
+    "probe": "zero_quantity_and_wrong_supplier_reference_accepted",
+    "status": 201
+  },
+  {
+    "probe": "catalog_general_multiplier_can_be_unset",
+    "status": 200,
+    "fallback": "1"
+  },
+  {
+    "probe": "user_manager_can_self_promote_to_admin",
+    "status": 200,
+    "role": "administrador"
+  }
+]

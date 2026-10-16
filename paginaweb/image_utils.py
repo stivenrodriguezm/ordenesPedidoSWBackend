@@ -158,3 +158,23 @@ def convert_raw_to_jpeg(file_bytes, quality=92):
     buf = io.BytesIO()
     image.save(buf, format='JPEG', quality=quality)
     return buf.getvalue()
+
+
+MAX_BYTES_SUBIDA = 15 * 1024 * 1024
+MAX_PIXELES_LADO = 12000
+
+
+def validar_archivo_imagen(archivo, max_bytes=MAX_BYTES_SUBIDA, max_lado=MAX_PIXELES_LADO):
+    """Validador compartido de subidas (P07-06, H30): límite de bytes ANTES de
+    leer el archivo, formato real por contenido y dimensiones acotadas (evita
+    imágenes "bomba"). Devuelve (bytes, ext, content_type)."""
+    if archivo.size is not None and archivo.size > max_bytes:
+        raise InvalidImageError(f"La imagen supera el máximo de {max_bytes // (1024 * 1024)} MB.")
+    datos = archivo.read(max_bytes + 1)
+    if len(datos) > max_bytes:
+        raise InvalidImageError(f"La imagen supera el máximo de {max_bytes // (1024 * 1024)} MB.")
+    ext, content_type = validate_image(datos)
+    with Image.open(io.BytesIO(datos)) as img:
+        if max(img.size) > max_lado:
+            raise InvalidImageError(f"La imagen es demasiado grande ({img.size[0]}×{img.size[1]} px).")
+    return datos, ext, content_type

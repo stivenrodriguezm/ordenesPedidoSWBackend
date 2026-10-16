@@ -1,0 +1,23 @@
+# Plantilla: ajustar las rutas y el usuario antes de instalar en el servidor.
+# No definir LOTTUS_LOCAL_TEST_DB aquí: esa opción es solo del entorno local.
+[Unit]
+Description=Automatizaciones de agentes IA LOTTUS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lottus
+WorkingDirectory=/ruta/ordenesPedidoSWBackend
+EnvironmentFile=/ruta/ordenesPedidoSWBackend/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/ruta/ordenesPedidoSWBackend/venv/bin/python manage.py ejecutar_automatizaciones_ia --continuo --intervalo 10 --trabajadores 2
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=330
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

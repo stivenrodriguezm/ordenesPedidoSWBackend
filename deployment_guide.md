@@ -16,7 +16,7 @@ Antes de hacer las migraciones, realiza una copia de seguridad de la base de dat
 
 ### Opción B (Desde la terminal del VPS Hostinger):
 ```bash
-mysqldump -h 195.35.61.108 -u u756180748_lottus -p'Lottus123' u756180748_lottus > backup_lottus_real_$(date +%F_%H%M%S).sql
+mysqldump -h "$DB_HOST" -u "$DB_USER" -p "$DB_NAME" > backup_lottus_$(date +%F_%H%M%S).sql   # pide la contraseña; no la escribas en la línea de comandos
 ```
 
 ---
@@ -39,7 +39,10 @@ pip3 install -r requirements.txt
 
 ## 3. Ejecución Directa de Migraciones en Producción
 
-Con los accesos de la base de datos `u756180748_lottus` configurados en `settings.py` o `.env`:
+Con los accesos configurados en el `.env` del servidor (nunca en `settings.py` ni en este repositorio).
+Desde la auditoría 2026-10-02 (H16) `DB_NAME`, `DB_USER` y `DB_PASSWORD` son **obligatorios** cuando hay `DB_HOST`:
+`DJANGO_DEBUG` ya no elige la base. Las variables definidas en el proceso (systemd, shell) prevalecen sobre `.env`.
+Verifica antes de reiniciar: `python3 manage.py check` debe terminar sin error.
 
 ```bash
 cd /var/www/backend
@@ -47,13 +50,11 @@ cd /var/www/backend
 # 1. Comprobar las migraciones registradas
 python3 manage.py showmigrations
 
-# 2. Generar posibles migraciones de modelos
-python3 manage.py makemigrations
-
-# 3. Aplicar las migraciones a la base de datos real en Hostinger
+# 2. Aplicar las migraciones versionadas (nunca ejecutar makemigrations en el servidor:
+#    las migraciones se crean y prueban en desarrollo y llegan por git)
 python3 manage.py migrate
 
-# 4. Recolectar archivos estáticos
+# 3. Recolectar archivos estáticos
 python3 manage.py collectstatic --noinput
 ```
 
@@ -83,6 +84,8 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 ```
+
+*Pendiente (P01-03): ejecutar con un usuario de servicio sin privilegios en vez de `root`.*
 
 *Nota: Si `gunicorn` fue instalado en `/usr/bin/gunicorn`, ajusta el `ExecStart` ejecutando previamente `which gunicorn`.*
 

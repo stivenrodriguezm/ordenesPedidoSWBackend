@@ -9,3 +9,9 @@ node_modules/
 *.log
 staticfiles/
 media/
+.cache/
+.local-test-db
+
+# Evidencias privadas: nunca versionar archivos personales
+private_media/
+.academyenv/

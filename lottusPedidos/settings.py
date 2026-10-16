@@ -1,16 +1,41 @@
 from pathlib import Path
 from datetime import timedelta
 import os
+import sys
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# DJANGO_ENV_FILE permite elegir otro archivo de entorno (staging, CI) o
+# desactivarlo con DJANGO_ENV_FILE="" — por defecto se usa .env junto a manage.py.
+# El servidor de desarrollo se mantiene aislado de cualquier `.env` que contenga
+# credenciales de operación. La única excepción local explícita es el marcador
+# no versionado `.local-test-db`, que selecciona la base MySQL de pruebas
+# `u756180748_pruebasv3` usando las credenciales ya configuradas en `.env`.
+_local_runserver = 'runserver' in sys.argv and os.environ.get('LOTTUS_ALLOW_REMOTE_RUNSERVER') != '1'
+_local_test_db = ((_local_runserver and (_PROJECT_ROOT / '.local-test-db').exists())
+                  or os.environ.get('LOTTUS_LOCAL_TEST_DB') == '1')
+LOCAL_TEST_DB = _local_test_db
+_env_file_setting = os.environ.get('DJANGO_ENV_FILE')
+if _local_test_db:
+    _env_file_setting = None
+elif _local_runserver and _env_file_setting is None:
+    _env_file_setting = ''
+_env_file = (
+    _PROJECT_ROOT / '.env'
+    if _env_file_setting is None else (Path(_env_file_setting) if _env_file_setting else None)
+)
 
 try:
     # pyrefly: ignore [missing-import]
     from dotenv import load_dotenv
-    _env_file = Path(__file__).resolve().parent.parent / '.env'
-    load_dotenv(dotenv_path=_env_file, override=True)
+    # override=False: una variable ya definida en el proceso (systemd, CI,
+    # `DB_NAME=... manage.py ...`) prevalece sobre .env. Con override=True el
+    # .env pisaba en silencio la configuración explícita del proceso.
+    if _env_file:
+        load_dotenv(dotenv_path=_env_file, override=False)
 except ImportError:
     # Fallback si python-dotenv no está instalado: parseo manual de .env
-    _env_file = Path(__file__).resolve().parent.parent / '.env'
-    if _env_file.exists():
+    if _env_file and _env_file.exists():
         with open(_env_file, 'r', encoding='utf-8') as _f:
             for _line in _f:
                 _line = _line.strip()
@@ -42,10 +67,17 @@ def _make_aware_safe(value, timezone=None, is_dst=None):
 django.utils.timezone.make_aware = _make_aware_safe
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = _PROJECT_ROOT
+ASISTENTE_WEB_ROOT = Path(os.environ.get('ASISTENTE_WEB_ROOT', str(BASE_DIR.parent / 'webLottus')))
+ASISTENTE_LANDING_ROOT = Path(os.environ.get('ASISTENTE_LANDING_ROOT', str(BASE_DIR.parent / 'landingLottus')))
+ASISTENTE_GESTION_WEB_ROOT = Path(os.environ.get('ASISTENTE_GESTION_WEB_ROOT', str(BASE_DIR.parent / 'ordenesPedidoSW')))
+ASISTENTE_BACKEND_WEB_ROOT = Path(os.environ.get('ASISTENTE_BACKEND_WEB_ROOT', str(BASE_DIR / 'paginaweb')))
+ACADEMIA_CHROME_USUARIO_ID = int(os.environ.get('ACADEMIA_CHROME_USUARIO_ID', '0'))
+ACADEMIA_ROOT = BASE_DIR / 'private_media' / 'academia'
+ACADEMIA_PYTHON = os.environ.get('ACADEMIA_PYTHON', str(BASE_DIR / '.cache' / 'notebook-runtime' / 'bin' / 'python'))
 
 # DEBUG: False por defecto; activar solo en desarrollo local con DJANGO_DEBUG=true
-DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() in ('true', '1', 't')
+DEBUG = True if _local_test_db else os.environ.get('DJANGO_DEBUG', 'True' if _local_runserver else 'False').lower() in ('true', '1', 't')
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
@@ -60,6 +92,14 @@ if not SECRET_KEY:
         )
 
 AUTH_USER_MODEL = 'ordenes.CustomUser'
+
+# Asistente gerencial (Chat) con Gemini. La clave vive solo en el entorno del servidor
+# (.env / systemd); nunca en el frontend ni en el repositorio. GEMINI_MODELOS: orden de
+# preferencia; si uno está saturado (503/429) se usa el siguiente.
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+GEMINI_MODELOS = [m.strip() for m in os.environ.get('GEMINI_MODELOS', 'gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.5-flash').split(',') if m.strip()]
+# La respuesta se genera en un hilo aparte para no chocar con el timeout de gunicorn (30 s).
+ASISTENTE_EN_SEGUNDO_PLANO = True
 
 # Allowed hosts: configurar vía ALLOWED_HOSTS="api.ejemplo.com,otro.ejemplo.com"
 ALLOWED_HOSTS = [
@@ -114,6 +154,7 @@ CORS_ALLOW_HEADERS = [
     "user-agent",
     "x-csrftoken",
     "x-requested-with",
+    "idempotency-key",  # reintentos seguros de altas financieras (P03-06)
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -160,9 +201,11 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
+    # El runserver local de ordenes inicia también el motor IA.
+    'ordenes',
     'django.contrib.staticfiles',
     'rest_framework',
-    'ordenes',
+    'rest_framework_simplejwt.token_blacklist',
     'suministros',
     'paginaweb',
     'listaprecios',
@@ -202,18 +245,26 @@ TEMPLATES = [
 WSGI_APPLICATION = 'lottusPedidos.wsgi.application'
 
 # Database configuration
-# In local dev (no DB_HOST env var set) → SQLite to avoid exhausting remote hosting connection limits
-# In production → MySQL via environment variables
-_USE_REMOTE_DB = bool(os.environ.get('DB_HOST'))
+# Sin DB_HOST → SQLite local (no consume conexiones del hosting remoto).
+# Con DB_HOST → MySQL con DB_NAME, DB_USER y DB_PASSWORD SIEMPRE explícitos.
+# DEBUG controla la depuración, nunca qué base se usa: antes DEBUG=False
+# forzaba el nombre/usuario de producción, así que un staging con depuración
+# apagada apuntaba a la base real (auditoría 2026-10-02, H16).
+_USE_REMOTE_DB = bool(os.environ.get('DB_HOST')) and (not _local_runserver or _local_test_db)
 
 if _USE_REMOTE_DB:
-    # En producción (DEBUG=False), se fuerza estrictamente la base de datos oficial u756180748_lottus
-    if not DEBUG:
-        active_db_name = 'u756180748_lottus'
-        active_db_user = 'u756180748_lottus'
-    else:
-        active_db_name = os.environ.get('DB_NAME', 'u756180748_pruebasv3')
-        active_db_user = os.environ.get('DB_USER', 'u756180748_root')
+    from django.core.exceptions import ImproperlyConfigured
+    _faltantes = [k for k in ('DB_NAME', 'DB_USER', 'DB_PASSWORD') if not os.environ.get(k)]
+    if _faltantes:
+        # Solo se nombran las variables, nunca sus valores.
+        raise ImproperlyConfigured(
+            'DB_HOST está definido pero faltan variables de conexión: ' + ', '.join(_faltantes)
+            + '. Defínelas explícitamente para el entorno (no hay valores por defecto).'
+        )
+    # En el modo local de pruebas el nombre es fijo para impedir que un `.env`
+    # con valores de producción sea usado accidentalmente.
+    active_db_name = 'u756180748_pruebasv3' if _local_test_db else os.environ['DB_NAME']
+    active_db_user = os.environ['DB_USER']
 
     DATABASES = {
         'default': {
@@ -322,20 +373,44 @@ REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'lottusPedidos.settings.custom_exception_handler',
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle'
+        'lottusPedidos.throttling.ApiUserRateThrottle'
     ],
     'DEFAULT_THROTTLE_RATES': {
         'anon': '1000/day',
         'user': '10000/day',
+        'session': '60/min',
+        'office_live': '180/min',
+        'office_presence': '10/min',
         'login': '10/min',
         'pqrs_create': '5/hour',
         'pqrs_track': '20/hour',
     }
 }
 
+# Contadores de throttling (login 10/min, PQRS…) compartidos entre los workers
+# de gunicorn: con la caché en memoria por proceso cada worker contaba aparte
+# (H28). Caché en disco local, sin servicio adicional que operar.
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.filebased.FileBasedCache',
+        'LOCATION': os.environ.get('DJANGO_CACHE_DIR', str(BASE_DIR / '.cache' / 'django')),
+    }
+}
+
+# IP real del cliente detrás de nginx: DRF toma la entrada de X-Forwarded-For que
+# agrega el último proxy confiable. Poner DJANGO_NUM_PROXIES=1 SOLO tras verificar
+# que nginx usa `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`.
+# Con 0 (por defecto) se usa REMOTE_ADDR: detrás del proxy todos comparten límite.
+REST_FRAMEWORK['NUM_PROXIES'] = int(os.environ.get('DJANGO_NUM_PROXIES', '0')) or None
+
 SIMPLE_JWT = {
+    # Duraciones sin cambio hasta resolver D07 (acortarlas desconecta usuarios).
     'ACCESS_TOKEN_LIFETIME': timedelta(hours=8),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+    # Cada renovación entrega un refresh nuevo y revoca el anterior; el cierre
+    # de sesión revoca el refresh en el servidor (P02-05, H28).
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
@@ -346,6 +421,14 @@ def custom_exception_handler(exc, context):
     from rest_framework import status
 
     response = exception_handler(exc, context)
+
+    from django.db.models.deletion import ProtectedError, RestrictedError
+    if response is None and isinstance(exc, (ProtectedError, RestrictedError)):
+        # Relación histórica protegida (H12): se informa en vez de un 500.
+        return Response(
+            {"error": "No se puede eliminar: el registro tiene documentos o movimientos asociados. Desactívalo o anúlalo."},
+            status=status.HTTP_409_CONFLICT,
+        )
 
     if response is None:
         logging.getLogger('django.request').exception(

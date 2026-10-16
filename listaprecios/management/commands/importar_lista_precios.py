@@ -450,7 +450,7 @@ class Command(BaseCommand):
         variantes_objs = [
             VarianteProducto(
                 linea=linea, categoria=categoria, nombre=v['nombre'], orden=orden_base + i,
-                costo_base=v['costo'] or Decimal('0'), metraje_tela=v['metraje'],
+                costo_base=v['costo'] or Decimal('0'), metraje_tela=v['metraje'], decimetraje_cuero=v['metraje'],
             )
             for i, v in enumerate(linea_data['variantes'])
         ]
@@ -465,6 +465,8 @@ class Command(BaseCommand):
             CargoVariante.objects.bulk_create(cargos_a_crear)
         if precios_a_crear:
             PrecioVariante.objects.bulk_create(precios_a_crear)
+        from listaprecios.cache_catalogo import invalidar
+        invalidar()  # bulk_create no dispara señales
 
         return linea
 
