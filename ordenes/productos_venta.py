@@ -147,6 +147,8 @@ def _norm(texto):
 def referencias_sugeridas(variante):
     """Referencias de proveedor cuyo nombre coincide con el producto del catálogo,
     la más pedida primero (casi siempre la referencia es la del producto)."""
+    if variante.linea.referencia_id:
+        return [variante.linea.referencia]
     from django.db.models import Count
     nombre = _norm(variante.linea.nombre)
     if not nombre:
@@ -260,6 +262,9 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
         sugeridas = referencias_sugeridas(v)
         if sugeridas:
             d['referencia'] = sugeridas[0]
+    if (v and v.linea.referencia_id and d['referencia'] and d['referencia'].pk != v.linea.referencia_id
+            and not (conservar and anterior.referencia_id == d['referencia'].pk)):
+        raise ValidationError({'referencia': 'La referencia de compra debe ser la del producto seleccionado en la lista de precios.'})
     if completo:
         faltan = {}
         if not d['referencia'] and not d['inventario_origen']:
@@ -281,8 +286,10 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
     campos.update(preparar_tela(d, v, anterior, completo), tipo=LineaVenta.TIPO_PRODUCTO,
                   conjunto=d['conjunto'], conjunto_nombre=d['conjunto_nombre'].strip()[:150] if d['conjunto'] else '',
                   conjunto_cantidad=d['conjunto_cantidad'] if d['conjunto'] else 1)
-    campos.update(producto_nombre=v.linea.nombre if v else d['producto_nombre'], variante_nombre=v.nombre if v else '',
-                  categoria_nombre=v.categoria.nombre if v else '', grupo_tela=grupo.nombre if grupo else '',
+    from listaprecios.referencias import categoria_variante, nombre_linea
+    categoria = categoria_variante(v) if v else None
+    campos.update(producto_nombre=nombre_linea(v.linea) if v else d['producto_nombre'], variante_nombre=v.nombre if v else '',
+                  categoria_nombre=categoria.nombre if categoria else '', grupo_tela=grupo.nombre if grupo else '',
                   opcionales=d['opcionales'], adicionales=[{'descripcion': a['descripcion'], 'importe_lista': str(a['importe_lista'])} for a in d['adicionales']],
                   precio_lista_unitario=lista, precio_unitario=precio, subtotal=subtotal,
                   costo_estimado=costo, precio_snapshot=snapshot, inventario_origen_id=d['inventario_origen'] or None)
@@ -632,12 +639,12 @@ def catalogo_productos(request):
     if request.query_params.get('solo_grupos'):
         # Grupos de tela y cuero con su costo por metro/decímetro (sección Tela del producto).
         return Response({'grupos': grupos})
-    qs = VarianteProducto.objects.select_related('linea', 'categoria').prefetch_related('cargos__especial', 'precios', *PREFETCH_JUEGOS).order_by('linea__nombre', 'id')
+    qs = VarianteProducto.objects.select_related('linea__referencia__proveedor', 'categoria', 'categoria_referencia').prefetch_related('cargos__especial', 'precios', *PREFETCH_JUEGOS).order_by('linea__nombre', 'id')
     q = request.query_params.get('q', '').strip()[:150]
     if request.query_params.get('id'):
         qs = qs.filter(pk=serializers.IntegerField(min_value=1).run_validation(request.query_params['id']))
     if q:
-        qs = qs.filter(Q(nombre__icontains=q) | Q(linea__nombre__icontains=q) | Q(categoria__nombre__icontains=q))
+        qs = qs.filter(Q(nombre__icontains=q) | Q(linea__referencia__nombre__icontains=q) | Q(linea__nombre__icontains=q) | Q(categoria_referencia__nombre__icontains=q) | Q(categoria__nombre__icontains=q))
     pag = serializers.IntegerField(min_value=1).run_validation(request.query_params.get('page', 1))
     resultados = []
     for v in qs[(pag - 1) * 40:pag * 40]:
@@ -649,7 +656,9 @@ def catalogo_productos(request):
         piezas = [{'variante': c.variante_id, 'nombre': c.variante.nombre, 'cantidad': c.cantidad,
                    'tela': usa_tela(c.variante), 'grupos': [g['id'] for g in grupos if grupo_aplicable(c.variante, GrupoTela(**g))] if usa_tela(c.variante) else []}
                   for c in componentes_de(v)] if juego and not propios else []
-        resultados.append({'id': v.pk, 'nombre': f'{v.linea.nombre} · {v.nombre}', 'categoria': v.categoria.nombre,
+        from listaprecios.referencias import categoria_variante, nombre_linea
+        categoria = categoria_variante(v)
+        resultados.append({'id': v.pk, 'nombre': f'{nombre_linea(v.linea)} · {v.nombre}', 'categoria': categoria.nombre if categoria else '',
                            'activo': v.linea.activo, 'tela': usa_tela(v),
                            'metraje': str(metraje) if metraje else None, 'decimetraje_cuero': str(metraje_total(v, 'cuero') or '') or None, 'juego': juego, 'piezas': piezas,
                            'decorativos_incluidos': 2 if da_decorativos(v) else 0, 'es_decorativo': es_decorativo(v),
@@ -824,4 +833,3 @@ def pendientes_factura(request, proveedor_id):
     exigir(request, 'CREAR_FACTURA')
     qs = ordenes_visibles(request, OrdenPedido.objects.filter(proveedor_id=proveedor_id).exclude(estado__in=['anulado', 'recibido'])).order_by('-id')[:200]
     return Response({'productos': _filas_pendientes(OrdenPedido.objects.filter(pk__in=[o.pk for o in qs]).order_by('-id'))})
-

@@ -5,7 +5,7 @@ from .views import (
     CategoriaListaViewSet, GrupoTelaViewSet, MultiplicadorViewSet,
     LineaProductoViewSet, VarianteProductoViewSet, CargoVarianteViewSet, EspecialLineaViewSet,
     PrecioVarianteViewSet, CotizacionViewSet, categorias_publicas, catalogo, upload_foto,
-    calcular_precio_variante,
+    calcular_precio_variante, ReferenciasPrecioViewSet, clasificacion_referencias,
 )
 
 router = DefaultRouter()
@@ -13,6 +13,7 @@ router.register(r'categorias', CategoriaListaViewSet)
 router.register(r'multiplicadores', MultiplicadorViewSet)
 router.register(r'grupos-tela', GrupoTelaViewSet)
 router.register(r'lineas', LineaProductoViewSet)
+router.register(r'referencias', ReferenciasPrecioViewSet, basename='precios-referencia')
 router.register(r'variantes', VarianteProductoViewSet)
 router.register(r'cargos', CargoVarianteViewSet)
 router.register(r'especiales', EspecialLineaViewSet)
@@ -20,6 +21,7 @@ router.register(r'precios', PrecioVarianteViewSet)
 router.register(r'cotizaciones', CotizacionViewSet, basename='cotizaciones')
 
 urlpatterns = [
+    path('clasificacion/', clasificacion_referencias, name='listaprecios-clasificacion'),
     path('categorias-publicas/', categorias_publicas, name='listaprecios-categorias-publicas'),
     path('catalogo/', catalogo, name='listaprecios-catalogo'),
     path('upload-foto/', upload_foto, name='listaprecios-upload-foto'),

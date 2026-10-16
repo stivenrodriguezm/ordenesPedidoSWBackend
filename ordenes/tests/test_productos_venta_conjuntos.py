@@ -112,6 +112,8 @@ class DecorativosTests(LottusTestCase):
         self.g2 = GrupoTela.objects.create(nombre='Grupo 2', precio_por_metro=20, orden=2)
         self.g3 = GrupoTela.objects.create(nombre='Grupo 3', precio_por_metro=40, orden=3)
         # Decorativo: (10 + 1 m × precio del grupo) × 2 → grupo 1 = 40, grupo 2 = 60, grupo 3 = 100.
+        # El legado sin referencia queda archivado; esta prueba habilita su fixture histórico.
+        LineaProducto.objects.filter(slug='decorativos').update(activo=True)
         self.deco = VarianteProducto.objects.create(linea=LineaProducto.objects.get(slug='decorativos'), categoria=self.variante.categoria,
                                                     nombre='Cojín 45 × 45', costo_base=10, metraje_tela=1)
 

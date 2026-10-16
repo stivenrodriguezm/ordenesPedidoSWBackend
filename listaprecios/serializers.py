@@ -3,6 +3,8 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from ordenes.serializers import SinMargenSinPermisoMixin
+from ordenes.models import Referencia
+from suministros.models import Categoria
 from .models import (
     CategoriaLista, GrupoTela, Multiplicador,
     LineaProducto, VarianteProducto, CargoVariante, PrecioVariante, EspecialLinea,
@@ -10,6 +12,25 @@ from .models import (
 )
 from .especiales import validar_configuracion, configuracion_base, configuracion_cargo
 from .services import calcular_precio, costo_lista, precios_por_variante, opcionales_de_variante, multiplicador_efectivo, obtener_multiplicador_general, resumen_componentes
+from .referencias import categoria_variante, clasificacion, crear_configuracion, datos_referencia
+
+
+class IdentidadLineaMixin:
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        data['es_decorativo'] = obj.es_decorativo or obj.slug == 'decorativos'
+        if obj.referencia_id:
+            data.update(datos_referencia(obj.referencia))
+        return data
+
+
+class ClasificacionVarianteMixin:
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        categoria = categoria_variante(obj)
+        data.update(categoria=categoria.pk if categoria else None, categoria_nombre=categoria.nombre if categoria else 'Sin clasificar',
+                    subcategoria=obj.subcategoria_id, referencia=obj.linea.referencia_id)
+        return data
 
 
 def pesos_enteros(valor, permite_negativo=False):
@@ -123,8 +144,20 @@ class AgrupacionNuevaSerializer(serializers.Serializer):
     categoria = serializers.PrimaryKeyRelatedField(queryset=CategoriaLista.objects.all())
     componentes = serializers.JSONField()
 
+    def get_fields(self):
+        campos = super().get_fields()
+        if self.context.get('linea') and self.context['linea'].referencia_id:
+            campos['categoria'] = serializers.PrimaryKeyRelatedField(queryset=Categoria.objects.all(), required=False, allow_null=True)
+        return campos
 
-class VarianteProductoSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        linea = self.context.get('linea')
+        if linea and linea.referencia_id:
+            attrs['categoria'] = clasificacion(linea, attrs.get('categoria'))
+        return attrs
+
+
+class VarianteProductoSerializer(ClasificacionVarianteMixin, serializers.ModelSerializer):
     """Vista de administración — incluye costo_base/metraje_tela, gated por
     VER_COSTOS_LISTA_PRECIOS en la vista."""
     cargos = CargoVarianteSerializer(many=True, read_only=True)
@@ -141,8 +174,35 @@ class VarianteProductoSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'linea', 'categoria', 'categoria_nombre', 'nombre', 'orden',
             'costo_base', 'costo_total_producto', 'metraje_tela', 'decimetraje_cuero', 'descuento_maximo', 'notas', 'cargos', 'precios',
-            'multiplicador', 'multiplicador_nombre', 'multiplicador_efectivo', 'componentes', 'precios_venta',
+            'multiplicador', 'multiplicador_nombre', 'multiplicador_efectivo', 'componentes', 'precios_venta', 'subcategoria',
         ]
+
+    def get_fields(self):
+        campos = super().get_fields()
+        linea = self.instance.linea if isinstance(self.instance, VarianteProducto) else None
+        if linea is None and getattr(self, 'initial_data', {}).get('linea'):
+            try:
+                linea = LineaProducto.objects.filter(pk=self.initial_data['linea']).first()
+            except (ValueError, TypeError):
+                pass  # El campo relacional devuelve su error de validación habitual.
+        if linea and linea.referencia_id:
+            campos['categoria'] = serializers.PrimaryKeyRelatedField(source='categoria_referencia', queryset=Categoria.objects.all(), required=False, allow_null=True)
+            campos['nombre'].required = False
+        return campos
+
+    def validate(self, attrs):
+        linea = attrs.get('linea', self.instance.linea if self.instance else None)
+        if self.instance and linea.pk != self.instance.linea_id:
+            raise serializers.ValidationError({'linea': 'Un producto no cambia de referencia. Crea su configuración en la referencia correcta.'})
+        if linea and linea.referencia_id:
+            sub = attrs.get('subcategoria', self.instance.subcategoria if self.instance else None)
+            categoria = attrs.get('categoria_referencia', self.instance.categoria_referencia if self.instance and 'subcategoria' not in attrs else None)
+            attrs['categoria_referencia'] = clasificacion(linea, categoria, sub)
+            if not self.instance and not attrs.get('nombre'):
+                if not sub:
+                    raise serializers.ValidationError({'nombre': 'Indica el producto o medida.'})
+                attrs['nombre'] = sub.nombre
+        return attrs
 
     def validate_costo_base(self, valor):
         return pesos_enteros(valor)
@@ -244,7 +304,7 @@ class EspecialCatalogoSerializer(serializers.ModelSerializer):
         fields = ['id', 'nombre', 'configuracion', 'origen']
 
 
-class VarianteResumenSerializer(serializers.ModelSerializer):
+class VarianteResumenSerializer(ClasificacionVarianteMixin, serializers.ModelSerializer):
     categoria_nombre = serializers.CharField(source='categoria.nombre', read_only=True)
 
     class Meta:
@@ -252,20 +312,35 @@ class VarianteResumenSerializer(serializers.ModelSerializer):
         fields = ['id', 'nombre', 'orden', 'categoria', 'categoria_nombre']
 
 
-class LineaProductoResumenSerializer(serializers.ModelSerializer):
+class LineaProductoResumenSerializer(IdentidadLineaMixin, serializers.ModelSerializer):
     """Cabeceras de administración: los cálculos se solicitan al abrir la colección."""
     variantes = VarianteResumenSerializer(many=True, read_only=True)
     resumen = serializers.SerializerMethodField()
 
     class Meta:
         model = LineaProducto
-        fields = ['id', 'nombre', 'slug', 'notas', 'fotos', 'activo', 'orden', 'variantes', 'resumen']
+        fields = ['id', 'nombre', 'slug', 'notas', 'fotos', 'activo', 'orden', 'variantes', 'resumen', 'referencia']
 
     def get_resumen(self, obj):
         return True
 
 
-class LineaProductoSerializer(serializers.ModelSerializer):
+class ReferenciaPrecioSerializer(serializers.ModelSerializer):
+    linea = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Referencia
+        fields = ['id', 'linea']
+
+    def to_representation(self, obj):
+        return {**super().to_representation(obj), **datos_referencia(obj)}
+
+    def get_linea(self, obj):
+        linea = getattr(obj, 'lista_precios', None)
+        return LineaProductoResumenSerializer(linea, context=self.context).data if linea else None
+
+
+class LineaProductoSerializer(IdentidadLineaMixin, serializers.ModelSerializer):
     """Vista de administración — incluye variantes anidadas (con costos y su
     propia categoría/tipo de producto cada una). La edición de
     variantes/cargos/precios se hace vía sus propios endpoints
@@ -278,11 +353,25 @@ class LineaProductoSerializer(serializers.ModelSerializer):
         model = LineaProducto
         fields = [
             'id', 'nombre', 'slug', 'notas', 'fotos', 'activo', 'orden',
-            'variantes', 'especiales', 'created_at', 'updated_at',
+            'variantes', 'especiales', 'created_at', 'updated_at', 'referencia', 'es_decorativo',
         ]
         # El formulario envía el nombre; la vista genera el slug al guardar.
-        extra_kwargs = {'slug': {'required': False, 'allow_blank': True}}
-        read_only_fields = ['created_at', 'updated_at']
+        extra_kwargs = {'referencia': {'required': True, 'allow_null': False}}
+        read_only_fields = ['created_at', 'updated_at', 'nombre', 'slug']
+
+    def validate(self, attrs):
+        ref = attrs.get('referencia', self.instance.referencia if self.instance else None)
+        if self.instance and self.instance.referencia_id and ref.pk != self.instance.referencia_id:
+            raise serializers.ValidationError({'referencia': 'La referencia de una lista de precios no se cambia.'})
+        if ref and 'nombre' in self.initial_data and self.initial_data['nombre'] != ref.nombre:
+            raise serializers.ValidationError({'nombre': 'El nombre pertenece a Referencias; aquí solo se configuran precios.'})
+        if attrs.get('activo') and (not ref or not self.instance or not self.instance.variantes.exists()):
+            raise serializers.ValidationError({'activo': 'Agrega y revisa al menos un producto antes de publicar los precios.'})
+        return attrs
+
+    def create(self, validated_data):
+        validated_data.setdefault('activo', False)
+        return crear_configuracion(validated_data.pop('referencia'), **validated_data)
 
     def get_especiales(self, obj):
         return EspecialLineaSerializer(obj.especiales.all(), many=True, context=self.context).data
@@ -293,7 +382,7 @@ class LineaProductoSerializer(serializers.ModelSerializer):
 # ni cargos crudos, solo precios de venta ya calculados.
 # ------------------------------------------------------------------
 
-class VarianteCatalogoSerializer(serializers.ModelSerializer):
+class VarianteCatalogoSerializer(ClasificacionVarianteMixin, serializers.ModelSerializer):
     precios = serializers.SerializerMethodField()
     opcionales = serializers.SerializerMethodField()
     categoria_nombre = serializers.CharField(source='categoria.nombre', read_only=True)
@@ -316,7 +405,7 @@ class VarianteCatalogoSerializer(serializers.ModelSerializer):
 
     def get_precios(self, obj):
         filas = precios_por_variante(obj, grupos=self.context.get('grupos'), multiplicador_general=self.context.get('multiplicador_general'))
-        if self.context.get('linea_decorativos') == obj.linea_id:
+        if obj.linea.es_decorativo or self.context.get('linea_decorativos') == obj.linea_id:
             # Un decorativo informa cuánto cubre el cupo en cada grupo: completo en grupo 1 o 2;
             # de ahí en adelante, lo que valdría en grupo 2 (el resto se cobra).
             incluidos = self.context.get('grupos_incluidos') or []
@@ -330,7 +419,7 @@ class VarianteCatalogoSerializer(serializers.ModelSerializer):
         return opcionales_de_variante(obj, multiplicador_general=self.context.get('multiplicador_general'), grupos=self.context.get('grupos'))
 
 
-class LineaCatalogoSerializer(serializers.ModelSerializer):
+class LineaCatalogoSerializer(IdentidadLineaMixin, serializers.ModelSerializer):
     variantes = VarianteCatalogoSerializer(many=True, read_only=True)
     desde = serializers.SerializerMethodField()
 

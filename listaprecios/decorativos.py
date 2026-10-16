@@ -37,7 +37,7 @@ def da_decorativos(variante):
 
 
 def es_decorativo(variante):
-    return variante.linea.slug == SLUG_LINEA
+    return variante.linea.es_decorativo or variante.linea.slug == SLUG_LINEA
 
 
 def tope_por_unidad(variante, grupo, incluidos):

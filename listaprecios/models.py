@@ -99,6 +99,9 @@ class LineaProducto(models.Model):
     una sola categoría — puede agrupar variantes de distintos tipos de
     producto (ej. Altus → Poltrona + Sofá de 2 + Sofá de 3, cada una con su
     propia categoría/precio en VarianteProducto)."""
+    referencia = models.OneToOneField('ordenes.Referencia', on_delete=models.PROTECT, null=True, blank=True, related_name='lista_precios')
+    es_decorativo = models.BooleanField(default=False)
+    # Nombre/slug anteriores se conservan para documentos históricos. La UI lee Referencia.
     nombre = models.CharField(max_length=150, verbose_name="Nombre")
     slug = models.SlugField(max_length=180, unique=True, verbose_name="Slug")
     notas = models.TextField(blank=True, default='', verbose_name="Notas")
@@ -134,7 +137,9 @@ class VarianteProducto(models.Model):
     puntual, o en bloque por categoría/línea (ver
     services.asignar_multiplicador_masivo)."""
     linea = models.ForeignKey(LineaProducto, on_delete=models.CASCADE, related_name='variantes')
-    categoria = models.ForeignKey(CategoriaLista, on_delete=models.PROTECT, related_name='variantes')
+    categoria = models.ForeignKey(CategoriaLista, on_delete=models.PROTECT, related_name='variantes', null=True, blank=True)
+    categoria_referencia = models.ForeignKey('suministros.Categoria', on_delete=models.PROTECT, related_name='variantes_precio', null=True, blank=True)
+    subcategoria = models.ForeignKey('suministros.Subcategoria', on_delete=models.PROTECT, related_name='variantes_precio', null=True, blank=True)
     nombre = models.CharField(max_length=150, verbose_name="Nombre")
     orden = models.PositiveIntegerField(default=0, verbose_name="Orden")
     costo_base = models.DecimalField(max_digits=12, decimal_places=2, default=0, verbose_name="Costo base")

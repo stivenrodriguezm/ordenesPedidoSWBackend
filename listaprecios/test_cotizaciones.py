@@ -148,6 +148,9 @@ class CotizacionesTests(LottusTestCase):
         self.assertIn('COT-V2-01', numeros_adm)
 
     def test_convertir_cotizacion_a_venta_exitoso_y_lineas_venta(self):
+        referencia = self.referencia(self.proveedor(), 'Altus')
+        self.linea.referencia = referencia
+        self.linea.save()
         cot = Cotizacion.objects.create(
             numero='COT-CONV-99', asesor=self.vendedor, cliente=self.cli,
             subtotal=Decimal('1500000.00'), descuento=Decimal('100000.00'), total=Decimal('1400000.00'),
@@ -177,6 +180,7 @@ class CotizacionesTests(LottusTestCase):
         self.assertEqual(venta.lineas.count(), 1)
         lv = venta.lineas.first()
         self.assertEqual(lv.producto_nombre, 'Altus')
+        self.assertEqual(lv.referencia_id, referencia.pk)
         self.assertEqual(lv.variante_nombre, 'Sofá 3p')
         self.assertEqual(lv.precio_unitario, Decimal('1500000.00'))
         self.assertEqual(lv.cantidad, 1)

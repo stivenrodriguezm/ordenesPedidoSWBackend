@@ -10,7 +10,7 @@ import time
 
 from django.core.cache import cache
 from django.db import transaction
-from django.db.models.signals import post_delete, post_save
+from django.db.models.signals import m2m_changed, post_delete, post_save
 
 CLAVE_VERSION = 'lp:catalogo:version'
 DURACION = 600
@@ -40,10 +40,19 @@ def obtener(nombre, construir):
 
 
 def _al_cambiar(sender, **kwargs):
-    if sender._meta.app_label == 'listaprecios' and sender.__name__ not in SIN_EFECTO:
+    if ((sender._meta.app_label == 'listaprecios' and sender.__name__ not in SIN_EFECTO)
+            or sender._meta.label in {'ordenes.Referencia', 'ordenes.Proveedor', 'suministros.Categoria', 'suministros.Subcategoria'}):
+        invalidar()
+
+
+def _al_clasificar(action, **kwargs):
+    if action in {'post_add', 'post_remove', 'post_clear'}:
         invalidar()
 
 
 def conectar():
     post_save.connect(_al_cambiar, dispatch_uid='lp-catalogo-save')
     post_delete.connect(_al_cambiar, dispatch_uid='lp-catalogo-delete')
+    from ordenes.models import Referencia
+    for campo in ('categorias', 'subcategorias'):
+        m2m_changed.connect(_al_clasificar, sender=getattr(Referencia, campo).through, dispatch_uid=f'lp-referencia-{campo}')

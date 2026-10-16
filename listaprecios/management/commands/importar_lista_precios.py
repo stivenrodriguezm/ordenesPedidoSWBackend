@@ -180,8 +180,8 @@ class Command(BaseCommand):
         # su propio autocommit, así que un hipo de conexión entre subidas no
         # tumba nada más que esa foto puntual).
         if apply_changes and not skip_photos:
-            for linea, titulo_row in lineas_para_fotos:
-                self._subir_foto_linea(linea, linea.categoria.slug, titulo_row, self._sheet_de_categoria(linea.categoria.nombre))
+            for linea, titulo_row, sheet_name in lineas_para_fotos:
+                self._subir_foto_linea(linea, slugify(sheet_name) or 'referencias', titulo_row, sheet_name)
 
         self._imprimir_reporte(apply_changes)
 
@@ -415,32 +415,30 @@ class Command(BaseCommand):
                 linea_data, categoria, hoja_data['matriz'], hoja_data['multiplicador'], grupos, sheet_name
             )
             if linea is not None:
-                lineas_a_subir_foto.append((linea, linea_data['titulo_row']))
+                lineas_a_subir_foto.append((linea, linea_data['titulo_row'], sheet_name))
 
         return categoria, lineas_a_subir_foto
 
     def _guardar_linea(self, linea_data, categoria, matriz, mult, grupos, sheet_name):
         nombre = linea_data['nombre']
 
-        # Las colecciones ya no están atadas a una sola categoría: si el
-        # mismo nombre de colección ya existe (venga de esta hoja o de otra
-        # — ej. "Alaska" en SALAS y en POLTRONAS), se reutiliza la línea y
-        # se le agregan las variantes nuevas, en vez de crear una línea
-        # duplicada por cada hoja de origen.
-        linea = LineaProducto.objects.filter(nombre__iexact=nombre).first()
-        if linea is None:
-            slug = slugify(nombre) or f"linea-{categoria.slug}"
-            base_slug, count = slug, 1
-            while LineaProducto.objects.filter(slug=slug).exists():
-                count += 1
-                slug = f"{base_slug}-{count}"
-            linea = LineaProducto.objects.create(
-                nombre=nombre, slug=slug, notas=linea_data['notas'], activo=True,
-            )
+        # El Excel no identifica proveedor: solo asociar si la referencia es inequívoca.
+        from ordenes.models import Referencia
+        from listaprecios.referencias import clasificacion
+        candidatas = list(Referencia.objects.filter(nombre__iexact=nombre).select_related('proveedor').prefetch_related('categorias', 'subcategorias__categoria')[:2])
+        if len(candidatas) != 1:
+            self.reporte['filas_omitidas'].append(f'{sheet_name}: {nombre}: referencia inexistente o ambigua; configura sus precios desde Referencias y precios.')
+            return
+        ref = candidatas[0]
+        linea, creada = LineaProducto.objects.get_or_create(referencia=ref, defaults={
+            'nombre': ref.nombre[:150], 'slug': f'referencia-{ref.pk}', 'notas': linea_data['notas'], 'activo': False,
+        })
+        if creada:
             self.reporte['lineas_creadas'] += 1
         elif linea_data['notas'] and linea_data['notas'] not in (linea.notas or ''):
             linea.notas = (linea.notas + ' ' if linea.notas else '') + linea_data['notas']
             linea.save(update_fields=['notas'])
+        categoria_origen = clasificacion(linea)
 
         orden_base = linea.variantes.count()
         # bulk_create por línea (en vez de una query por variante/cargo/precio)
@@ -449,8 +447,8 @@ class Command(BaseCommand):
         # entre unas pocas queries y varios miles.
         variantes_objs = [
             VarianteProducto(
-                linea=linea, categoria=categoria, nombre=v['nombre'], orden=orden_base + i,
-                costo_base=v['costo'] or Decimal('0'), metraje_tela=v['metraje'], decimetraje_cuero=v['metraje'],
+                linea=linea, categoria_referencia=categoria_origen, nombre=v['nombre'], orden=orden_base + i,
+                costo_base=v['costo'] or Decimal('0'), metraje_tela=v['metraje'], decimetraje_cuero=None,
             )
             for i, v in enumerate(linea_data['variantes'])
         ]

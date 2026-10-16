@@ -6,11 +6,13 @@ from copy import copy
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
+from django.db.models import Q
 from rest_framework.exceptions import APIException, ValidationError
 
 from .especiales import admite_grupo, configuracion_cargo, costo_configuracion, precio_configuracion
 from .adicionales_componentes import validar_adicionales, tiene_material, admite_material, costo_especial, costo_adicionales, venta_adicionales
 from .models import CargoVariante, ComponenteJuego, GrupoTela, LineaProducto, Multiplicador, VarianteProducto, PrecioVariante
+from .referencias import categoria_variante, nombre_linea
 
 # Prefetch para calcular precios de juegos (componentes con sus cargos y precios).
 PREFETCH_JUEGOS = ('componentes__variante__cargos__especial', 'componentes__variante__precios',
@@ -464,7 +466,7 @@ def asignar_multiplicador_masivo(multiplicador_id, categoria_id=None, linea_id=N
 
     qs = VarianteProducto.objects.all()
     if categoria_id:
-        qs = qs.filter(categoria_id=categoria_id)
+        qs = qs.filter(Q(categoria_referencia_id=categoria_id) | Q(linea__referencia__isnull=True, categoria_id=categoria_id))
     if linea_id:
         qs = qs.filter(linea_id=linea_id)
     if variante_ids:
@@ -505,8 +507,8 @@ def simular_multiplicador(multiplicador, nuevo_valor, limite_ejemplos=20):
         ejemplos.append({
             'variante_id': v.id,
             'variante_nombre': v.nombre,
-            'linea_nombre': v.linea.nombre,
-            'categoria_nombre': v.categoria.nombre if v.categoria else '',
+            'linea_nombre': nombre_linea(v.linea),
+            'categoria_nombre': categoria_variante(v).nombre if categoria_variante(v) else '',
             'grupo_nombre': g.nombre if g else 'Sin tela',
             'precio_actual': str(p_actual),
             'precio_nuevo': str(p_nuevo),
@@ -621,7 +623,8 @@ def crear_agrupacion(linea, nombre, categoria, componentes):
         raise ValidationError({'componentes': 'Agrega al menos una pieza para crear una agrupación.'})
     LineaProducto.objects.select_for_update().get(pk=linea.pk)
     ultimo = VarianteProducto.objects.filter(linea=linea).order_by('-orden').first()
-    juego = VarianteProducto.objects.create(linea=linea, nombre=nombre, categoria=categoria,
+    clasificacion = {'categoria_referencia': categoria} if linea.referencia_id else {'categoria': categoria}
+    juego = VarianteProducto.objects.create(linea=linea, nombre=nombre, **clasificacion,
                                             costo_base=0, orden=ultimo.orden + 1 if ultimo else 0)
     juego._prefetched_objects_cache = {'cargos': [], 'precios': []}
     guardar_componentes(juego, componentes)

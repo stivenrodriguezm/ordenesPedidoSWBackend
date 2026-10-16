@@ -67,6 +67,36 @@ class ProductosVentaTests(LottusTestCase):
         self.assertEqual((r.data['totales']['lista_cuadra'], r.data['totales']['venta_cuadra']), (True, True))
         self.assertEqual(self.api_asesor.get(f'/api/nomina/lineas/{com.pk}/venta/').status_code, 403)
 
+    def test_lista_unificada_asigna_referencia_exacta_y_la_conserva_en_el_pedido(self):
+        linea = self.variante.linea
+        linea.referencia = self.ref
+        linea.save()
+        datos = self.guardar([self.fila(referencia=None)])
+        self.assertEqual(self.v.lineas.get().referencia_id, self.ref.pk)
+        r = self.pedir(datos)
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(DetallePedido.objects.get(linea_venta=self.v.lineas.get()).referencia_id, self.ref.pk)
+
+    def test_lista_unificada_rechaza_otra_referencia_aunque_tenga_el_mismo_nombre(self):
+        linea = self.variante.linea
+        linea.referencia = self.ref
+        linea.save()
+        otra = self.referencia(self.proveedor('Fabricante distinto'), self.ref.nombre)
+        r = self.api_asesor.post(self.url, dict(revision=0, lineas=[self.fila(referencia=otra.pk)], confirmar=True, distribuir_total=True), format='json')
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertFalse(self.v.lineas.exists())
+
+    def test_unificar_no_reasigna_ni_bloquea_la_referencia_de_una_venta_historica(self):
+        guardado = self.guardar()
+        anterior = self.v.lineas.get()
+        linea = self.variante.linea
+        linea.referencia = self.referencia(self.proveedor('Fabricante del catálogo'), 'Sofá')
+        linea.save()
+        self.guardar([self.fila(id=anterior.pk)], revision=guardado['revision'])
+        anterior.refresh_from_db()
+        self.assertEqual(anterior.referencia_id, self.ref.pk)
+        self.assertEqual(anterior.precio_lista_unitario, Decimal(230))
+
     def test_precio_manual_catalogo_y_opcional(self):
         PrecioVariante.objects.create(variante=self.variante, grupo=self.grupo, precio_manual=300)
         self.assertEqual(Decimal(self.guardar()['valor_lista']), Decimal(560))
