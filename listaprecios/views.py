@@ -33,7 +33,7 @@ from .serializers import (
     CotizacionSerializer, LineaCotizacionSerializer, EspecialCatalogoSerializer,
 )
 from .especiales import aplicar_configurado, archivar_historico
-from .referencias import categoria_variante, nombre_linea
+from .referencias import categoria_variante, nombre_linea, sincronizar_subcategorias
 from . import cache_catalogo
 from .services import (
     impacto_categoria, impacto_multiplicador, impacto_grupo_tela, obtener_grupos_tela, calcular_precio, precios_por_variante,
@@ -198,8 +198,8 @@ class ReferenciasPrecioViewSet(viewsets.ReadOnlyModelViewSet):
     """Solo lee Referencias; la configuración comercial vive en listaprecios."""
     queryset = Referencia.objects.select_related('proveedor', 'lista_precios').prefetch_related(
         'categorias', 'subcategorias__categoria',
-        'lista_precios__referencia__proveedor', 'lista_precios__referencia__categorias', 'lista_precios__referencia__subcategorias',
-        Prefetch('lista_precios__variantes', queryset=VarianteProducto.objects.select_related('categoria', 'categoria_referencia', 'linea')),
+        'lista_precios__referencia__proveedor', 'lista_precios__referencia__categorias', 'lista_precios__referencia__subcategorias__categoria',
+        Prefetch('lista_precios__variantes', queryset=VarianteProducto.objects.select_related('categoria', 'categoria_referencia', 'subcategoria__categoria', 'linea')),
     ).order_by('nombre', 'proveedor__nombre_empresa', 'pk')
     serializer_class = ReferenciaPrecioSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter]
@@ -231,18 +231,25 @@ class LineaProductoViewSet(viewsets.ModelViewSet):
     # Busca por nombre de la línea/colección (ej. "Detroit") o por nombre de
     # cualquiera de sus variantes (ej. "Sofá 3p.") — cualquiera de las dos
     # formas en que el admin suele buscar un producto.
-    search_fields = ['nombre', 'variantes__nombre']
+    search_fields = ['referencia__nombre', 'referencia__proveedor__nombre_empresa', 'variantes__subcategoria__nombre', 'nombre', 'variantes__nombre']
 
     def get_queryset(self):
-        qs = (LineaProducto.objects.select_related('referencia__proveedor').prefetch_related('referencia__categorias', 'referencia__subcategorias', Prefetch('variantes', queryset=VarianteProducto.objects.select_related('categoria', 'categoria_referencia')))
+        qs = (LineaProducto.objects.select_related('referencia__proveedor').prefetch_related('referencia__categorias', 'referencia__subcategorias__categoria', Prefetch('variantes', queryset=VarianteProducto.objects.select_related('categoria', 'categoria_referencia', 'subcategoria__categoria')))
               if self._es_resumen() else self.queryset)
         categoria = self.request.query_params.get('categoria')
         if categoria:
-            qs = qs.filter(Q(variantes__categoria_referencia_id=categoria) | Q(referencia__isnull=True, variantes__categoria_id=categoria))
+            qs = qs.filter(Q(variantes__subcategoria__categoria_id=categoria) | Q(referencia__isnull=True, variantes__categoria_id=categoria))
         # distinct() siempre: tanto el filtro por categoría como la búsqueda
         # por variantes__nombre atraviesan una relación a-muchos y pueden
         # duplicar filas de LineaProducto sin esto.
         return qs.distinct()
+
+    @action(detail=True, methods=['post'], url_path='sincronizar-subcategorias')
+    def sincronizar(self, request, pk=None):
+        linea = self.get_object()
+        sincronizar_subcategorias(linea)
+        linea = self.get_queryset().get(pk=linea.pk)
+        return Response(LineaProductoSerializer(linea, context=self.get_serializer_context()).data)
 
     def _es_resumen(self):
         return self.action == 'list' and self.request.query_params.get('resumen') == '1'
@@ -294,6 +301,11 @@ class LineaProductoViewSet(viewsets.ModelViewSet):
 
 
 class VarianteProductoViewSet(viewsets.ModelViewSet):
+    def perform_destroy(self, instance):
+        if instance.linea.referencia_id:
+            raise serializers.ValidationError('La ficha pertenece a una subcategoría de Referencias. Puedes editar sus costos o quitar la configuración completa de precios.')
+        instance.delete()
+
     queryset = VarianteProducto.objects.select_related('linea__referencia__proveedor', 'categoria', 'categoria_referencia', 'subcategoria__categoria', 'multiplicador').prefetch_related(
         'linea__referencia__categorias', 'linea__referencia__subcategorias__categoria', 'cargos__especial', 'precios__grupo', *PREFETCH_JUEGOS).all()
     serializer_class = VarianteProductoSerializer
@@ -460,8 +472,8 @@ def catalogo(request):
     categoria (slug del tipo de producto — Salas, Poltronas...), q (búsqueda).
     Nunca incluye costo_base, metraje_tela ni cargos crudos."""
     qs = LineaProducto.objects.filter(activo=True).select_related('referencia__proveedor').prefetch_related(
-        'referencia__categorias', 'referencia__subcategorias',
-        Prefetch('variantes', queryset=VarianteProducto.objects.select_related('categoria', 'categoria_referencia', 'multiplicador')),
+        'referencia__categorias', 'referencia__subcategorias__categoria',
+        Prefetch('variantes', queryset=VarianteProducto.objects.select_related('categoria', 'categoria_referencia', 'subcategoria__categoria', 'multiplicador')),
         'variantes__precios', 'variantes__precios__grupo', 'variantes__cargos__especial',
         *[f'variantes__{p}' for p in PREFETCH_JUEGOS],
     )
@@ -476,11 +488,12 @@ def catalogo(request):
     if categoria_slug:
         from django.utils.text import slugify
         ids = [c.pk for c in Categoria.objects.all() if slugify(c.nombre) == categoria_slug]
-        qs = qs.filter(Q(variantes__categoria_referencia_id__in=ids) | Q(referencia__isnull=True, variantes__categoria__slug=categoria_slug)).distinct()
+        qs = qs.filter(Q(variantes__subcategoria__categoria_id__in=ids) | Q(referencia__isnull=True, variantes__categoria__slug=categoria_slug)).distinct()
     if q:
         needle = q.strip()
         qs = qs.filter(
             Q(referencia__nombre__icontains=needle) | Q(referencia__proveedor__nombre_empresa__icontains=needle)
+            | Q(variantes__subcategoria__nombre__icontains=needle) | Q(variantes__subcategoria__categoria__nombre__icontains=needle)
             | Q(nombre__icontains=needle) | Q(notas__icontains=needle) | Q(variantes__notas__icontains=needle)
         ).distinct()
 
@@ -614,7 +627,7 @@ class CotizacionViewSet(viewsets.ModelViewSet):
 
             # Resolver variantes y grupos para validar tope de descuento y costo estimado congelado
             variante_ids = [l.get('variante') or l.get('variante_id') for l in lineas_data if l.get('variante') or l.get('variante_id')]
-            variantes_map = {v.id: v for v in VarianteProducto.objects.filter(id__in=variante_ids).select_related('linea__referencia', 'categoria_referencia').prefetch_related('cargos__especial', 'precios', *PREFETCH_JUEGOS)}
+            variantes_map = {v.id: v for v in VarianteProducto.objects.filter(id__in=variante_ids).select_related('linea__referencia', 'categoria_referencia', 'subcategoria__categoria').prefetch_related('cargos__especial', 'precios', *PREFETCH_JUEGOS)}
             grupo_ids = [l.get('grupo_tela') or l.get('grupoId') for l in lineas_data if l.get('grupo_tela') or l.get('grupoId')]
             grupos_map = {g.id: g for g in GrupoTela.objects.filter(id__in=grupo_ids)}
 
@@ -644,7 +657,7 @@ class CotizacionViewSet(viewsets.ModelViewSet):
                 lineas_instancias.append({
                     'variante_id': v_obj.id if v_obj else None,
                     'linea_nombre': nombre_linea(v_obj.linea) if v_obj and v_obj.linea.referencia_id else l.get('linea_nombre') or l.get('lineaNombre', 'Línea'),
-                    'variante_nombre': l.get('variante_nombre') or l.get('varianteNombre', 'Producto'),
+                    'variante_nombre': v_obj.nombre_catalogo if v_obj and v_obj.linea.referencia_id else l.get('variante_nombre') or l.get('varianteNombre', 'Producto'),
                     'categoria_nombre': (categoria_variante(v_obj).nombre if categoria_variante(v_obj) else '') if v_obj and v_obj.linea.referencia_id else l.get('categoria_nombre') or l.get('categoriaNombre', ''),
                     'grupo_tela_id': g_obj.id if g_obj else None,
                     'grupo_nombre': l.get('grupo_nombre') or l.get('grupoNombre', ''),
@@ -712,7 +725,7 @@ class CotizacionViewSet(viewsets.ModelViewSet):
                 subtotal = Decimal('0.00')
                 lineas_instancias = []
                 variante_ids = [l.get('variante') or l.get('variante_id') for l in lineas_data if l.get('variante') or l.get('variante_id')]
-                variantes_map = {v.id: v for v in VarianteProducto.objects.filter(id__in=variante_ids).select_related('linea__referencia', 'categoria_referencia').prefetch_related('cargos__especial', 'precios', *PREFETCH_JUEGOS)}
+                variantes_map = {v.id: v for v in VarianteProducto.objects.filter(id__in=variante_ids).select_related('linea__referencia', 'categoria_referencia', 'subcategoria__categoria').prefetch_related('cargos__especial', 'precios', *PREFETCH_JUEGOS)}
                 grupo_ids = [l.get('grupo_tela') or l.get('grupoId') for l in lineas_data if l.get('grupo_tela') or l.get('grupoId')]
                 grupos_map = {g.id: g for g in GrupoTela.objects.filter(id__in=grupo_ids)}
 
@@ -739,7 +752,7 @@ class CotizacionViewSet(viewsets.ModelViewSet):
                     lineas_instancias.append({
                         'variante_id': v_obj.id if v_obj else None,
                         'linea_nombre': nombre_linea(v_obj.linea) if v_obj and v_obj.linea.referencia_id else l.get('linea_nombre') or l.get('lineaNombre', 'Línea'),
-                        'variante_nombre': l.get('variante_nombre') or l.get('varianteNombre', 'Producto'),
+                        'variante_nombre': v_obj.nombre_catalogo if v_obj and v_obj.linea.referencia_id else l.get('variante_nombre') or l.get('varianteNombre', 'Producto'),
                         'categoria_nombre': (categoria_variante(v_obj).nombre if categoria_variante(v_obj) else '') if v_obj and v_obj.linea.referencia_id else l.get('categoria_nombre') or l.get('categoriaNombre', ''),
                         'grupo_tela_id': g_obj.id if g_obj else None,
                         'grupo_nombre': l.get('grupo_nombre') or l.get('grupoNombre', ''),
@@ -897,7 +910,7 @@ class CotizacionViewSet(viewsets.ModelViewSet):
             LineaVenta.objects.create(
                 venta=venta,
                 variante=lc.variante,
-                referencia_id=lc.variante.linea.referencia_id if lc.variante_id else None,
+                referencia_id=(lc.variante.linea.referencia_id or lc.variante.linea.referencia_archivada_id) if lc.variante_id else None,
                 grupo_catalogo=lc.grupo_tela,
                 producto_nombre=lc.linea_nombre,
                 variante_nombre=lc.variante_nombre,

@@ -1,10 +1,11 @@
 from decimal import Decimal
+from django.db import transaction
 
 from rest_framework import serializers
 
 from ordenes.serializers import SinMargenSinPermisoMixin
 from ordenes.models import Referencia
-from suministros.models import Categoria
+from suministros.models import Categoria, Subcategoria
 from .models import (
     CategoriaLista, GrupoTela, Multiplicador,
     LineaProducto, VarianteProducto, CargoVariante, PrecioVariante, EspecialLinea,
@@ -28,7 +29,7 @@ class ClasificacionVarianteMixin:
     def to_representation(self, obj):
         data = super().to_representation(obj)
         categoria = categoria_variante(obj)
-        data.update(categoria=categoria.pk if categoria else None, categoria_nombre=categoria.nombre if categoria else 'Sin clasificar',
+        data.update(nombre=obj.nombre_catalogo, categoria=categoria.pk if categoria else None, categoria_nombre=categoria.nombre if categoria else 'Sin clasificar',
                     subcategoria=obj.subcategoria_id, referencia=obj.linea.referencia_id)
         return data
 
@@ -140,8 +141,9 @@ class OrdenVariantesSerializer(serializers.Serializer):
 
 
 class AgrupacionNuevaSerializer(serializers.Serializer):
-    nombre = serializers.CharField(max_length=150)
-    categoria = serializers.PrimaryKeyRelatedField(queryset=CategoriaLista.objects.all())
+    nombre = serializers.CharField(max_length=150, required=False)
+    categoria = serializers.PrimaryKeyRelatedField(queryset=CategoriaLista.objects.all(), required=False)
+    subcategoria = serializers.PrimaryKeyRelatedField(queryset=Subcategoria.objects.all(), required=False)
     componentes = serializers.JSONField()
 
     def get_fields(self):
@@ -153,7 +155,13 @@ class AgrupacionNuevaSerializer(serializers.Serializer):
     def validate(self, attrs):
         linea = self.context.get('linea')
         if linea and linea.referencia_id:
-            attrs['categoria'] = clasificacion(linea, attrs.get('categoria'))
+            sub = attrs.get('subcategoria')
+            if not sub:
+                raise serializers.ValidationError({'subcategoria': 'Selecciona la subcategoría que será el conjunto.'})
+            attrs['categoria'] = clasificacion(linea, attrs.get('categoria'), sub)
+            attrs['nombre'] = sub.nombre
+        elif not attrs.get('nombre') or not attrs.get('categoria'):
+            raise serializers.ValidationError('Indica el nombre y la categoría del conjunto.')
         return attrs
 
 
@@ -173,9 +181,11 @@ class VarianteProductoSerializer(ClasificacionVarianteMixin, serializers.ModelSe
         model = VarianteProducto
         fields = [
             'id', 'linea', 'categoria', 'categoria_nombre', 'nombre', 'orden',
-            'costo_base', 'costo_total_producto', 'metraje_tela', 'decimetraje_cuero', 'descuento_maximo', 'notas', 'cargos', 'precios',
+            'costo_base', 'costo_confirmado', 'costo_total_producto', 'metraje_tela', 'decimetraje_cuero', 'descuento_maximo', 'notas', 'cargos', 'precios',
             'multiplicador', 'multiplicador_nombre', 'multiplicador_efectivo', 'componentes', 'precios_venta', 'subcategoria',
         ]
+        read_only_fields = ['costo_confirmado']
+        validators = []  # La pertenencia/unicidad se valida bajo bloqueo al crear.
 
     def get_fields(self):
         campos = super().get_fields()
@@ -196,13 +206,30 @@ class VarianteProductoSerializer(ClasificacionVarianteMixin, serializers.ModelSe
             raise serializers.ValidationError({'linea': 'Un producto no cambia de referencia. Crea su configuración en la referencia correcta.'})
         if linea and linea.referencia_id:
             sub = attrs.get('subcategoria', self.instance.subcategoria if self.instance else None)
+            if not sub:
+                raise serializers.ValidationError({'subcategoria': 'Los productos son las subcategorías asignadas en Referencias.'})
+            if self.instance and sub.pk != self.instance.subcategoria_id:
+                raise serializers.ValidationError({'subcategoria': 'La ficha de costos pertenece a su subcategoría y no se reasigna.'})
+            if 'nombre' in attrs and attrs['nombre'] != sub.nombre:
+                raise serializers.ValidationError({'nombre': 'El nombre pertenece a la subcategoría del catálogo.'})
+            if not self.instance and linea.variantes.filter(subcategoria=sub).exists():
+                raise serializers.ValidationError({'subcategoria': 'Esta subcategoría ya tiene su ficha de costos.'})
             categoria = attrs.get('categoria_referencia', self.instance.categoria_referencia if self.instance and 'subcategoria' not in attrs else None)
+            if 'categoria' not in self.initial_data:
+                categoria = None
             attrs['categoria_referencia'] = clasificacion(linea, categoria, sub)
-            if not self.instance and not attrs.get('nombre'):
-                if not sub:
-                    raise serializers.ValidationError({'nombre': 'Indica el producto o medida.'})
-                attrs['nombre'] = sub.nombre
+            attrs['nombre'] = sub.nombre
+            if 'costo_base' in attrs:
+                attrs['costo_confirmado'] = True
         return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        linea = validated_data['linea']
+        LineaProducto.objects.select_for_update().get(pk=linea.pk)
+        if linea.referencia_id and linea.variantes.filter(subcategoria=validated_data['subcategoria']).exists():
+            raise serializers.ValidationError({'subcategoria': 'Esta subcategoría ya tiene su ficha de costos.'})
+        return super().create(validated_data)
 
     def validate_costo_base(self, valor):
         return pesos_enteros(valor)
@@ -223,7 +250,7 @@ class VarianteProductoSerializer(ClasificacionVarianteMixin, serializers.ModelSe
         return valor
 
     def get_componentes(self, obj):
-        return [{'id': c.id, 'variante': c.variante_id, 'variante_nombre': c.variante.nombre, 'cantidad': c.cantidad,
+        return [{'id': c.id, 'variante': c.variante_id, 'variante_nombre': c.variante.nombre_catalogo, 'cantidad': c.cantidad,
                  'costo_unitario': str(c.costo_unitario) if c.costo_unitario is not None else None,
                  'multiplicador': str(c.multiplicador) if c.multiplicador is not None else None, 'adicionales': c.adicionales}
                 for c in obj.componentes.all()]
@@ -309,7 +336,7 @@ class VarianteResumenSerializer(ClasificacionVarianteMixin, serializers.ModelSer
 
     class Meta:
         model = VarianteProducto
-        fields = ['id', 'nombre', 'orden', 'categoria', 'categoria_nombre']
+        fields = ['id', 'nombre', 'orden', 'categoria', 'categoria_nombre', 'costo_confirmado']
 
 
 class LineaProductoResumenSerializer(IdentidadLineaMixin, serializers.ModelSerializer):
@@ -367,11 +394,25 @@ class LineaProductoSerializer(IdentidadLineaMixin, serializers.ModelSerializer):
             raise serializers.ValidationError({'nombre': 'El nombre pertenece a Referencias; aquí solo se configuran precios.'})
         if attrs.get('activo') and (not ref or not self.instance or not self.instance.variantes.exists()):
             raise serializers.ValidationError({'activo': 'Agrega y revisa al menos un producto antes de publicar los precios.'})
+        if attrs.get('activo') and ref:
+            productos = list(self.instance.variantes.all())
+            if {v.subcategoria_id for v in productos} != set(ref.subcategorias.values_list('pk', flat=True)):
+                raise serializers.ValidationError({'activo': 'Actualiza las subcategorías antes de publicar.'})
+            if any(not v.costo_confirmado for v in productos):
+                raise serializers.ValidationError({'activo': 'Confirma el costo de todas las subcategorías antes de publicar.'})
         return attrs
 
     def create(self, validated_data):
         validated_data.setdefault('activo', False)
         return crear_configuracion(validated_data.pop('referencia'), **validated_data)
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        # Comparte bloqueo con la incorporación de subcategorías y los conjuntos.
+        actual = LineaProducto.objects.select_for_update().get(pk=instance.pk)
+        self.instance = actual
+        self.validate(validated_data)
+        return super().update(actual, validated_data)
 
     def get_especiales(self, obj):
         return EspecialLineaSerializer(obj.especiales.all(), many=True, context=self.context).data

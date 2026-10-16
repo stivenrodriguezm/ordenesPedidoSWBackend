@@ -241,7 +241,7 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
                         'cargos': [{'id': c.pk, 'descripcion': c.descripcion, ('diferencia_precio' if c.tipo == 'diferencia_precio' else 'costo'): str(c.valor),
                                     **({'configuracion': {**c.especial.configuracion, **c.configuracion_especial}} if c.tipo == 'especial_producto' else {})}
                                    for c in v.cargos.all() if not c.opcional or c.pk in d['opcionales']]
-                                  + [{'id': c.pk, 'descripcion': c.descripcion, 'pieza': comp.variante.nombre, 'cantidad': comp.cantidad}
+                                  + [{'id': c.pk, 'descripcion': c.descripcion, 'pieza': comp.variante.nombre_catalogo, 'cantidad': comp.cantidad}
                                      for comp, c in opcionales_piezas(v) if c.pk in d['opcionales']],
                         'calculado': str(calculado), **({'juego': juego} if juego else {})}
         else:
@@ -288,7 +288,7 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
                   conjunto_cantidad=d['conjunto_cantidad'] if d['conjunto'] else 1)
     from listaprecios.referencias import categoria_variante, nombre_linea
     categoria = categoria_variante(v) if v else None
-    campos.update(producto_nombre=nombre_linea(v.linea) if v else d['producto_nombre'], variante_nombre=v.nombre if v else '',
+    campos.update(producto_nombre=nombre_linea(v.linea) if v else d['producto_nombre'], variante_nombre=v.nombre_catalogo if v else '',
                   categoria_nombre=categoria.nombre if categoria else '', grupo_tela=grupo.nombre if grupo else '',
                   opcionales=d['opcionales'], adicionales=[{'descripcion': a['descripcion'], 'importe_lista': str(a['importe_lista'])} for a in d['adicionales']],
                   precio_lista_unitario=lista, precio_unitario=precio, subtotal=subtotal,
@@ -639,12 +639,12 @@ def catalogo_productos(request):
     if request.query_params.get('solo_grupos'):
         # Grupos de tela y cuero con su costo por metro/decímetro (sección Tela del producto).
         return Response({'grupos': grupos})
-    qs = VarianteProducto.objects.select_related('linea__referencia__proveedor', 'categoria', 'categoria_referencia').prefetch_related('cargos__especial', 'precios', *PREFETCH_JUEGOS).order_by('linea__nombre', 'id')
+    qs = VarianteProducto.objects.select_related('linea__referencia__proveedor', 'categoria', 'categoria_referencia', 'subcategoria__categoria').prefetch_related('cargos__especial', 'precios', *PREFETCH_JUEGOS).order_by('linea__nombre', 'id')
     q = request.query_params.get('q', '').strip()[:150]
     if request.query_params.get('id'):
         qs = qs.filter(pk=serializers.IntegerField(min_value=1).run_validation(request.query_params['id']))
     if q:
-        qs = qs.filter(Q(nombre__icontains=q) | Q(linea__referencia__nombre__icontains=q) | Q(linea__nombre__icontains=q) | Q(categoria_referencia__nombre__icontains=q) | Q(categoria__nombre__icontains=q))
+        qs = qs.filter(Q(subcategoria__nombre__icontains=q) | Q(subcategoria__categoria__nombre__icontains=q) | Q(nombre__icontains=q) | Q(linea__referencia__nombre__icontains=q) | Q(linea__nombre__icontains=q) | Q(categoria_referencia__nombre__icontains=q) | Q(categoria__nombre__icontains=q))
     pag = serializers.IntegerField(min_value=1).run_validation(request.query_params.get('page', 1))
     resultados = []
     for v in qs[(pag - 1) * 40:pag * 40]:
@@ -653,19 +653,19 @@ def catalogo_productos(request):
         # Un juego se agrega como conjunto: cada pieza con su precio, referencia y pedido.
         # Si el juego tiene costos propios (además de sus piezas), se agrega entero.
         propios = any(not c.opcional and c.valor for c in v.cargos.all())  # el costo base no cuenta en un conjunto
-        piezas = [{'variante': c.variante_id, 'nombre': c.variante.nombre, 'cantidad': c.cantidad,
+        piezas = [{'variante': c.variante_id, 'nombre': c.variante.nombre_catalogo, 'cantidad': c.cantidad,
                    'tela': usa_tela(c.variante), 'grupos': [g['id'] for g in grupos if grupo_aplicable(c.variante, GrupoTela(**g))] if usa_tela(c.variante) else []}
                   for c in componentes_de(v)] if juego and not propios else []
         from listaprecios.referencias import categoria_variante, nombre_linea
         categoria = categoria_variante(v)
-        resultados.append({'id': v.pk, 'nombre': f'{nombre_linea(v.linea)} · {v.nombre}', 'categoria': categoria.nombre if categoria else '',
+        resultados.append({'id': v.pk, 'nombre': f'{nombre_linea(v.linea)} · {v.nombre_catalogo}', 'categoria': categoria.nombre if categoria else '',
                            'activo': v.linea.activo, 'tela': usa_tela(v),
                            'metraje': str(metraje) if metraje else None, 'decimetraje_cuero': str(metraje_total(v, 'cuero') or '') or None, 'juego': juego, 'piezas': piezas,
                            'decorativos_incluidos': 2 if da_decorativos(v) else 0, 'es_decorativo': es_decorativo(v),
                            'grupos': [g['id'] for g in grupos if grupo_aplicable(v, GrupoTela(**g))] if usa_tela(v) else [],
                            'opcionales': [{'id': c.pk, 'descripcion': c.descripcion, 'especial': c.especial_id is not None, 'preseleccionado': c.preseleccionado}
                                           for c in v.cargos.all() if c.opcional]
-                                         + [{'id': c.pk, 'descripcion': f'{c.descripcion} · {comp.variante.nombre}', 'especial': c.especial_id is not None,
+                                         + [{'id': c.pk, 'descripcion': f'{c.descripcion} · {comp.variante.nombre_catalogo}', 'especial': c.especial_id is not None,
                                              'preseleccionado': c.preseleccionado} for comp, c in opcionales_piezas(v)],
                            'referencias': [{'id': r.pk, 'nombre': f'{r.nombre} · {r.proveedor.nombre_empresa}'}
                                            for r in referencias_sugeridas(v)][:5] if request.query_params.get('id') else []})

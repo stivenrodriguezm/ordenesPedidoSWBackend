@@ -424,7 +424,10 @@ class Command(BaseCommand):
 
         # El Excel no identifica proveedor: solo asociar si la referencia es inequívoca.
         from ordenes.models import Referencia
-        from listaprecios.referencias import clasificacion
+        from listaprecios.referencias import sincronizar_subcategorias
+        import unicodedata
+        def clave(texto):
+            return "".join(c for c in unicodedata.normalize("NFKD", texto).casefold() if c.isalnum())
         candidatas = list(Referencia.objects.filter(nombre__iexact=nombre).select_related('proveedor').prefetch_related('categorias', 'subcategorias__categoria')[:2])
         if len(candidatas) != 1:
             self.reporte['filas_omitidas'].append(f'{sheet_name}: {nombre}: referencia inexistente o ambigua; configura sus precios desde Referencias y precios.')
@@ -438,25 +441,33 @@ class Command(BaseCommand):
         elif linea_data['notas'] and linea_data['notas'] not in (linea.notas or ''):
             linea.notas = (linea.notas + ' ' if linea.notas else '') + linea_data['notas']
             linea.save(update_fields=['notas'])
-        categoria_origen = clasificacion(linea)
+        sincronizar_subcategorias(linea)
+        disponibles = {}
+        for producto in linea.variantes.select_related('subcategoria'):
+            if producto.subcategoria_id:
+                disponibles.setdefault(clave(producto.subcategoria.nombre), []).append(producto)
+        parejas = []
+        vistos = set()
+        for fila in linea_data['variantes']:
+            candidatas = disponibles.get(clave(fila['nombre']), [])
+            if len(candidatas) != 1 or candidatas[0].pk in vistos:
+                self.reporte['filas_omitidas'].append(f"{sheet_name}: {nombre} · {fila['nombre']}: subcategoría inexistente, ambigua o repetida.")
+                continue
+            producto = candidatas[0]
+            vistos.add(producto.pk)
+            parejas.append((producto, fila))
 
-        orden_base = linea.variantes.count()
-        # bulk_create por línea (en vez de una query por variante/cargo/precio)
-        # para no saturar de round-trips una conexión MySQL remota — con
-        # cientos de líneas × ~6 precios cada una, esto es la diferencia
-        # entre unas pocas queries y varios miles.
-        variantes_objs = [
-            VarianteProducto(
-                linea=linea, categoria_referencia=categoria_origen, nombre=v['nombre'], orden=orden_base + i,
-                costo_base=v['costo'] or Decimal('0'), metraje_tela=v['metraje'], decimetraje_cuero=None,
-            )
-            for i, v in enumerate(linea_data['variantes'])
-        ]
-        variantes_creadas = VarianteProducto.objects.bulk_create(variantes_objs)
+        variantes_creadas = []
+        for producto, fila in parejas:
+            producto.costo_base = fila['costo'] or Decimal('0')
+            producto.metraje_tela = fila['metraje']
+            producto.costo_confirmado = True
+            producto.save(update_fields=['costo_base', 'metraje_tela', 'costo_confirmado'])
+            variantes_creadas.append(producto)
         self.reporte['variantes_creadas'] += len(variantes_creadas)
 
         cargos_a_crear, precios_a_crear = [], []
-        for variante, v in zip(variantes_creadas, linea_data['variantes']):
+        for variante, v in parejas:
             self._resolver_precios_variante(variante, v, mult, matriz, grupos, cargos_a_crear, precios_a_crear)
 
         if cargos_a_crear:

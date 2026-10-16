@@ -29,8 +29,9 @@ class ReferenciasUnificadasTests(LottusTestCase):
         return r.data
 
     def producto(self, linea, **datos):
-        r = self.c.post('/api/listaprecios/variantes/', {'linea': linea['id'], 'subcategoria': self.sub.pk, 'costo_base': 100000, **datos}, format='json')
-        self.assertEqual(r.status_code, 201, r.data)
+        producto = next(v for v in linea['variantes'] if v['subcategoria'] == self.sub.pk)
+        r = self.c.patch(f"/api/listaprecios/variantes/{producto['id']}/", {'costo_base': 100000, **datos}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
         return r.data
 
     def test_configurar_precios_no_crea_ni_modifica_referencias(self):
@@ -82,13 +83,13 @@ class ReferenciasUnificadasTests(LottusTestCase):
             r = self.c.post('/api/listaprecios/variantes/', {'linea': linea['id'], 'nombre': 'Producto', 'costo_base': 100, **datos}, format='json')
             self.assertEqual(r.status_code, 400, r.data)
 
-    def test_referencia_sin_clasificar_admite_medidas_sin_alterarla(self):
+    def test_referencia_sin_subcategorias_no_inventa_variantes(self):
         ref = self.referencia(self.proveedor(), 'Sin clasificación')
         linea = self.configurar(ref)
+        self.assertEqual(linea['variantes'], [])
         r = self.c.post('/api/listaprecios/variantes/', {'linea': linea['id'], 'nombre': 'Medida 180 cm', 'costo_base': 120000}, format='json')
-        self.assertEqual(r.status_code, 201, r.data)
-        self.assertIsNone(r.data['categoria'])
-        self.assertFalse(ref.categorias.exists())
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertFalse(ref.subcategorias.exists())
 
     def test_catalogo_publica_solo_despues_de_revisar_y_conserva_privacidad(self):
         linea = self.configurar()
@@ -122,8 +123,11 @@ class ReferenciasUnificadasTests(LottusTestCase):
     def test_conjunto_usa_clasificacion_existente_y_suma_sin_nuevo_margen(self):
         linea = self.configurar()
         pieza = self.producto(linea)
+        conjunto = Subcategoria.objects.create(categoria=self.cat, nombre='Conjunto')
+        self.ref.subcategorias.add(conjunto)
+        self.c.post(f"/api/listaprecios/lineas/{linea['id']}/sincronizar-subcategorias/")
         r = self.c.post(f"/api/listaprecios/lineas/{linea['id']}/agrupaciones/", {
-            'nombre': 'Conjunto', 'categoria': self.cat.pk, 'componentes': [{'variante': pieza['id'], 'cantidad': 2}],
+            'subcategoria': conjunto.pk, 'componentes': [{'variante': pieza['id'], 'cantidad': 2}],
         }, format='json')
         self.assertEqual(r.status_code, 201, r.data)
         self.assertEqual(Decimal(r.data['costo_total_producto']), Decimal(200000))
@@ -143,7 +147,7 @@ class ReferenciasUnificadasTests(LottusTestCase):
         from .management.commands.importar_lista_precios import Command
         comando = Command()
         comando.reporte = {'lineas_creadas': 0, 'variantes_creadas': 0, 'filas_omitidas': [], 'precios_calculados': 0, 'precios_override': 0}
-        datos = {'nombre': self.ref.nombre, 'notas': '', 'variantes': [{'nombre': '235 cm', 'costo': Decimal(100), 'metraje': Decimal(2), 'precios_cache': {}}]}
+        datos = {'nombre': self.ref.nombre, 'notas': '', 'variantes': [{'nombre': self.sub.nombre, 'costo': Decimal(100), 'metraje': Decimal(2), 'precios_cache': {}}]}
         linea = comando._guardar_linea(datos, None, {}, Decimal(2), {}, 'SALAS')
         self.assertEqual(linea.referencia_id, self.ref.pk)
         self.assertFalse(linea.activo)
@@ -162,3 +166,108 @@ class ReferenciasUnificadasTests(LottusTestCase):
         cache.clear()
         publico = next(l for l in self.c.get('/api/listaprecios/catalogo/').data if l['id'] == linea['id'])
         self.assertTrue(publico['es_decorativo'])
+
+    def test_configurar_crea_una_ficha_por_subcategoria_y_no_publica_ceros_iniciales(self):
+        segunda = Subcategoria.objects.create(categoria=self.cat, nombre='Poltrona')
+        self.ref.subcategorias.add(segunda)
+        linea = self.configurar()
+        self.assertEqual({v['subcategoria'] for v in linea['variantes']}, {self.sub.pk, segunda.pk})
+        self.assertTrue(all(not v['costo_confirmado'] for v in linea['variantes']))
+        r = self.c.patch(f"/api/listaprecios/lineas/{linea['id']}/", {'activo': True}, format='json')
+        self.assertEqual(r.status_code, 400, r.data)
+        for v in linea['variantes']:
+            self.c.patch(f"/api/listaprecios/variantes/{v['id']}/", {'costo_base': 0}, format='json')
+        r = self.c.patch(f"/api/listaprecios/lineas/{linea['id']}/", {'activo': True}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+
+    def test_no_duplica_ni_reasigna_ni_renombra_subcategorias_desde_precios(self):
+        linea = self.configurar()
+        producto = linea['variantes'][0]
+        otra = Subcategoria.objects.create(categoria=self.cat, nombre='Otro tipo')
+        self.ref.subcategorias.add(otra)
+        for patch in ({'subcategoria': otra.pk}, {'subcategoria': None}, {'nombre': 'Nombre inventado'}):
+            r = self.c.patch(f"/api/listaprecios/variantes/{producto['id']}/", patch, format='json')
+            self.assertEqual(r.status_code, 400, r.data)
+        r = self.c.post('/api/listaprecios/variantes/', {'linea': linea['id'], 'subcategoria': self.sub.pk, 'costo_base': 200}, format='json')
+        self.assertEqual(r.status_code, 400, r.data)
+        r = self.c.delete(f"/api/listaprecios/variantes/{producto['id']}/")
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertEqual(VarianteProducto.objects.filter(linea_id=linea['id']).count(), 1)
+
+    def test_actualizar_subcategorias_es_idempotente_preserva_costos_y_exige_revision(self):
+        linea = self.configurar()
+        producto = self.producto(linea)
+        self.c.patch(f"/api/listaprecios/lineas/{linea['id']}/", {'activo': True}, format='json')
+        nueva = Subcategoria.objects.create(categoria=self.cat, nombre='Poltrona')
+        self.ref.subcategorias.add(nueva)
+        for _ in range(2):
+            r = self.c.post(f"/api/listaprecios/lineas/{linea['id']}/sincronizar-subcategorias/")
+            self.assertEqual(r.status_code, 200, r.data)
+            self.assertFalse(r.data['activo'])
+            self.assertEqual(len(r.data['variantes']), 2)
+            anterior = next(v for v in r.data['variantes'] if v['id'] == producto['id'])
+            self.assertEqual(Decimal(anterior['costo_base']), 100000)
+        self.assertEqual(Referencia.objects.get(pk=self.ref.pk).subcategorias.count(), 2)
+
+    def test_cambiar_nombre_y_categoria_maestros_se_refleja_en_admin_y_consulta(self):
+        linea = self.configurar()
+        self.producto(linea)
+        cat = Categoria.objects.create(nombre='Categoría actual')
+        self.sub.nombre, self.sub.categoria = 'Nombre actual', cat
+        self.sub.save()
+        self.c.patch(f"/api/listaprecios/lineas/{linea['id']}/", {'activo': True}, format='json')
+        cache.clear()
+        for url in (f"/api/listaprecios/lineas/{linea['id']}/", '/api/listaprecios/catalogo/'):
+            r = self.c.get(url)
+            datos = r.data if isinstance(r.data, dict) else next(l for l in r.data if l['id'] == linea['id'])
+            self.assertEqual(datos['variantes'][0]['nombre'], 'Nombre actual')
+            self.assertEqual(datos['variantes'][0]['categoria'], cat.pk)
+
+    def test_migracion_archiva_sin_perder_costos_ni_identidad_historica(self):
+        from importlib import import_module
+        from types import SimpleNamespace
+        from django.apps import apps
+        from .models import PrecioVariante
+        linea = self.configurar()
+        producto = self.producto(linea)
+        historico = VarianteProducto.objects.create(linea_id=linea['id'], nombre='Medida sin equivalencia', costo_base=123456)
+        precio = PrecioVariante.objects.create(variante=historico, precio_manual=234567)
+        migracion = import_module('listaprecios.migrations.0023_subcategorias_unificadas')
+        migracion.unificar(apps, SimpleNamespace(connection=connection))
+        anterior = LineaProducto.objects.get(pk=linea['id'])
+        self.assertFalse(anterior.activo)
+        self.assertIsNone(anterior.referencia_id)
+        self.assertEqual(anterior.referencia_archivada_id, self.ref.pk)
+        precio.refresh_from_db()
+        self.assertEqual(precio.variante_id, historico.pk)
+        self.assertEqual(VarianteProducto.objects.get(pk=producto['id']).costo_base, 100000)
+        actual = LineaProducto.objects.get(referencia=self.ref)
+        self.assertNotEqual(actual.pk, anterior.pk)
+        self.assertFalse(actual.activo)
+        self.assertEqual(actual.variantes.get().subcategoria_id, self.sub.pk)
+        self.assertFalse(actual.variantes.get().costo_confirmado)
+        self.assertEqual(self.ref.subcategorias.get().pk, self.sub.pk)
+
+    def test_quitar_piezas_requiere_confirmar_el_costo_individual_antes_de_publicar(self):
+        from .services import guardar_componentes
+        linea = self.configurar()
+        pieza = self.producto(linea)
+        sub = Subcategoria.objects.create(categoria=self.cat, nombre='Conjunto para convertir')
+        self.ref.subcategorias.add(sub)
+        self.c.post(f"/api/listaprecios/lineas/{linea['id']}/sincronizar-subcategorias/")
+        juego = VarianteProducto.objects.get(linea_id=linea['id'], subcategoria=sub)
+        guardar_componentes(juego, [{'variante': pieza['id'], 'cantidad': 2}])
+        self.c.patch(f"/api/listaprecios/lineas/{linea['id']}/", {'activo': True}, format='json')
+        guardar_componentes(juego, [])
+        juego.refresh_from_db()
+        self.assertFalse(juego.costo_confirmado)
+        self.assertFalse(LineaProducto.objects.get(pk=linea['id']).activo)
+
+    def test_buscar_subcategoria_usa_nombre_maestro_actual(self):
+        linea = self.configurar()
+        self.producto(linea)
+        self.sub.nombre = 'Nombre exclusivo actualizado'
+        self.sub.save()
+        self.c.patch(f"/api/listaprecios/lineas/{linea['id']}/", {'activo': True}, format='json')
+        r = self.c.get('/api/listaprecios/catalogo/', {'q': 'Nombre exclusivo actualizado'})
+        self.assertIn(linea['id'], [l['id'] for l in r.data])

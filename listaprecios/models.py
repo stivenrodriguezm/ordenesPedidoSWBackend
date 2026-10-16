@@ -100,6 +100,7 @@ class LineaProducto(models.Model):
     producto (ej. Altus → Poltrona + Sofá de 2 + Sofá de 3, cada una con su
     propia categoría/precio en VarianteProducto)."""
     referencia = models.OneToOneField('ordenes.Referencia', on_delete=models.PROTECT, null=True, blank=True, related_name='lista_precios')
+    referencia_archivada = models.ForeignKey('ordenes.Referencia', on_delete=models.PROTECT, related_name='listas_precios_archivadas', null=True, blank=True, editable=False)
     es_decorativo = models.BooleanField(default=False)
     # Nombre/slug anteriores se conservan para documentos históricos. La UI lee Referencia.
     nombre = models.CharField(max_length=150, verbose_name="Nombre")
@@ -122,20 +123,13 @@ class LineaProducto(models.Model):
 
 
 class VarianteProducto(models.Model):
-    """Un ítem orderable dentro de una línea (ej. "Sofá 3p. (235cm.)" o
-    "Poltrona") — equivale a una subcategoría/tipo de mueble. Tiene su
-    propia categoría (solo etiqueta el tipo de mueble, no afecta el precio)
-    porque una misma colección puede combinar varios tipos de producto.
-    metraje_tela nulo = el producto no lleva tela (mesas, accesorios).
-    notas: lista de consideraciones o variaciones puntuales de este ítem
-    (ej. "en cuero incluye base metálica"), visibles al buscar el precio —
-    puede haber ninguna, una o varias.
+    """Ficha de costos de una subcategoría asignada a la referencia.
 
-    multiplicador nulo (el caso normal, casi todos los productos) = usa el
-    multiplicador marcado es_general=True del catálogo Multiplicador. Se
-    puede asignar cualquier otro multiplicador del catálogo a esta variante
-    puntual, o en bloque por categoría/línea (ver
-    services.asignar_multiplicador_masivo)."""
+    El nombre y la categoría se leen del maestro; los campos anteriores se
+    conservan para compatibilidad histórica. Un registro por línea/subcategoría.
+    Tela y cuero tienen consumos independientes. Multiplicador nulo hereda el
+    general; componentes forman un conjunto sin otro margen sobre sus piezas.
+    """
     linea = models.ForeignKey(LineaProducto, on_delete=models.CASCADE, related_name='variantes')
     categoria = models.ForeignKey(CategoriaLista, on_delete=models.PROTECT, related_name='variantes', null=True, blank=True)
     categoria_referencia = models.ForeignKey('suministros.Categoria', on_delete=models.PROTECT, related_name='variantes_precio', null=True, blank=True)
@@ -143,6 +137,7 @@ class VarianteProducto(models.Model):
     nombre = models.CharField(max_length=150, verbose_name="Nombre")
     orden = models.PositiveIntegerField(default=0, verbose_name="Orden")
     costo_base = models.DecimalField(max_digits=12, decimal_places=2, default=0, verbose_name="Costo base")
+    costo_confirmado = models.BooleanField(default=True)
     metraje_tela = models.DecimalField(
         max_digits=8, decimal_places=2, null=True, blank=True, verbose_name="Metraje de tela (mt.)"
     )
@@ -160,12 +155,17 @@ class VarianteProducto(models.Model):
 
     class Meta:
         db_table = 'listaprecios_variante_producto'
+        constraints = [models.UniqueConstraint(fields=['linea', 'subcategoria'], name='lp_subcategoria_unica_linea')]
         ordering = ['orden', 'id']
         verbose_name = 'Variante de Producto'
         verbose_name_plural = 'Variantes de Producto'
 
     def __str__(self):
         return f"{self.nombre} — {self.linea.nombre}"
+
+    @property
+    def nombre_catalogo(self):
+        return self.subcategoria.nombre if self.linea.referencia_id and self.subcategoria_id else self.nombre
 
 
 class CargoVariante(models.Model):

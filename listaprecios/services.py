@@ -16,7 +16,7 @@ from .referencias import categoria_variante, nombre_linea
 
 # Prefetch para calcular precios de juegos (componentes con sus cargos y precios).
 PREFETCH_JUEGOS = ('componentes__variante__cargos__especial', 'componentes__variante__precios',
-                   'componentes__variante__multiplicador', 'componentes__variante__componentes')
+                   'componentes__variante__multiplicador', 'componentes__variante__subcategoria__categoria', 'componentes__variante__linea', 'componentes__variante__componentes')
 
 
 def _invalidar_catalogo():
@@ -86,7 +86,7 @@ def resumen_componentes(variante):
     partes = []
     for c in componentes_de(variante):
         especiales = [a['nombre'] for a in c.adicionales if a['tipo'] == 'especial']
-        partes.append(f'{c.cantidad} {c.variante.nombre}' + (f' ({", ".join(especiales)})' if especiales else ''))
+        partes.append(f'{c.cantidad} {c.variante.nombre_catalogo}' + (f' ({", ".join(especiales)})' if especiales else ''))
     return ' + '.join(partes)
 
 
@@ -237,7 +237,7 @@ def _precio_componente(componente, grupo, general, opcionales_ids=None):
     multiplo = componente.multiplicador if componente.multiplicador is not None else multiplicador_efectivo(pieza, general)
     precio += venta_adicionales(componente, grupo, multiplo, general)
     if precio < 0:
-        raise ValidationError({'adicionales': f'Los especiales dejan el precio de «{pieza.nombre}» por debajo de cero.'})
+        raise ValidationError({'adicionales': f'Los especiales dejan el precio de «{pieza.nombre_catalogo}» por debajo de cero.'})
     return precio
 
 
@@ -361,8 +361,8 @@ def opcionales_de_variante(variante, multiplicador_general=None, grupo=None, gru
     for comp in componentes_de(variante):
         for item in opcionales_de_variante(comp.variante, multiplicador_general, grupo, grupos, comp.multiplicador):
             n = comp.cantidad
-            item['pieza'] = comp.variante.nombre
-            item['descripcion'] = f"{item['descripcion']} · {comp.variante.nombre}{f' ×{n}' if n > 1 else ''}"
+            item['pieza'] = comp.variante.nombre_catalogo
+            item['descripcion'] = f"{item['descripcion']} · {comp.variante.nombre_catalogo}{f' ×{n}' if n > 1 else ''}"
             if item.get('valor') is not None:
                 item['valor'] = item['valor'] * n
             for p in item.get('precios', []):
@@ -466,7 +466,7 @@ def asignar_multiplicador_masivo(multiplicador_id, categoria_id=None, linea_id=N
 
     qs = VarianteProducto.objects.all()
     if categoria_id:
-        qs = qs.filter(Q(categoria_referencia_id=categoria_id) | Q(linea__referencia__isnull=True, categoria_id=categoria_id))
+        qs = qs.filter(Q(subcategoria__categoria_id=categoria_id) | Q(linea__referencia__isnull=True, categoria_id=categoria_id))
     if linea_id:
         qs = qs.filter(linea_id=linea_id)
     if variante_ids:
@@ -506,7 +506,7 @@ def simular_multiplicador(multiplicador, nuevo_valor, limite_ejemplos=20):
         p_nuevo = calcular_precio(v, g, multiplicador_override=nuevo_valor).quantize(Decimal('0.01'))
         ejemplos.append({
             'variante_id': v.id,
-            'variante_nombre': v.nombre,
+            'variante_nombre': v.nombre_catalogo,
             'linea_nombre': nombre_linea(v.linea),
             'categoria_nombre': categoria_variante(v).nombre if categoria_variante(v) else '',
             'grupo_nombre': g.nombre if g else 'Sin tela',
@@ -556,9 +556,9 @@ def preparar_componentes(juego, componentes):
         if not v or v.linea_id != juego.linea_id:
             raise ValidationError({'componentes': 'Los componentes deben ser variantes de la misma línea.'})
         if v.pk == juego.pk or list(v.componentes.all()):
-            raise ValidationError({'componentes': f'«{v.nombre}» no puede ser componente (es el mismo juego u otro juego).'})
+            raise ValidationError({'componentes': f'«{v.nombre_catalogo}» no puede ser componente (es el mismo juego u otro juego).'})
         if v.pk in vistos:
-            raise ValidationError({'componentes': f'«{v.nombre}» está repetido: ajusta su cantidad.'})
+            raise ValidationError({'componentes': f'«{v.nombre_catalogo}» está repetido: ajusta su cantidad.'})
         vistos.add(v.pk)
         valores = {}
         for campo in ('costo_unitario', 'multiplicador'):
@@ -572,7 +572,7 @@ def preparar_componentes(juego, componentes):
                             or (campo == 'multiplicador' and valor == 0)):
                         raise ValueError()
                 except (ValueError, InvalidOperation):
-                    raise ValidationError({'componentes': f'Revisa el {campo.replace("_", " ")} de «{v.nombre}». Usa costos en pesos enteros y múltiplos mayores a cero con hasta tres decimales.'})
+                    raise ValidationError({'componentes': f'Revisa el {campo.replace("_", " ")} de «{v.nombre_catalogo}». Usa costos en pesos enteros y múltiplos mayores a cero con hasta tres decimales.'})
             valores[campo] = valor
         adicionales = validar_adicionales(item.get('adicionales', anteriores.get(v.pk, [])))
         nuevos.append(ComponenteJuego(juego=juego, variante=v, cantidad=cantidad, orden=i, adicionales=adicionales, **valores))
@@ -607,23 +607,34 @@ def guardar_componentes(juego, componentes):
     # Confirmar el cálculo antes de escribir: un error económico no debe dejar datos a medias.
     general = Multiplicador.objects.filter(es_general=True).values_list('valor', flat=True).first()
     precios_por_variante(_con_componentes(juego, nuevos), grupos=obtener_grupos_tela(), multiplicador_general=general)
+    if juego.linea.referencia_id:
+        juego.costo_confirmado = bool(componentes)
+        juego.save(update_fields=['costo_confirmado'])
+        if not componentes:
+            LineaProducto.objects.filter(pk=juego.linea_id).update(activo=False)
     juego.componentes.all().delete()
     ComponenteJuego.objects.bulk_create(nuevos)
     from .especiales import archivar_configuracion
     for c in nuevos:
         for adicional in c.adicionales:
             if adicional['tipo'] == 'especial':
-                archivar_configuracion(adicional['nombre'], adicional['configuracion'], f'{juego.linea.nombre} · {juego.nombre} · {c.variante.nombre}'[:200])
+                archivar_configuracion(adicional['nombre'], adicional['configuracion'], f'{juego.linea.nombre} · {juego.nombre} · {c.variante.nombre_catalogo}'[:200])
     _invalidar_catalogo()  # bulk_create no dispara señales
 
 
 @transaction.atomic
-def crear_agrupacion(linea, nombre, categoria, componentes):
+def crear_agrupacion(linea, nombre, categoria, componentes, subcategoria=None):
     if not componentes:
         raise ValidationError({'componentes': 'Agrega al menos una pieza para crear una agrupación.'})
     LineaProducto.objects.select_for_update().get(pk=linea.pk)
+    if linea.referencia_id:
+        juego = linea.variantes.filter(subcategoria=subcategoria).first()
+        if not juego:
+            raise ValidationError({'subcategoria': 'Actualiza las subcategorías de la referencia antes de formar el conjunto.'})
+        guardar_componentes(juego, componentes)
+        return juego
     ultimo = VarianteProducto.objects.filter(linea=linea).order_by('-orden').first()
-    clasificacion = {'categoria_referencia': categoria} if linea.referencia_id else {'categoria': categoria}
+    clasificacion = {'categoria': categoria}
     juego = VarianteProducto.objects.create(linea=linea, nombre=nombre, **clasificacion,
                                             costo_base=0, orden=ultimo.orden + 1 if ultimo else 0)
     juego._prefetched_objects_cache = {'cargos': [], 'precios': []}
