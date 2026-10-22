@@ -61,6 +61,23 @@ class LottusTestCase(TestCase):
     def referencia(self, proveedor, nombre='Referencia ficticia'):
         return Referencia.objects.create(proveedor=proveedor, nombre=nombre)
 
+    def vincular_subcategorias_catalogo(self, linea):
+        """Adapta fixtures del motor antiguo al catálogo actual, sin cambiar sus importes."""
+        from django.core.cache import cache
+        from suministros.models import Categoria, Subcategoria
+        if not linea.referencia_id:
+            linea.referencia = self.referencia(self.proveedor(), linea.nombre)
+            linea.save(update_fields=['referencia'])
+        for variante in linea.variantes.select_related('categoria'):
+            categoria, _ = Categoria.objects.get_or_create(nombre=variante.categoria.nombre if variante.categoria else 'Categoría ficticia')
+            subcategoria, _ = Subcategoria.objects.get_or_create(categoria=categoria, nombre=variante.nombre)
+            linea.referencia.categorias.add(categoria)
+            linea.referencia.subcategorias.add(subcategoria)
+            variante.categoria_referencia, variante.subcategoria = categoria, subcategoria
+            variante.publicado = linea.activo
+            variante.save(update_fields=['categoria_referencia', 'subcategoria', 'publicado'])
+        cache.clear()
+
     def saldo_caja(self):
         ultimo = Caja.objects.order_by('-fecha_hora', '-id').first()
         return ultimo.total_acumulado if ultimo else Decimal('0')

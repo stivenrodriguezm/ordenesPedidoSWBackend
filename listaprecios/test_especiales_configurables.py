@@ -38,6 +38,7 @@ class EspecialesConfigurablesTests(LottusTestCase):
             self.assertEqual(costo_lista(v, self.tela, [cargo.pk]) - costo_lista(v, self.tela), Decimal('100000'))
 
     def test_cada_material_usa_el_consumo_independiente_y_el_multiplo_del_especial(self):
+        self.vincular_subcategorias_catalogo(self.linea)
         self.crear({**self.config, 'metraje_tela': '2.5', 'decimetraje_cuero': '35'})
         cargo = self.a.cargos.get()
         for grupo, diferencia, costo in [(self.tela, '562500', '225000'), (self.cuero, '1125000', '450000')]:
@@ -93,6 +94,7 @@ class EspecialesConfigurablesTests(LottusTestCase):
         self.assertFalse(EspecialCatalogo.objects.filter(nombre='Inválido').exists())
 
     def test_material_no_habilitado_no_se_puede_cotizar_ni_expone_costos_al_vendedor(self):
+        self.vincular_subcategorias_catalogo(self.linea)
         self.crear({**self.config, 'metraje_tela': '2'})
         cargo = self.a.cargos.get()
         with self.assertRaises(ValidationError):

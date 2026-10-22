@@ -13,6 +13,8 @@ class ConsultaShowroomTests(LottusTestCase):
         self.categoria = CategoriaLista.objects.create(nombre='Salas consulta', slug='salas-consulta')
         self.linea = LineaProducto.objects.create(nombre='Sofá consulta', slug='sofa-consulta')
         self.variante = VarianteProducto.objects.create(linea=self.linea, categoria=self.categoria, nombre='235 cm', costo_base=1000000, metraje_tela=10)
+        self.vincular_subcategorias_catalogo(self.linea)
+        self.variante.refresh_from_db()
         self.grupo = GrupoTela.objects.create(nombre='Grupo consulta', precio_por_metro=30000)
         self.url = f'/api/listaprecios/variantes/{self.variante.pk}/precio/'
 
@@ -36,13 +38,13 @@ class ConsultaShowroomTests(LottusTestCase):
         self.assertEqual(res.data['opcionales_incluidos'][0]['id'], extra.pk)
         self.assertEqual(res.data['opcionales_incluidos'][0]['valor'], Decimal('200000'))
 
-    def test_precio_unico_no_admite_tela_y_linea_inactiva_no_se_cotiza(self):
+    def test_precio_unico_no_admite_tela_y_subcategoria_sin_publicar_no_se_cotiza(self):
         self.variante.metraje_tela = None
         self.variante.save()
         self.assertEqual(self.c.get(self.url).status_code, 200)
         self.assertEqual(self.c.get(self.url, {'grupo': self.grupo.pk}).status_code, 400)
-        self.linea.activo = False
-        self.linea.save()
+        self.variante.publicado = False
+        self.variante.save()
         self.assertEqual(self.c.get(self.url).status_code, 404)
 
     def test_consulta_exige_permiso(self):

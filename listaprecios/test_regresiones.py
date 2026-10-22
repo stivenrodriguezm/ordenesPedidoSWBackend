@@ -44,6 +44,7 @@ class PreciosPermisosTests(LottusTestCase):
         self.assertEqual(list(Multiplicador.objects.filter(es_general=True).values_list('pk', flat=True)), [self.mult.pk])
 
     def test_sin_general_no_cae_silenciosamente_a_uno(self):
+        self.vincular_subcategorias_catalogo(self.variante.linea)
         from listaprecios.services import obtener_multiplicador_general, ConfiguracionPreciosIncompleta
         Multiplicador.objects.filter(es_general=True).update(es_general=False)
         with self.assertRaises(ConfiguracionPreciosIncompleta):

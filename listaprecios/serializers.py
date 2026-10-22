@@ -1,5 +1,5 @@
 from decimal import Decimal
-from django.db import transaction
+from django.db import models, transaction
 
 from rest_framework import serializers
 
@@ -12,8 +12,30 @@ from .models import (
     Cotizacion, LineaCotizacion, EspecialCatalogo,
 )
 from .especiales import validar_configuracion, configuracion_base, configuracion_cargo
-from .services import calcular_precio, costo_lista, precios_por_variante, opcionales_de_variante, multiplicador_efectivo, obtener_multiplicador_general, resumen_componentes
+from .services import calcular_precio, costo_lista, precios_por_variante, opcionales_de_variante, multiplicador_efectivo, obtener_multiplicador_general, resumen_componentes, componentes_de
 from .referencias import categoria_variante, clasificacion, crear_configuracion, datos_referencia
+from .disposicion import disposicion, mapa_disposiciones, variantes_visibles, retirada
+
+
+def mapa_presentacion(contexto):
+    if 'disposiciones' not in contexto:
+        contexto['disposiciones'] = mapa_disposiciones()
+    return contexto['disposiciones']
+
+
+class DisposicionSubcategoriasSerializer(serializers.Serializer):
+    revision = serializers.IntegerField(min_value=0)
+    orden = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False)
+    retiradas = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False)
+
+    def validate(self, attrs):
+        if 'orden' not in attrs and 'retiradas' not in attrs:
+            raise serializers.ValidationError('Indica el orden o las subcategorías que se retiran.')
+        return attrs
+
+
+class RenombrarSubcategoriaSerializer(serializers.Serializer):
+    nombre = serializers.CharField(max_length=100, trim_whitespace=True, allow_blank=False)
 
 
 class IdentidadLineaMixin:
@@ -22,6 +44,12 @@ class IdentidadLineaMixin:
         data['es_decorativo'] = obj.es_decorativo or obj.slug == 'decorativos'
         if obj.referencia_id:
             data.update(datos_referencia(obj.referencia))
+            config = disposicion(obj.referencia.nombre, mapa_presentacion(self.context))
+            data['disposicion'] = config
+            if 'variantes' in data:
+                posiciones = {pk: i for i, pk in enumerate(config['orden'])}
+                data['variantes'] = sorted((v for v in data['variantes'] if v['subcategoria'] not in config['retiradas']),
+                                          key=lambda v: (posiciones.get(v['subcategoria'], len(posiciones)), v['orden'], v['id']))
         return data
 
 
@@ -93,30 +121,53 @@ class CargoVarianteSerializer(serializers.ModelSerializer):
         if tipo == CargoVariante.TIPO_ESPECIAL_CONFIGURABLE:
             raise serializers.ValidationError('Este cargo se administra desde las opciones especiales de la colección.')
         if self.instance is not None:
-            if self.instance.tipo == CargoVariante.TIPO_DECORATIVOS:
-                raise serializers.ValidationError('«Cojines incluidos» no se modifica: quítalo y agrégalo de nuevo si hace falta.')
-            if attrs.get('tipo', '') != self.instance.tipo:
+            # «Cojines incluidos» se edita como cualquier cargo (nombre, valor y estado); su tipo no cambia.
+            if 'tipo' in attrs and attrs['tipo'] != self.instance.tipo:
                 raise serializers.ValidationError({'tipo': 'El tipo de un cargo no cambia.'})
+            if 'descripcion' in attrs and not (attrs['descripcion'] or '').strip():
+                raise serializers.ValidationError({'descripcion': 'Escribe el nombre del cargo.'})
+        elif tipo == CargoVariante.TIPO_TRANSPORTE:
+            if attrs['variante'].cargos.filter(tipo=CargoVariante.TIPO_TRANSPORTE).exists():
+                raise serializers.ValidationError('Este producto ya tiene su transporte.')
+            # Botón «Transporte»: llega solo con el tipo; costo de un envío $120.000, obligatorio.
+            attrs.setdefault('descripcion', 'Transporte')
+            if attrs.get('valor') is None:
+                attrs['valor'] = Decimal(120000)
         elif tipo == CargoVariante.TIPO_DECORATIVOS:
+            from .decorativos import valor_sugerido
             variante = attrs['variante']
             if variante.cargos.filter(tipo=CargoVariante.TIPO_DECORATIVOS).exists():
                 raise serializers.ValidationError('Este producto ya incluye cojines.')
-            # Fijo, sin valor y no opcional: lo que viaja con el producto es el derecho a 2 decorativos.
-            attrs.update(descripcion=DESCRIPCION, valor=Decimal(0), opcional=False)
+            # 2026-10-19: tiene valor (el costo de los 2 decorativos que cubre, igual para todos
+            # los productos) y estado como los demás cargos; por defecto es obligatorio.
+            attrs.setdefault('descripcion', DESCRIPCION)
+            if attrs.get('valor') is None:
+                attrs['valor'] = valor_sugerido()
         else:
             faltan = {c: 'Este campo es requerido.' for c in ('descripcion', 'valor') if attrs.get(c) is None}
             if faltan:
                 raise serializers.ValidationError(faltan)
+        # Las unidades por transporte solo aplican a un transporte (vacío = todas las de la línea).
+        if tipo != CargoVariante.TIPO_TRANSPORTE:
+            attrs.pop('unidades_por_transporte', None)
+        elif attrs.get('unidades_por_transporte') is not None and not 1 <= attrs['unidades_por_transporte'] <= 999:
+            raise serializers.ValidationError({'unidades_por_transporte': 'Indica de 1 a 999 unidades por transporte, o déjalo vacío.'})
         # Solo un opcional puede venir seleccionado de entrada; un obligatorio ya está en el precio.
         if not attrs.get('opcional', self.instance.opcional if self.instance else False):
             attrs['preseleccionado'] = False
         return attrs
 
+    def create(self, validated_data):
+        # Un cargo nuevo queda al final de los del producto.
+        ultimo = CargoVariante.objects.filter(variante=validated_data['variante']).aggregate(m=models.Max('orden'))['m']
+        validated_data['orden'] = 0 if ultimo is None else ultimo + 1
+        return super().create(validated_data)
+
     class Meta:
         model = CargoVariante
-        fields = ['id', 'variante', 'descripcion', 'valor', 'opcional', 'preseleccionado', 'especial', 'tipo']
-        read_only_fields = ['especial']
-        # El cargo «Cojines incluidos» llega solo con el tipo: descripción y valor los pone el servidor.
+        fields = ['id', 'variante', 'descripcion', 'valor', 'opcional', 'preseleccionado', 'especial', 'tipo', 'unidades_por_transporte', 'orden']
+        read_only_fields = ['especial', 'orden']
+        # El cargo «Cojines incluidos» puede llegar solo con el tipo: el servidor pone nombre y valor.
         extra_kwargs = {'descripcion': {'required': False}, 'valor': {'required': False}}
 
 
@@ -156,10 +207,14 @@ class AgrupacionNuevaSerializer(serializers.Serializer):
         linea = self.context.get('linea')
         if linea and linea.referencia_id:
             sub = attrs.get('subcategoria')
-            if not sub:
-                raise serializers.ValidationError({'subcategoria': 'Selecciona la subcategoría que será el conjunto.'})
-            attrs['categoria'] = clasificacion(linea, attrs.get('categoria'), sub)
-            attrs['nombre'] = sub.nombre
+            if sub:
+                # Compatibilidad con conjuntos configurados antes de permitir un nombre nuevo.
+                attrs['categoria'] = clasificacion(linea, attrs.get('categoria'), sub)
+                attrs['nombre'] = sub.nombre
+            elif not attrs.get('nombre') or not attrs.get('categoria'):
+                raise serializers.ValidationError('Indica el nombre de la nueva subcategoría y su categoría.')
+            elif len(attrs['nombre']) > 100:
+                raise serializers.ValidationError({'nombre': 'Usa un nombre de hasta 100 caracteres.'})
         elif not attrs.get('nombre') or not attrs.get('categoria'):
             raise serializers.ValidationError('Indica el nombre y la categoría del conjunto.')
         return attrs
@@ -181,7 +236,7 @@ class VarianteProductoSerializer(ClasificacionVarianteMixin, serializers.ModelSe
         model = VarianteProducto
         fields = [
             'id', 'linea', 'categoria', 'categoria_nombre', 'nombre', 'orden',
-            'costo_base', 'costo_confirmado', 'costo_total_producto', 'metraje_tela', 'decimetraje_cuero', 'descuento_maximo', 'notas', 'cargos', 'precios',
+            'costo_base', 'costo_confirmado', 'publicado', 'costo_total_producto', 'metraje_tela', 'decimetraje_cuero', 'descuento_maximo', 'notas', 'cargos', 'precios',
             'multiplicador', 'multiplicador_nombre', 'multiplicador_efectivo', 'componentes', 'precios_venta', 'subcategoria',
         ]
         read_only_fields = ['costo_confirmado']
@@ -221,7 +276,23 @@ class VarianteProductoSerializer(ClasificacionVarianteMixin, serializers.ModelSe
             attrs['nombre'] = sub.nombre
             if 'costo_base' in attrs:
                 attrs['costo_confirmado'] = True
+        if attrs.get('publicado'):
+            confirmado = attrs.get('costo_confirmado', self.instance.costo_confirmado if self.instance else False)
+            if not linea.referencia_id or not self.instance:
+                raise serializers.ValidationError({'publicado': 'Configura primero la subcategoría de Referencias.'})
+            if retirada(self.instance):
+                raise serializers.ValidationError({'publicado': 'Recupera esta subcategoría de la lista antes de publicarla.'})
+            if not confirmado:
+                raise serializers.ValidationError({'publicado': 'Guarda el costo de esta subcategoría antes de publicarla. Confirma también los costos de $0.'})
         return attrs
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        # Mismo bloqueo que sincronización y agrupaciones; vuelve a comprobar el costo actual.
+        LineaProducto.objects.select_for_update().get(pk=instance.linea_id)
+        self.instance = VarianteProducto.objects.select_for_update().select_related('linea__referencia', 'subcategoria').get(pk=instance.pk)
+        self.validate(validated_data)
+        return super().update(self.instance, validated_data)
 
     @transaction.atomic
     def create(self, validated_data):
@@ -251,6 +322,8 @@ class VarianteProductoSerializer(ClasificacionVarianteMixin, serializers.ModelSe
 
     def get_componentes(self, obj):
         return [{'id': c.id, 'variante': c.variante_id, 'variante_nombre': c.variante.nombre_catalogo, 'cantidad': c.cantidad,
+                 'proveedor': c.variante.linea.referencia.proveedor_id if c.variante.linea.referencia_id else None,
+                 'proveedor_nombre': c.variante.linea.referencia.proveedor.nombre_empresa if c.variante.linea.referencia_id else '',
                  'costo_unitario': str(c.costo_unitario) if c.costo_unitario is not None else None,
                  'multiplicador': str(c.multiplicador) if c.multiplicador is not None else None, 'adicionales': c.adicionales}
                 for c in obj.componentes.all()]
@@ -333,10 +406,15 @@ class EspecialCatalogoSerializer(serializers.ModelSerializer):
 
 class VarianteResumenSerializer(ClasificacionVarianteMixin, serializers.ModelSerializer):
     categoria_nombre = serializers.CharField(source='categoria.nombre', read_only=True)
+    # Un conjunto no tiene proveedor: la vista unificada lo muestra sin selector de proveedor.
+    es_conjunto = serializers.SerializerMethodField()
 
     class Meta:
         model = VarianteProducto
-        fields = ['id', 'nombre', 'orden', 'categoria', 'categoria_nombre', 'costo_confirmado']
+        fields = ['id', 'nombre', 'orden', 'categoria', 'categoria_nombre', 'costo_confirmado', 'publicado', 'es_conjunto']
+
+    def get_es_conjunto(self, obj):
+        return bool(obj.componentes.all())
 
 
 class LineaProductoResumenSerializer(IdentidadLineaMixin, serializers.ModelSerializer):
@@ -360,7 +438,7 @@ class ReferenciaPrecioSerializer(serializers.ModelSerializer):
         fields = ['id', 'linea']
 
     def to_representation(self, obj):
-        return {**super().to_representation(obj), **datos_referencia(obj)}
+        return {**super().to_representation(obj), **datos_referencia(obj), 'disposicion': disposicion(obj.nombre, mapa_presentacion(self.context))}
 
     def get_linea(self, obj):
         linea = getattr(obj, 'lista_precios', None)
@@ -398,7 +476,10 @@ class LineaProductoSerializer(IdentidadLineaMixin, serializers.ModelSerializer):
             productos = list(self.instance.variantes.all())
             if {v.subcategoria_id for v in productos} != set(ref.subcategorias.values_list('pk', flat=True)):
                 raise serializers.ValidationError({'activo': 'Actualiza las subcategorías antes de publicar.'})
-            if any(not v.costo_confirmado for v in productos):
+            visibles = variantes_visibles(self.instance, mapa_presentacion(self.context))
+            if not visibles:
+                raise serializers.ValidationError({'activo': 'No hay subcategorías visibles para publicar.'})
+            if any(not v.costo_confirmado for v in visibles):
                 raise serializers.ValidationError({'activo': 'Confirma el costo de todas las subcategorías antes de publicar.'})
         return attrs
 
@@ -412,7 +493,12 @@ class LineaProductoSerializer(IdentidadLineaMixin, serializers.ModelSerializer):
         actual = LineaProducto.objects.select_for_update().get(pk=instance.pk)
         self.instance = actual
         self.validate(validated_data)
-        return super().update(actual, validated_data)
+        resultado = super().update(actual, validated_data)
+        # Compatibilidad con la publicación anterior de una colección completa.
+        if 'activo' in validated_data:
+            ids = [v.pk for v in variantes_visibles(actual, mapa_presentacion(self.context))]
+            actual.variantes.filter(pk__in=ids).update(publicado=validated_data['activo'])
+        return resultado
 
     def get_especiales(self, obj):
         return EspecialLineaSerializer(obj.especiales.all(), many=True, context=self.context).data
@@ -428,21 +514,54 @@ class VarianteCatalogoSerializer(ClasificacionVarianteMixin, serializers.ModelSe
     opcionales = serializers.SerializerMethodField()
     categoria_nombre = serializers.CharField(source='categoria.nombre', read_only=True)
     componentes = serializers.SerializerMethodField()
+    proveedores = serializers.SerializerMethodField()
 
     class Meta:
         model = VarianteProducto
-        fields = ['id', 'categoria', 'categoria_nombre', 'nombre', 'orden', 'notas', 'precios', 'opcionales', 'componentes', 'decorativos_incluidos']
+        fields = ['id', 'categoria', 'categoria_nombre', 'nombre', 'orden', 'notas', 'precios', 'opcionales', 'componentes', 'proveedores', 'decorativos_incluidos', 'transporte', 'incluidos']
 
     decorativos_incluidos = serializers.SerializerMethodField()
+    transporte = serializers.SerializerMethodField()
+    incluidos = serializers.SerializerMethodField()
+
+    def get_incluidos(self, obj):
+        """Cargos obligatorios (ya van en el precio): la consulta los muestra seleccionados y fijos,
+        solo con su nombre. «Cojines incluidos» tiene su propio aviso. Un conjunto suma los de sus piezas."""
+        propios = [c for c in obj.cargos.all() if not c.opcional and c.tipo != CargoVariante.TIPO_DECORATIVOS]
+        piezas = [c for comp in componentes_de(obj) for c in comp.variante.cargos.all() if not c.opcional and c.tipo != CargoVariante.TIPO_DECORATIVOS]
+        nombres = []
+        for c in propios + piezas:
+            if c.descripcion not in nombres:
+                nombres.append(c.descripcion)
+        return nombres
+
+    def get_transporte(self, obj):
+        """Transporte por envío de un producto suelto: lo que suma por unidad y cuántas unidades
+        lleva; la consulta lo usa para no cobrarlo de más (un conjunto ya trae uno solo)."""
+        from .transportes import cargo_transporte, valor_venta
+        cargo = None if componentes_de(obj) else cargo_transporte(obj)
+        if cargo is None:
+            return None
+        return {'id': cargo.pk, 'valor': valor_venta(obj, [cargo.pk], general=self.context.get('multiplicador_general')),
+                'cupo': cargo.unidades_por_transporte, 'opcional': cargo.opcional}
 
     def get_componentes(self, obj):
         """Si es un juego: «1 Mesa de 6 + 6 Silla de comedor» (vacío si no)."""
         return resumen_componentes(obj)
 
+    def get_proveedores(self, obj):
+        piezas = componentes_de(obj)
+        referencias = [c.variante.linea.referencia for c in piezas] if piezas else [obj.linea.referencia]
+        proveedores = {r.proveedor_id: {'id': r.proveedor_id, 'nombre': r.proveedor.nombre_empresa}
+                       for r in referencias if r}
+        return list(proveedores.values())
+
     def get_decorativos_incluidos(self, obj):
-        """Decorativos sin cobro por unidad («Cojines incluidos»); 0 si no trae."""
-        from .decorativos import UNIDADES_POR_PRODUCTO, da_decorativos
-        return UNIDADES_POR_PRODUCTO if da_decorativos(obj) else 0
+        """Decorativos sin cobro por unidad cuando «Cojines incluidos» es obligatorio; si es
+        opcional viaja en `opcionales` (marcado `decorativos`) y cuenta solo si se elige."""
+        from .decorativos import UNIDADES_POR_PRODUCTO, cargo_decorativos
+        cargo = cargo_decorativos(obj)
+        return UNIDADES_POR_PRODUCTO if cargo and not cargo.opcional else 0
 
     def get_precios(self, obj):
         filas = precios_por_variante(obj, grupos=self.context.get('grupos'), multiplicador_general=self.context.get('multiplicador_general'))
@@ -472,7 +591,7 @@ class LineaCatalogoSerializer(IdentidadLineaMixin, serializers.ModelSerializer):
         grupos = self.context.get('grupos')
         multiplicador_general = self.context.get('multiplicador_general')
         precios = []
-        for variante in obj.variantes.all():
+        for variante in variantes_visibles(obj, mapa_presentacion(self.context)):
             for fila in precios_por_variante(variante, grupos=grupos, multiplicador_general=multiplicador_general):
                 if fila['precio'] is not None:
                     precios.append(fila['precio'])
@@ -497,9 +616,9 @@ class LineaCotizacionSerializer(SinMargenSinPermisoMixin, serializers.ModelSeria
             'id', 'variante', 'linea_nombre', 'variante_nombre', 'categoria_nombre',
             'grupo_tela', 'grupo_nombre', 'cantidad', 'precio_unitario', 'subtotal',
             'costo_estimado', 'margen',
-            'opcionales', 'notas', 'foto', 'incluido',
+            'opcionales', 'notas', 'foto', 'incluido', 'transporte_compartido',
         ]
-        read_only_fields = ['id', 'subtotal', 'margen', 'incluido']
+        read_only_fields = ['id', 'subtotal', 'margen', 'incluido', 'transporte_compartido']
 
 
 class CotizacionSerializer(SinMargenSinPermisoMixin, serializers.ModelSerializer):

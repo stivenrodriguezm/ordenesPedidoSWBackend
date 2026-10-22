@@ -146,3 +146,32 @@ class ServidorConHilosTests(SimpleTestCase):
             servidor.server_close()
         self.assertTrue(all(n.startswith('lottus-http') for n in nombres))
         self.assertLessEqual(len(nombres), runserver.ServidorConHilos.hilos)
+
+
+class ArranqueSinBaseDeDatosTests(SimpleTestCase):
+    """Si MySQL no responde al arrancar, el servidor reintenta y arranca igual (no queda sin servir)."""
+
+    def comando(self):
+        cmd = runserver.Command(stdout=io.StringIO(), stderr=io.StringIO())
+        cmd.esperas_arranque = (0, 0)
+        return cmd
+
+    def test_reintenta_y_continua_cuando_vuelve(self):
+        cmd = self.comando()
+        fallas = [OperationalError(2003, 'timed out'), None]
+        def revisar(_self):
+            error = fallas.pop(0)
+            if error:
+                raise error
+        with mock.patch.object(runserver.Runserver, 'check_migrations', revisar), mock.patch.object(runserver.time, 'sleep') as dormir:
+            cmd.check_migrations()
+        self.assertEqual(fallas, [])
+        dormir.assert_called_once_with(0)
+
+    def test_si_sigue_caida_arranca_igual_sin_excepcion(self):
+        cmd = self.comando()
+        with mock.patch.object(runserver.Runserver, 'check_migrations', side_effect=OperationalError(2003, 'timed out')) as revisar, \
+                mock.patch.object(runserver.time, 'sleep'):
+            self.assertIsNone(cmd.check_migrations())
+        self.assertEqual(revisar.call_count, 3)
+        self.assertIn('arranca igual', cmd.stderr.getvalue())

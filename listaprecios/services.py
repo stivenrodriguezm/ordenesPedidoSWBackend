@@ -2,6 +2,7 @@
 views.py/serializers.py según INSTRUCCIONES_PROYECTO.md (Fat Models/Thin
 Views). El motor de cálculo reemplaza las 2.181 fórmulas de lista2026.xlsx
 por una sola función, testeable (ver tests.py)."""
+from collections import Counter
 from copy import copy
 from decimal import Decimal, InvalidOperation
 
@@ -12,11 +13,11 @@ from rest_framework.exceptions import APIException, ValidationError
 from .especiales import admite_grupo, configuracion_cargo, costo_configuracion, precio_configuracion
 from .adicionales_componentes import validar_adicionales, tiene_material, admite_material, costo_especial, costo_adicionales, venta_adicionales
 from .models import CargoVariante, ComponenteJuego, GrupoTela, LineaProducto, Multiplicador, VarianteProducto, PrecioVariante
-from .referencias import categoria_variante, nombre_linea
+from .referencias import categoria_variante, nombre_linea, productos_publicados
 
 # Prefetch para calcular precios de juegos (componentes con sus cargos y precios).
 PREFETCH_JUEGOS = ('componentes__variante__cargos__especial', 'componentes__variante__precios',
-                   'componentes__variante__multiplicador', 'componentes__variante__subcategoria__categoria', 'componentes__variante__linea', 'componentes__variante__componentes')
+                   'componentes__variante__multiplicador', 'componentes__variante__subcategoria__categoria', 'componentes__variante__linea__referencia__proveedor', 'componentes__variante__componentes')
 
 
 def _invalidar_catalogo():
@@ -56,6 +57,21 @@ def opcionales_piezas(variante):
 def ids_opcionales(variante):
     """Ids de los opcionales que se pueden elegir en una variante (y en las piezas, si es conjunto)."""
     return {c.pk for c in variante.cargos.all() if c.opcional} | {cargo.pk for _, cargo in opcionales_piezas(variante)}
+
+
+def conteo_opcionales(opcionales):
+    """{id: cantidad} de una selección de opcionales: ids (repetidos = varias unidades) o
+    {'id', 'cantidad'?} como los guarda la cotización. Ignora lo que no es un id válido."""
+    conteo = Counter()
+    for item in opcionales or ():
+        try:
+            if isinstance(item, dict):
+                conteo[int(item['id'])] += max(1, int(item.get('cantidad') or 1))
+            elif not isinstance(item, bool):
+                conteo[int(item)] += 1
+        except (KeyError, TypeError, ValueError):
+            continue
+    return conteo
 
 
 def ids_preseleccionados(variante):
@@ -157,28 +173,15 @@ def costo_lista(variante, grupo=None, opcionales_ids=None, costo_base_override=N
     if not variante:
         return None
 
-    opcionales_ids_set = set()
-    if opcionales_ids is None:
-        opcionales_ids_set = ids_preseleccionados(variante)
-    elif opcionales_ids:
-        for item in opcionales_ids:
-            if isinstance(item, dict):
-                if 'id' in item:
-                    try:
-                        opcionales_ids_set.add(int(item['id']))
-                    except (ValueError, TypeError):
-                        pass
-            elif isinstance(item, (int, str)):
-                try:
-                    opcionales_ids_set.add(int(item))
-                except (ValueError, TypeError):
-                    pass
+    # Cada opcional puede ir varias veces (p. ej. 2 reclinos): `conteo` = {id: cantidad}.
+    conteo = Counter(ids_preseleccionados(variante)) if opcionales_ids is None else conteo_opcionales(opcionales_ids)
+    opcionales_ids_set = set(conteo)
 
     cargos_opcionales = sum(
-        (c.valor for c in variante.cargos.all() if c.opcional and c.id in opcionales_ids_set and c.tipo not in (CargoVariante.TIPO_DIFERENCIA_PRECIO, CargoVariante.TIPO_ESPECIAL_CONFIGURABLE)), Decimal('0')
+        (c.valor * conteo[c.id] for c in variante.cargos.all() if c.opcional and c.id in opcionales_ids_set and c.tipo not in (CargoVariante.TIPO_DIFERENCIA_PRECIO, CargoVariante.TIPO_ESPECIAL_CONFIGURABLE)), Decimal('0')
     )
 
-    cargos_opcionales += sum((costo_especial(configuracion_cargo(c), grupo, sin_material)
+    cargos_opcionales += sum((costo_especial(configuracion_cargo(c), grupo, sin_material) * conteo[c.id]
                               for c in variante.cargos.all() if c.opcional and c.id in opcionales_ids_set
                               and c.tipo == CargoVariante.TIPO_ESPECIAL_CONFIGURABLE), Decimal('0'))
 
@@ -191,9 +194,12 @@ def costo_lista(variante, grupo=None, opcionales_ids=None, costo_base_override=N
     comps = componentes_de(variante)
     if comps:  # juego: costo de sus piezas (con sus opcionales elegidos) más sus propios cargos
         # El costo base guardado en un conjunto no cuenta: su costo sale solo de las piezas y cargos.
-        partes = sum(((costo_lista(c.variante, grupo if usa_tela(c.variante) else None, opcionales_ids_set, costo_base_override=c.costo_unitario, sin_material=sin_material)
+        partes = sum(((costo_lista(c.variante, grupo if usa_tela(c.variante) else None, list(conteo.elements()), costo_base_override=c.costo_unitario, sin_material=sin_material)
                        + costo_adicionales(c, grupo, sin_material)) * c.cantidad for c in comps), Decimal('0'))
-        return (partes + cargos_fijos + cargos_opcionales).quantize(Decimal('0.01'))
+        # Un solo transporte por conjunto: el mayor de sus piezas (o el propio).
+        from .transportes import descuento_conjunto, valor_costo
+        transportes = [(valor_costo(c.variante, opcionales_ids_set), c.cantidad) for c in comps] + [(valor_costo(variante, opcionales_ids_set), 1)]
+        return (partes + cargos_fijos + cargos_opcionales - descuento_conjunto(transportes)).quantize(Decimal('0.01'))
 
     base = variante.costo_base if costo_base_override is None else costo_base_override
     return (base + metros_costo + cargos_fijos + cargos_opcionales).quantize(Decimal('0.01'))
@@ -230,7 +236,8 @@ def validar_descuento_documento(lineas_info, descuento_total):
 
 def _precio_componente(componente, grupo, general, opcionales_ids=None):
     pieza = componente.variante
-    propios = {c.pk for c in pieza.cargos.all() if c.opcional} & set(opcionales_ids or ())
+    de_pieza = {c.pk for c in pieza.cargos.all() if c.opcional}
+    propios = [i for i in Counter(opcionales_ids or ()).elements() if i in de_pieza]
     precio = calcular_precio(pieza, grupo if usa_tela(pieza) else None, propios, multiplicador_general=general,
                              multiplicador_override=componente.multiplicador, costo_base_override=componente.costo_unitario,
                              ignorar_precio_manual=componente.costo_unitario is not None or componente.multiplicador is not None)
@@ -287,15 +294,16 @@ def calcular_precio(variante, grupo=None, opcionales_ids=None, multiplicador_gen
         multiplicador = multiplicador_efectivo(variante, multiplicador_general)
     # Sin selección (None) el precio de lista incluye los opcionales habilitados; una lista,
     # aunque esté vacía, es exactamente lo que eligió el vendedor.
-    opcionales_ids = ids_preseleccionados(variante) if opcionales_ids is None else set(opcionales_ids)
+    conteo = Counter(ids_preseleccionados(variante)) if opcionales_ids is None else conteo_opcionales(opcionales_ids)
+    opcionales_ids = set(conteo)
     cargos_opcionales = sum(
-        (c.valor for c in variante.cargos.all() if c.opcional and c.id in opcionales_ids and c.tipo not in (CargoVariante.TIPO_DIFERENCIA_PRECIO, CargoVariante.TIPO_ESPECIAL_CONFIGURABLE)), Decimal('0')
+        (c.valor * conteo[c.id] for c in variante.cargos.all() if c.opcional and c.id in opcionales_ids and c.tipo not in (CargoVariante.TIPO_DIFERENCIA_PRECIO, CargoVariante.TIPO_ESPECIAL_CONFIGURABLE)), Decimal('0')
     )
 
-    diferencia = sum((c.valor for c in variante.cargos.all()
+    diferencia = sum((c.valor * conteo[c.id] for c in variante.cargos.all()
                       if c.opcional and c.id in opcionales_ids and c.tipo == CargoVariante.TIPO_DIFERENCIA_PRECIO), Decimal('0'))
 
-    diferencia += sum((precio_configuracion(configuracion_cargo(c), grupo, multiplicador_general)
+    diferencia += sum((precio_configuracion(configuracion_cargo(c), grupo, multiplicador_general) * conteo[c.id]
                        for c in variante.cargos.all() if c.opcional and c.id in opcionales_ids
                        and c.tipo == CargoVariante.TIPO_ESPECIAL_CONFIGURABLE), Decimal('0'))
 
@@ -311,7 +319,7 @@ def calcular_precio(variante, grupo=None, opcionales_ids=None, multiplicador_gen
     # Opcionales de las piezas elegidos en el conjunto (cada uno por la cantidad de su pieza).
     de_piezas = [c for c in comps if opcionales_ids & {x.pk for x in c.variante.cargos.all() if x.opcional}]
     if not ignorar_precio_manual and override is not None and override.precio_manual is not None:
-        extra = sum(((_precio_componente(c, grupo, multiplicador_general, opcionales_ids) - _precio_componente(c, grupo, multiplicador_general))
+        extra = sum(((_precio_componente(c, grupo, multiplicador_general, conteo) - _precio_componente(c, grupo, multiplicador_general))
                      * c.cantidad for c in de_piezas), Decimal('0'))
         return finalizar(override.precio_manual + cargos_opcionales * multiplicador + extra)
 
@@ -319,9 +327,14 @@ def calcular_precio(variante, grupo=None, opcionales_ids=None, multiplicador_gen
         # Juego: suma de los precios de sus componentes (cada uno con su multiplicador y sus
         # opcionales elegidos) más sus propios cargos y opcionales con el multiplicador del
         # juego. El costo base guardado en un conjunto no cuenta.
-        partes = sum((_precio_componente(c, grupo, multiplicador_general, opcionales_ids) * c.cantidad for c in comps), Decimal('0'))
+        partes = sum((_precio_componente(c, grupo, multiplicador_general, conteo) * c.cantidad for c in comps), Decimal('0'))
         propios = sum((c.valor for c in variante.cargos.all() if not c.opcional), Decimal('0')) + cargos_opcionales
-        return finalizar(partes + propios * multiplicador)
+        # Un solo transporte por conjunto (2026-10-21): el mayor entre sus piezas y el propio.
+        from .transportes import descuento_conjunto, valor_venta
+        transportes = [(valor_venta(c.variante, opcionales_ids, c.multiplicador if c.multiplicador is not None
+                                    else multiplicador_efectivo(c.variante, multiplicador_general)), c.cantidad) for c in comps]
+        transportes.append((valor_venta(variante, opcionales_ids, multiplicador), 1))
+        return finalizar(partes + propios * multiplicador - descuento_conjunto(transportes))
 
     metros_costo = Decimal('0')
     if grupo is not None:
@@ -342,7 +355,10 @@ def opcionales_de_variante(variante, multiplicador_general=None, grupo=None, gru
     for c in variante.cargos.all():
         if not c.opcional:
             continue
-        item = {'id': c.id, 'descripcion': c.descripcion, 'especial': c.especial_id is not None, 'preseleccionado': c.preseleccionado}
+        item = {'id': c.id, 'descripcion': c.descripcion, 'especial': c.especial_id is not None, 'preseleccionado': c.preseleccionado,
+                'decorativos': c.tipo == CargoVariante.TIPO_DECORATIVOS,
+                # Se puede llevar más de una unidad (p. ej. 2 reclinos); cojines y transporte, una.
+                'multiple': c.tipo not in (CargoVariante.TIPO_DECORATIVOS, CargoVariante.TIPO_TRANSPORTE)}
         if c.tipo == CargoVariante.TIPO_ESPECIAL_CONFIGURABLE:
             config = configuracion_cargo(c)
             material = bool(config.get('metraje_tela') or config.get('decimetraje_cuero'))
@@ -410,7 +426,7 @@ def impacto_categoria(categoria):
     """Vista previa de impacto antes de desactivar/borrar una categoría —
     ya no afecta ningún precio (el precio por grupo es global), solo
     cuántas líneas/variantes quedarían sin esa etiqueta de tipo de mueble."""
-    variantes = categoria.variantes.filter(linea__activo=True)
+    variantes = productos_publicados(categoria.variantes.all())
     lineas_afectadas = variantes.values_list('linea_id', flat=True).distinct().count()
     return {
         'lineas_afectadas': lineas_afectadas,
@@ -434,9 +450,9 @@ def impacto_multiplicador(multiplicador):
     multiplicador: las asignadas directamente, más — si es el general — las
     que no tienen uno propio (multiplicador nulo, la inmensa mayoría del
     catálogo)."""
-    directas = VarianteProducto.objects.filter(multiplicador=multiplicador, linea__activo=True)
+    directas = productos_publicados().filter(multiplicador=multiplicador)
     if multiplicador.es_general:
-        heredadas = VarianteProducto.objects.filter(multiplicador__isnull=True, linea__activo=True)
+        heredadas = productos_publicados().filter(multiplicador__isnull=True)
         total = directas.count() + heredadas.count()
     else:
         total = directas.count()
@@ -482,13 +498,13 @@ def simular_multiplicador(multiplicador, nuevo_valor, limite_ejemplos=20):
     Devuelve conteo de variantes afectadas y hasta 20 ejemplos antes/después."""
     nuevo_valor = Decimal(str(nuevo_valor))
     directas = list(
-        VarianteProducto.objects.filter(multiplicador=multiplicador, linea__activo=True)
+        productos_publicados().filter(multiplicador=multiplicador)
         .select_related('linea', 'categoria')
         .prefetch_related('cargos', 'precios')
     )
     if multiplicador.es_general:
         heredadas = list(
-            VarianteProducto.objects.filter(multiplicador__isnull=True, linea__activo=True)
+            productos_publicados().filter(multiplicador__isnull=True)
             .select_related('linea', 'categoria')
             .prefetch_related('cargos', 'precios')
         )
@@ -538,7 +554,7 @@ def preparar_componentes(juego, componentes):
     if any(isinstance(vid, bool) or not str(vid).isdigit() for vid in ids):
         raise ValidationError({'componentes': 'Selecciona un producto válido para cada pieza.'})
     variantes = {v.pk: v for v in VarianteProducto.objects.filter(pk__in=ids)
-                 .select_related('multiplicador').prefetch_related('componentes', 'cargos__especial', 'precios__grupo')}
+                 .select_related('multiplicador', 'linea__referencia').prefetch_related('componentes', 'cargos__especial', 'precios__grupo')}
     anteriores = {c.variante_id: c.adicionales for c in componentes_de(juego)}
     vistos, nuevos = set(), []
     for i, item in enumerate(componentes):
@@ -553,8 +569,8 @@ def preparar_componentes(juego, componentes):
         if cantidad < 1 or cantidad > 99:
             raise ValidationError({'componentes': 'La cantidad de cada componente va de 1 a 99.'})
         v = variantes.get(vid)
-        if not v or v.linea_id != juego.linea_id:
-            raise ValidationError({'componentes': 'Los componentes deben ser variantes de la misma línea.'})
+        if not v or not misma_coleccion(v, juego):
+            raise ValidationError({'componentes': 'Las piezas deben ser productos de la misma referencia (de cualquiera de sus proveedores).'})
         if v.pk == juego.pk or list(v.componentes.all()):
             raise ValidationError({'componentes': f'«{v.nombre_catalogo}» no puede ser componente (es el mismo juego u otro juego).'})
         if v.pk in vistos:
@@ -577,6 +593,30 @@ def preparar_componentes(juego, componentes):
         adicionales = validar_adicionales(item.get('adicionales', anteriores.get(v.pk, [])))
         nuevos.append(ComponenteJuego(juego=juego, variante=v, cantidad=cantidad, orden=i, adicionales=adicionales, **valores))
     return nuevos
+
+
+def misma_coleccion(pieza, juego):
+    """Un conjunto no tiene proveedor propio (2026-10-16): sus piezas son subcategorías de la
+    misma referencia comercial y cada una conserva el proveedor de su ficha (p. ej. tapa de un
+    proveedor, base de otro y sillas de un tercero). Sin referencia, solo su propia línea."""
+    if pieza.linea_id == juego.linea_id:
+        return True
+    from .disposicion import clave_referencia
+    ref_pieza, ref_juego = pieza.linea.referencia, juego.linea.referencia
+    return bool(ref_pieza and ref_juego and clave_referencia(ref_pieza.nombre) == clave_referencia(ref_juego.nombre))
+
+
+def _bloquear_coleccion(linea):
+    """Orden de bloqueo común también cuando las piezas vienen de varias listas."""
+    if not linea.referencia_id:
+        LineaProducto.objects.select_for_update().get(pk=linea.pk)
+        return []
+    from ordenes.models import Referencia
+    from .disposicion import clave_referencia
+    clave = clave_referencia(linea.referencia.nombre)
+    ids = [pk for pk, nombre in Referencia.objects.values_list('pk', 'nombre') if clave_referencia(nombre) == clave]
+    list(LineaProducto.objects.select_for_update().filter(referencia_id__in=ids).order_by('pk'))
+    return ids
 
 
 def _con_componentes(juego, nuevos):
@@ -602,7 +642,7 @@ def simular_componentes(juego, componentes, grupos=None, multiplicador_general=N
 @transaction.atomic
 def guardar_componentes(juego, componentes):
     # Todas las conversiones de una colección comparten bloqueo: evita ciclos en peticiones concurrentes.
-    LineaProducto.objects.select_for_update().get(pk=juego.linea_id)
+    _bloquear_coleccion(juego.linea)
     nuevos = preparar_componentes(juego, componentes)
     # Confirmar el cálculo antes de escribir: un error económico no debe dejar datos a medias.
     general = Multiplicador.objects.filter(es_general=True).values_list('valor', flat=True).first()
@@ -611,6 +651,8 @@ def guardar_componentes(juego, componentes):
         juego.costo_confirmado = bool(componentes)
         juego.save(update_fields=['costo_confirmado'])
         if not componentes:
+            juego.publicado = False
+            juego.save(update_fields=['publicado'])
             LineaProducto.objects.filter(pk=juego.linea_id).update(activo=False)
     juego.componentes.all().delete()
     ComponenteJuego.objects.bulk_create(nuevos)
@@ -626,15 +668,44 @@ def guardar_componentes(juego, componentes):
 def crear_agrupacion(linea, nombre, categoria, componentes, subcategoria=None):
     if not componentes:
         raise ValidationError({'componentes': 'Agrega al menos una pieza para crear una agrupación.'})
-    LineaProducto.objects.select_for_update().get(pk=linea.pk)
+    # La referencia que aloja la ficha es un detalle de almacenamiento, no el proveedor
+    # del conjunto. Bloquear las referencias homónimas evita creaciones duplicadas.
+    ids = _bloquear_coleccion(linea)
     if linea.referencia_id:
-        juego = linea.variantes.filter(subcategoria=subcategoria).first()
-        if not juego:
-            raise ValidationError({'subcategoria': 'Actualiza las subcategorías de la referencia antes de formar el conjunto.'})
-        guardar_componentes(juego, componentes)
-        return juego
+        from ordenes.models import Referencia
+        from suministros.models import Categoria, Subcategoria
+        from .disposicion import disposicion, guardar_disposicion
+        list(Referencia.objects.select_for_update().filter(pk__in=ids).order_by('pk'))
+    if linea.referencia_id:
+        if subcategoria:
+            juego = linea.variantes.filter(subcategoria=subcategoria).first()
+            if not juego:
+                raise ValidationError({'subcategoria': 'Actualiza las subcategorías de la referencia antes de formar el conjunto.'})
+            guardar_componentes(juego, componentes)
+            return juego
+        nombre = nombre.strip()
+        if not nombre or len(nombre) > 100 or categoria is None:
+            raise ValidationError({'nombre': 'Indica la categoría y un nombre de 1 a 100 caracteres.'})
+        Categoria.objects.select_for_update().get(pk=categoria.pk)
+        if Subcategoria.objects.filter(referencias__pk__in=ids, categoria=categoria, nombre__iexact=nombre).exists():
+            raise ValidationError({'nombre': 'Esta referencia ya tiene una subcategoría con ese nombre. Usa otro nombre; no se reemplazarán sus costos.'})
+        config = disposicion(linea.referencia.nombre)
+        anteriores = list(Subcategoria.objects.filter(referencias__pk__in=ids).distinct().order_by('categoria__nombre', 'nombre', 'pk').values_list('pk', flat=True))
+        orden_subs = [pk for pk in config['orden'] if pk in anteriores]
+        orden_subs += [pk for pk in anteriores if pk not in orden_subs]
+        subcategoria = Subcategoria.objects.filter(categoria=categoria, nombre__iexact=nombre).order_by('pk').first()
+        if subcategoria is None:
+            subcategoria = Subcategoria.objects.create(categoria=categoria, nombre=nombre)
+        linea.referencia.categorias.add(categoria)
+        linea.referencia.subcategorias.add(subcategoria)
+        guardar_disposicion(linea.referencia, config['revision'], orden=[pk for pk in orden_subs if pk not in config['retiradas']] + [subcategoria.pk])
+        clasificacion = {'categoria_referencia': categoria, 'subcategoria': subcategoria}
+        # La nueva subcategoría se revisa antes de publicar; cada pieza conserva su proveedor.
+        LineaProducto.objects.filter(pk=linea.pk).update(activo=False)
+        linea.activo = False
+    else:
+        clasificacion = {'categoria': categoria}
     ultimo = VarianteProducto.objects.filter(linea=linea).order_by('-orden').first()
-    clasificacion = {'categoria': categoria}
     juego = VarianteProducto.objects.create(linea=linea, nombre=nombre, **clasificacion,
                                             costo_base=0, orden=ultimo.orden + 1 if ultimo else 0)
     juego._prefetched_objects_cache = {'cargos': [], 'precios': []}
@@ -651,13 +722,23 @@ class OrdenVariantesDesactualizado(APIException):
 def ordenar_variantes(linea, ids, orden_anterior):
     LineaProducto.objects.select_for_update().get(pk=linea.pk)
     variantes = list(VarianteProducto.objects.select_for_update().filter(linea=linea))
-    actuales = [v.pk for v in variantes]
+    from .disposicion import disposicion, guardar_disposicion
+    config = disposicion(linea.referencia.nombre) if linea.referencia_id else {'orden': [], 'retiradas': []}
+    posiciones_sub = {pk: i for i, pk in enumerate(config['orden'])}
+    visibles = sorted((v for v in variantes if v.subcategoria_id not in config['retiradas']),
+                      key=lambda v: (posiciones_sub.get(v.subcategoria_id, len(posiciones_sub)), v.orden, v.pk))
+    actuales = [v.pk for v in visibles]
     if len(ids) != len(set(ids)) or set(ids) != set(actuales) or orden_anterior != actuales:
         raise OrdenVariantesDesactualizado()
-    posiciones = {pk: i for i, pk in enumerate(ids)}
+    todos = ids + [v.pk for v in variantes if v.pk not in ids]
+    posiciones = {pk: i for i, pk in enumerate(todos)}
     for v in variantes:
         v.orden = posiciones[v.pk]
     VarianteProducto.objects.bulk_update(variantes, ['orden'])
+    if linea.referencia_id:
+        por_id = {v.pk: v.subcategoria_id for v in variantes}
+        linea._disposicion_resultado = guardar_disposicion(linea.referencia, config['revision'], orden_parcial=[por_id[pk] for pk in ids])
+
     _invalidar_catalogo()
     return ids
 

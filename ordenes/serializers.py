@@ -378,6 +378,12 @@ class VentaSerializer(SinMargenSinPermisoMixin, serializers.ModelSerializer):
 
     revision_productos = serializers.IntegerField(read_only=True)
     productos_confirmados = serializers.BooleanField(read_only=True)
+    # Facturación: solo cambia por /ventas/<id>/facturada/ (MARCAR_VENTA_FACTURADA).
+    facturada_por_nombre = serializers.SerializerMethodField(read_only=True)
+
+    def get_facturada_por_nombre(self, obj):
+        u = obj.facturada_por
+        return (u.get_full_name() or u.username) if u else ''
     vendedor_nombre = serializers.CharField(source='vendedor.first_name', read_only=True)
     cliente_nombre = serializers.CharField(source='cliente.nombre', read_only=True)
     vendedores_compartidos_nombres = serializers.SerializerMethodField(read_only=True)
@@ -422,8 +428,9 @@ class VentaSerializer(SinMargenSinPermisoMixin, serializers.ModelSerializer):
             'es_postferia',
             'lineas',
             'margen_total',
+            'facturada', 'facturada_en', 'facturada_por_nombre',
         ]
-        read_only_fields = ['abono', 'margen_total', 'valor_lista'] # valor_lista = suma de los productos (D15a). El abono solo cambia vía recibos de caja; el saldo se recalcula en las vistas
+        read_only_fields = ['abono', 'margen_total', 'valor_lista', 'facturada', 'facturada_en'] # valor_lista = suma de los productos (D15a). El abono solo cambia vía recibos de caja; el saldo se recalcula en las vistas
         extra_kwargs = {
             'vendedores_compartidos': {'required': False, 'allow_empty': True},
             'valor_total': {'coerce_to_string': False},
@@ -528,14 +535,23 @@ class CajaSerializer(serializers.ModelSerializer):
 class ComprobanteEgresoSerializer(serializers.ModelSerializer):
     proveedor_nombre = serializers.SerializerMethodField()
     facturas_detalle = serializers.SerializerMethodField()
+    pago_bancario = serializers.SerializerMethodField()
+
+    def get_pago_bancario(self, obj):
+        from pagos.beneficiarios import informacion_ce
+        return informacion_ce(obj)
+
     class Meta:
         model = ComprobanteEgreso
-        fields = ['id', 'proveedor', 'proveedor_nombre', 'proveedor_otro_nombre', 'medio_pago', 'estado', 'valor', 'descripcion', 'fecha', 'concepto', 'recibido_por', 'facturas_detalle', 'otros_conceptos']
+        fields = ['id', 'proveedor', 'proveedor_nombre', 'proveedor_otro_nombre', 'medio_pago', 'estado', 'valor', 'descripcion', 'fecha', 'concepto', 'recibido_por', 'facturas_detalle', 'otros_conceptos', 'cuenta_destino', 'cuenta_destino_snapshot', 'proveedor_tela', 'pago_bancario']
+        read_only_fields = ['cuenta_destino_snapshot']
 
     def get_proveedor_nombre(self, obj):
         try:
             if obj.proveedor:
                 return obj.proveedor.nombre_empresa
+            if obj.proveedor_tela_id:
+                return obj.proveedor_tela.nombre_empresa
             return obj.proveedor_otro_nombre or None
         except Exception as e:
             logging.error(f'Error serializing proveedor_nombre for ComprobanteEgreso {obj.id}: {e}')

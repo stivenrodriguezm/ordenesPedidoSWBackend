@@ -11,7 +11,9 @@ Una sola regla para la cotización y para los productos de la venta.
 """
 from decimal import Decimal
 
-from .models import CargoVariante, GrupoTela, LineaProducto
+from django.db.models import Q
+
+from .models import CargoVariante, GrupoTela, LineaProducto, VarianteProducto
 from .services import calcular_precio, precios_por_variante
 
 UNIDADES_POR_PRODUCTO = 2
@@ -31,9 +33,32 @@ def linea_decorativos():
     return LineaProducto.objects.filter(slug=SLUG_LINEA).first()
 
 
-def da_decorativos(variante):
-    """El producto trae «Decorativos x2» (usa los cargos ya precargados)."""
-    return any(c.tipo == CargoVariante.TIPO_DECORATIVOS for c in variante.cargos.all())
+def cargo_decorativos(variante):
+    return next((c for c in variante.cargos.all() if c.tipo == CargoVariante.TIPO_DECORATIVOS), None)
+
+
+def da_decorativos(variante, opcionales=None):
+    """El producto trae «Decorativos x2» activo (usa los cargos ya precargados). Obligatorio:
+    siempre. Opcional: si viene elegido en `opcionales`; sin selección (None), si está
+    habilitado (preseleccionado)."""
+    cargo = cargo_decorativos(variante)
+    if cargo is None:
+        return False
+    if not cargo.opcional:
+        return True
+    return cargo.preseleccionado if opcionales is None else cargo.pk in set(opcionales)
+
+
+def valor_sugerido():
+    """Valor del cargo: el costo de los 2 decorativos que cubre, tomando el de mayor costo en
+    el último grupo incluido (hoy Cojín en Grupo 2: 2 × $57.000 = $114.000). Es el mismo para
+    todos los productos; se puede editar en cada uno."""
+    from .services import costo_lista
+    grupos = list(GrupoTela.objects.filter(pk__in=grupos_incluidos()))
+    variantes = [v for v in VarianteProducto.objects.filter(
+        Q(linea__es_decorativo=True) | Q(linea__slug=SLUG_LINEA)).prefetch_related('cargos', 'componentes')]
+    costos = [costo_lista(v, g, []) for v in variantes for g in (grupos or [None])]
+    return (UNIDADES_POR_PRODUCTO * max(costos, default=Decimal(0))).quantize(Decimal(1))
 
 
 def es_decorativo(variante):
@@ -70,9 +95,11 @@ def elegir_incluidos(cupo, unidades):
 
 
 def calcular_incluidos(items, incluidos=None):
-    """`items` = [{'clave', 'variante', 'grupo', 'cantidad'}] (variante con línea y cargos
-    precargados, o None). Devuelve {clave: {'unidades', 'valor'}} de los decorativos cubiertos."""
-    cupo = sum(UNIDADES_POR_PRODUCTO * it['cantidad'] for it in items if it['variante'] and da_decorativos(it['variante']))
+    """`items` = [{'clave', 'variante', 'grupo', 'cantidad', 'opcionales'?}] (variante con línea y
+    cargos precargados, o None; `opcionales` = ids elegidos, si se conocen). Devuelve
+    {clave: {'unidades', 'valor'}} de los decorativos cubiertos."""
+    cupo = sum(UNIDADES_POR_PRODUCTO * it['cantidad'] for it in items
+               if it['variante'] and da_decorativos(it['variante'], it.get('opcionales')))
     decorativos = [it for it in items if it['variante'] and es_decorativo(it['variante'])]
     if not cupo or not decorativos:
         return {}

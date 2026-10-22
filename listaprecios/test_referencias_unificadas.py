@@ -271,3 +271,127 @@ class ReferenciasUnificadasTests(LottusTestCase):
         self.c.patch(f"/api/listaprecios/lineas/{linea['id']}/", {'activo': True}, format='json')
         r = self.c.get('/api/listaprecios/catalogo/', {'q': 'Nombre exclusivo actualizado'})
         self.assertIn(linea['id'], [l['id'] for l in r.data])
+
+
+class ConjuntoVariosProveedoresTests(LottusTestCase):
+    """2026-10-16: un conjunto no tiene proveedor; cada pieza conserva el de su ficha."""
+
+    def setUp(self):
+        cache.clear()
+        Multiplicador.objects.all().delete()
+        Multiplicador.objects.create(nombre='General', valor=2, es_general=True)
+        self.c = self.api(self.crear_usuario('admin_conjunto_prov', 'administrador'))
+        cat = Categoria.objects.create(nombre='Comedor varios proveedores')
+        self.subs = {n: Subcategoria.objects.create(categoria=cat, nombre=n) for n in ['Comedor 6p', 'Tapa 6p', 'Silla', 'Mesa']}
+        self.tapicero, self.metal = self.proveedor('Tapicería'), self.proveedor('Metales')
+        self.lineas = {}
+        for clave, prov, nombre, subs in [('a', self.tapicero, 'Valencia', ['Comedor 6p', 'Silla']), ('b', self.metal, 'VALENCIA', ['Tapa 6p']), ('c', self.metal, 'Otra', ['Mesa'])]:
+            ref = self.referencia(prov, nombre)
+            ref.categorias.add(cat)
+            ref.subcategorias.add(*[self.subs[s] for s in subs])
+            r = self.c.post('/api/listaprecios/lineas/', {'referencia': ref.pk}, format='json')
+            self.assertEqual(r.status_code, 201, r.data)
+            self.lineas[clave] = r.data
+        self.v = {s: VarianteProducto.objects.get(subcategoria=self.subs[s]) for s in self.subs}
+        for s, costo in [('Tapa 6p', 300000), ('Silla', 100000), ('Mesa', 50000)]:
+            VarianteProducto.objects.filter(pk=self.v[s].pk).update(costo_base=costo)
+
+    def armar(self, piezas):
+        return self.c.put(f"/api/listaprecios/variantes/{self.v['Comedor 6p'].pk}/componentes/", {'componentes': piezas}, format='json')
+
+    def test_piezas_de_distintos_proveedores_de_la_misma_referencia(self):
+        r = self.armar([{'variante': self.v['Tapa 6p'].pk, 'cantidad': 1}, {'variante': self.v['Silla'].pk, 'cantidad': 6}])
+        self.assertEqual(r.status_code, 200, r.data)
+        # (300.000 + 6 × 100.000) × 2: cada pieza con su costo y su múltiplo.
+        self.assertEqual(Decimal(r.data['precios_venta'][0]['precio']), Decimal('1800000'))
+        refs = self.c.get('/api/listaprecios/referencias/').data
+        refs = refs['results'] if isinstance(refs, dict) else refs
+        ficha = next(v for r in refs if r['linea'] for v in r['linea']['variantes'] if v['id'] == self.v['Comedor 6p'].pk)
+        self.assertTrue(ficha['es_conjunto'])
+        opcion = self.c.get('/api/productos-venta/catalogo/', {'id': self.v['Comedor 6p'].pk}).data['results'][0]
+        self.assertIsNone(opcion['proveedor'])
+        self.assertEqual(set(opcion['proveedor_nombre'].split(' · ')), {'Metales', 'Tapicería'})
+        # Cada pieza se pide a su propio proveedor.
+        self.assertEqual({r.proveedor_id for r in referencias_sugeridas(self.v['Tapa 6p'])}, {self.metal.pk})
+        self.assertEqual({r.proveedor_id for r in referencias_sugeridas(self.v['Silla'])}, {self.tapicero.pk})
+
+    def test_no_mezcla_piezas_de_otra_referencia(self):
+        r = self.armar([{'variante': self.v['Mesa'].pk, 'cantidad': 1}, {'variante': self.v['Silla'].pk, 'cantidad': 6}])
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertIn('misma referencia', str(r.data))
+
+    def crear_nueva(self, **cambios):
+        datos = {'nombre': 'Comedor de 6p.', 'categoria': self.subs['Silla'].categoria_id,
+                 'componentes': [{'variante': self.v['Tapa 6p'].pk, 'cantidad': 1}, {'variante': self.v['Silla'].pk, 'cantidad': 6}]}
+        return self.c.post(f"/api/listaprecios/lineas/{self.lineas['a']['id']}/agrupaciones/", {**datos, **cambios}, format='json')
+
+    def test_nombre_nuevo_crea_subcategoria_y_piezas_con_sus_proveedores(self):
+        antes = list(VarianteProducto.objects.values_list('pk', 'costo_base', 'multiplicador_id'))
+        r = self.crear_nueva()
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data['nombre'], 'Comedor de 6p.')
+        self.assertNotIn(r.data['subcategoria'], [s.pk for s in self.subs.values()])
+        self.assertEqual(Decimal(r.data['costo_total_producto']), Decimal(900000))
+        self.assertEqual(Decimal(r.data['precios_venta'][0]['precio']), Decimal(1800000))
+        self.assertEqual({c['proveedor'] for c in r.data['componentes']}, {self.tapicero.pk, self.metal.pk})
+        self.assertEqual(list(VarianteProducto.objects.filter(pk__in=[x[0] for x in antes]).values_list('pk', 'costo_base', 'multiplicador_id')), antes)
+        refs = self.c.get('/api/listaprecios/referencias/').data
+        ref = next(x for x in refs if x['id'] == self.lineas['a']['referencia'])
+        self.assertIn(r.data['subcategoria'], [s['id'] for s in ref['subcategorias']])
+        self.assertEqual(ref['disposicion']['orden'][-1], r.data['subcategoria'])
+        self.assertFalse(ref['linea']['activo'])
+        self.assertTrue(next(v for v in ref['linea']['variantes'] if v['id'] == r.data['id'])['es_conjunto'])
+
+    def test_conjunto_de_un_solo_proveedor_no_inventa_otro(self):
+        r = self.crear_nueva(componentes=[{'variante': self.v['Tapa 6p'].pk, 'cantidad': 2}])
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual({c['proveedor'] for c in r.data['componentes']}, {self.metal.pk})
+
+    def test_fallo_en_piezas_revierte_subcategoria_asignacion_y_orden(self):
+        from .models import DisposicionReferenciaPrecio
+        antes = (Subcategoria.objects.count(), VarianteProducto.objects.count(), DisposicionReferenciaPrecio.objects.count())
+        r = self.crear_nueva(componentes=[{'variante': self.v['Mesa'].pk, 'cantidad': 1}])
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertEqual((Subcategoria.objects.count(), VarianteProducto.objects.count(), DisposicionReferenciaPrecio.objects.count()), antes)
+        self.assertFalse(Subcategoria.objects.filter(nombre='Comedor de 6p.').exists())
+
+    def test_no_reemplaza_una_subcategoria_existente_ni_duplica_al_reintentar(self):
+        r = self.crear_nueva(nombre='  sILLa  ')
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertEqual(self.crear_nueva().status_code, 201)
+        r = self.crear_nueva()
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertEqual(Subcategoria.objects.filter(nombre='Comedor de 6p.').count(), 1)
+
+    def test_nueva_categoria_valida_y_ajustes_solo_del_conjunto(self):
+        categoria = Categoria.objects.create(nombre='Juegos nuevos')
+        r = self.crear_nueva(categoria=categoria.pk, componentes=[
+            {'variante': self.v['Tapa 6p'].pk, 'cantidad': 1},
+            {'variante': self.v['Silla'].pk, 'cantidad': 6, 'costo_unitario': '80000', 'multiplicador': '1.5'},
+        ])
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data['categoria'], categoria.pk)
+        self.assertEqual(Decimal(r.data['precios_venta'][0]['precio']), Decimal(1320000))
+        self.v['Silla'].refresh_from_db()
+        self.assertEqual(self.v['Silla'].costo_base, 100000)
+
+
+class AgregarSubcategoriaDesdeListaTests(LottusTestCase):
+    """2026-10-21: Administrar lista agrega subcategorías a la referencia (PATCH parcial) y la ficha aparece."""
+
+    def test_patch_parcial_agrega_subcategoria_y_la_lista_la_ofrece(self):
+        cache.clear()
+        c = self.api(self.crear_usuario('admin_agregar_sub', 'administrador'))
+        ref = self.referencia(self.proveedor(), 'Valencia')
+        cat = Categoria.objects.create(nombre='Comedor agregar')
+        mesa = Subcategoria.objects.create(categoria=cat, nombre='Mesa')
+        ref.categorias.add(cat); ref.subcategorias.add(mesa)
+        nueva = c.post('/api/suministros/subcategorias/', {'nombre': 'Banco 2p.', 'categoria': cat.pk}, format='json')
+        self.assertEqual(nueva.status_code, 201, nueva.data)
+        r = c.patch(f'/api/referencias/{ref.pk}/', {'subcategorias': [mesa.pk, nueva.data['id']], 'categorias': [cat.pk]}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(ref.nombre, Referencia.objects.get(pk=ref.pk).nombre)
+        datos = c.get('/api/listaprecios/referencias/').data
+        datos = datos['results'] if isinstance(datos, dict) else datos
+        fila = next(x for x in datos if x['id'] == ref.pk)
+        self.assertEqual(sorted(s['id'] for s in fila['subcategorias']), sorted([mesa.pk, nueva.data['id']]))

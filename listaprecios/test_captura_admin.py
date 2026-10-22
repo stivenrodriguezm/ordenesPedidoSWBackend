@@ -34,6 +34,7 @@ class CapturaAdminTests(LottusTestCase):
         self.assertIn('precios_venta', res.data)
 
     def test_no_ofrece_grupos_del_material_desactivado_ni_un_precio_parcial(self):
+        self.vincular_subcategorias_catalogo(self.v.linea)
         res = self.c.patch(self.url, {'metraje_tela': None}, format='json')
         self.assertEqual(res.status_code, 200)
         self.v.refresh_from_db()

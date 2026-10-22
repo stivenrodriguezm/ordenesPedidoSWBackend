@@ -11,6 +11,8 @@ class CustomUser(AbstractUser):
         ('auxiliar', 'Auxiliar'),
         ('transportador', 'Transportador'),
         ('marketing', 'Marketing'),
+        # Contabilidad (2026-10-21): ve ventas, recibos y comprobantes y marca ventas facturadas.
+        ('contabilidad', 'Contabilidad'),
     )
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='vendedor')
     acceso_rapido_ia = models.BooleanField(default=False)
@@ -107,6 +109,10 @@ class Venta(models.Model):
     gestion_finalizada_en = models.DateTimeField(null=True, blank=True)
     gestion_finalizada_por = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     es_feria_hogar = models.BooleanField(default=False, db_index=True)
+    # Facturación (2026-10-21): la marca quien tiene MARCAR_VENTA_FACTURADA (p. ej. Contabilidad).
+    facturada = models.BooleanField(default=False, db_index=True)
+    facturada_en = models.DateTimeField(null=True, blank=True)
+    facturada_por = models.ForeignKey('CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='ventas_facturadas')
     # Postferia (2026-10-08): venta hecha después de la Feria del Hogar. Solo es una
     # estadística guardada; no cambia sede, pedidos ni ningún otro comportamiento.
     es_postferia = models.BooleanField(default=False, db_index=True)
@@ -343,6 +349,9 @@ class ComprobanteEgreso(models.Model):
     proveedor = models.ForeignKey(Proveedor, on_delete=models.PROTECT, null=True, blank=True)
     # Nombre libre del proveedor cuando no está registrado en el sistema (proveedor = "Otro").
     proveedor_otro_nombre = models.CharField(max_length=255, blank=True, default='')
+    cuenta_destino = models.ForeignKey('pagos.CuentaBancaria', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    cuenta_destino_snapshot = models.JSONField(default=dict, blank=True)
+    proveedor_tela = models.ForeignKey('ProveedorTela', on_delete=models.PROTECT, null=True, blank=True, related_name='comprobantes_egreso')
     fecha = models.DateField(default=timezone.localdate, db_index=True)
     valor = models.DecimalField(max_digits=10, decimal_places=2)
     medio_pago = models.CharField(max_length=20, choices=MEDIO_PAGO_CHOICES, db_index=True)

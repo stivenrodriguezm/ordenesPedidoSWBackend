@@ -209,6 +209,7 @@ INSTALLED_APPS = [
     'suministros',
     'paginaweb',
     'listaprecios',
+    'pagos',
     'django_extensions',
     'django_filters',
 ]

@@ -141,8 +141,10 @@ No hay barra superior.
   Matriz de Grupos (precio por metro/decímetro), Multiplicadores (margen) y Categorías. En cada
   línea hay **variantes especiales** (p. ej. «Reclinables eléctricos»): opciones con valor
   por producto que el vendedor activa al cotizar o vender (aparecen con ★). En **Cargos** de un
-  detalle, el botón **«Cojines incluidos»** agrega el cargo fijo «Decorativos x2» (sin valor, no
-  se edita ni es opcional; en la consulta sale ya marcado como incluido). Las **notas** de cada
+  detalle, el botón **«Cojines incluidos»** agrega el cargo «Decorativos x2» con su valor sugerido
+  ($114.000: 2 cojines en grupo 2), editable y con estado como los demás cargos; da 2 decorativos
+  por unidad cuando es obligatorio o cuando el vendedor lo elige. El botón **«Transporte»** agrega
+  el cargo Transporte de $120.000. Las **notas** de cada
   detalle se escriben en «Nueva nota» (Enter guarda) y el vendedor las ve al consultar. La
   sección «Juego» ya no se arma desde aquí (los juegos guardados siguen sumando sus piezas).
   Cada cargo tiene un estado: **Opcional habilitado** (ya va incluido en el costo total y en el
@@ -152,6 +154,9 @@ No hay barra superior.
   opcionales); los **cargos de cada pieza son los del producto original**: agregarlos o
   cambiarlos desde la agrupación los cambia en la referencia, y sus opcionales también se
   ofrecen en el conjunto. Un conjunto no tiene «Otros costos»: su costo es la suma de sus piezas.
+  Un conjunto tampoco tiene proveedor: sus piezas pueden ser subcategorías de distintos
+  proveedores de la misma referencia (tapa, base y sillas de proveedores diferentes) y cada
+  una se pide a su propio proveedor.
   En «Líneas y Detalles» cada detalle se captura en una fila: costo base en pesos sin
   decimales, **Tela** (¿aplica? → metros) y **Cuero** (¿aplica? → decímetros) por separado,
   **Tope Dcto** en % (vacío = 25 %) y categoría; Tab guarda y pasa al siguiente campo, Enter

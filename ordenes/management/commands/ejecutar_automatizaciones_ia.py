@@ -47,6 +47,8 @@ class Command(BaseCommand):
         trabajadores = max(1, min(4, opciones['trabajadores']))
         limite = max(1, min(50, opciones['limite']))
         if not opciones['continuo']:
+            from pagos.motor import impulsar as impulsar_pagos
+            impulsar_pagos()
             tareas.latido()
             tareas.recuperar_interrumpidas()
             tareas.encolar_vencidas(limite)
@@ -72,6 +74,8 @@ class Command(BaseCommand):
                     try:
                         close_old_connections()
                         tareas.latido()
+                        from pagos.motor import impulsar as impulsar_pagos
+                        impulsar_pagos()
                         tareas.recuperar_interrumpidas()
                         tareas.encolar_vencidas(limite)
                         coordinacion.recuperar_interrumpidos()

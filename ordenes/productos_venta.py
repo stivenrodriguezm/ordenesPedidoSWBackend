@@ -46,6 +46,7 @@ from rest_framework.response import Response
 
 from listaprecios.models import GrupoTela, VarianteProducto
 from listaprecios.decorativos import calcular_incluidos, da_decorativos, es_decorativo
+from listaprecios.transportes import calcular_compartidos
 from listaprecios.services import (PREFETCH_JUEGOS, calcular_precio, componentes_de, costo_lista, metraje_total,
                                    multiplicador_efectivo, obtener_multiplicador_general, resumen_componentes, usa_tela, grupo_aplicable,
                                    ids_opcionales, opcionales_piezas)
@@ -217,7 +218,8 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
             if manual is not None and not d['motivo_precio'].strip():
                 raise ValidationError({'motivo_precio': 'Explica por qué este producto lleva precio especial.'})
         if v:
-            if not v.linea.activo:
+            from listaprecios.disposicion import retirada
+            if not (v.publicado and v.costo_confirmado if v.linea.referencia_id else v.linea.activo) or retirada(v):
                 raise ValidationError('El producto está inactivo en el catálogo.')
             juego = resumen_componentes(v)
             lleva_tela = usa_tela(v)
@@ -318,7 +320,7 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
 def aplicar_decorativos(preparadas):
     """«Cojines incluidos»: cada producto con «Decorativos x2» cubre 2 decorativos por unidad
     (listaprecios/decorativos.py). Anota en cada decorativo lo cubierto y devuelve el total."""
-    items = [{'clave': i, 'variante': c['variante'], 'grupo': c['grupo_catalogo'], 'cantidad': c['cantidad']}
+    items = [{'clave': i, 'variante': c['variante'], 'grupo': c['grupo_catalogo'], 'cantidad': c['cantidad'], 'opcionales': c['opcionales']}
              for i, (_, c) in enumerate(preparadas) if c['tipo'] == LineaVenta.TIPO_PRODUCTO and c['variante']]
     incluidos = calcular_incluidos(items)
     total = Decimal(0)
@@ -333,8 +335,33 @@ def aplicar_decorativos(preparadas):
     return total
 
 
+def aplicar_transportes(preparadas):
+    """Transporte por envío (listaprecios/transportes.py): las piezas de un conjunto cobran uno
+    solo y cada transporte lleva su cupo de unidades. Anota lo descontado en cada línea."""
+    items = [{'clave': i, 'variante': c['variante'], 'cantidad': c['cantidad'], 'opcionales': c['opcionales'],
+              'conjunto': c.get('conjunto') or '', 'conjunto_cantidad': c.get('conjunto_cantidad') or 1}
+             for i, (_, c) in enumerate(preparadas) if c['tipo'] == LineaVenta.TIPO_PRODUCTO and c['variante']]
+    compartidos = calcular_compartidos(items)
+    total = Decimal(0)
+    for i, (_, c) in enumerate(preparadas):
+        snapshot = dict(c['precio_snapshot'] or {})
+        snapshot.pop('transporte', None)
+        if i in compartidos:
+            disponible = dinero(c['precio_lista_unitario'] * c['cantidad']) - incluido_de(c)
+            valor = min(dinero(compartidos[i]['valor']), max(disponible, Decimal(0)))
+            snapshot['transporte'] = {'transportes': compartidos[i]['transportes'], 'valor': str(valor)}
+            total += valor
+        c['precio_snapshot'] = snapshot
+    return total
+
+
 def incluido_de(campos):
     return Decimal((campos['precio_snapshot'] or {}).get('decorativos', {}).get('valor') or 0)
+
+
+def descontado_de(campos):
+    """Lo que no se cobra de la línea: decorativos incluidos y transporte compartido."""
+    return incluido_de(campos) + Decimal((campos['precio_snapshot'] or {}).get('transporte', {}).get('valor') or 0)
 
 
 def repartir(valor_total, items):
@@ -463,8 +490,9 @@ def representar(request, venta):
         d['grupo_es_cuero'] = bool(l.grupo_catalogo_id and l.grupo_catalogo.tipo == 'cuero')
         d['tela_grupo_nombre'] = l.tela_grupo.nombre if l.tela_grupo_id else ''
         # «Cojines incluidos»: el producto da 2 decorativos por unidad; un decorativo cubierto lo indica.
-        d['da_decorativos'] = bool(l.variante_id and da_decorativos(l.variante))
+        d['da_decorativos'] = bool(l.variante_id and da_decorativos(l.variante, d['opcionales']))
         d['decorativos_incluidos'] = l.precio_snapshot.get('decorativos')
+        d['transporte_compartido'] = l.precio_snapshot.get('transporte')
         d['tela_pedidos'] = [{'id': t.pedido_id, 'estado': t.pedido.estado, 'cantidad': str(t.cantidad), 'tela': t.tela} for t in l.detalles_tela.all()]
         orden = next((x.orden_id for x in detalles), None)
         d['tela_orden'] = orden
@@ -516,13 +544,14 @@ def guardar(request, venta_id):
                 raise ValidationError('No se elimina una línea con pedidos o inventario vinculado.')
             l.delete()
     incluido = aplicar_decorativos(preparadas)
+    incluido += aplicar_transportes(preparadas)
     total_lista = sum((c['precio_lista_unitario'] * c['cantidad'] for _, c in preparadas), Decimal(0)) - incluido
     if preparadas and total_lista <= 0:
         raise ValidationError('El precio de lista total debe ser positivo: revisa los ajustes que restan.')
     if total_lista > Decimal('9999999999.99'):
         raise ValidationError('El total de lista supera el límite permitido.')
     # El valor de la venta se reparte sobre lo que se cobra: un decorativo incluido pesa menos (o nada).
-    efectivos = [((c['precio_lista_unitario'] * c['cantidad'] - incluido_de(c)) / c['cantidad']).quantize(CENT) for _, c in preparadas]
+    efectivos = [((c['precio_lista_unitario'] * c['cantidad'] - descontado_de(c)) / c['cantidad']).quantize(CENT) for _, c in preparadas]
     for (_, c), reparto in zip(preparadas, repartir(venta.valor_total, [(e, c['cantidad'], c['tipo']) for e, (_, c) in zip(efectivos, preparadas)])):
         c.update(reparto)
     for l, campos in preparadas:
@@ -639,12 +668,21 @@ def catalogo_productos(request):
     if request.query_params.get('solo_grupos'):
         # Grupos de tela y cuero con su costo por metro/decímetro (sección Tela del producto).
         return Response({'grupos': grupos})
-    qs = VarianteProducto.objects.select_related('linea__referencia__proveedor', 'categoria', 'categoria_referencia', 'subcategoria__categoria').prefetch_related('cargos__especial', 'precios', *PREFETCH_JUEGOS).order_by('linea__nombre', 'id')
+    qs = VarianteProducto.objects.select_related('linea__referencia__proveedor', 'categoria', 'categoria_referencia', 'subcategoria__categoria').prefetch_related('cargos__especial', 'precios', *PREFETCH_JUEGOS)
+    from listaprecios.referencias import productos_actuales, ordenar_productos_actuales, categoria_variante, nombre_linea
+    from listaprecios.disposicion import excluir_retiradas
+    qs = excluir_retiradas(qs)
     q = request.query_params.get('q', '').strip()[:150]
     if request.query_params.get('id'):
+        # Lectura puntual para editar documentos anteriores: nunca se ofrece en búsquedas nuevas.
         qs = qs.filter(pk=serializers.IntegerField(min_value=1).run_validation(request.query_params['id']))
+        actuales = set(productos_actuales(qs).values_list('pk', flat=True))
+    else:
+        qs = productos_actuales(qs)
+        actuales = None
+    qs = ordenar_productos_actuales(qs)
     if q:
-        qs = qs.filter(Q(subcategoria__nombre__icontains=q) | Q(subcategoria__categoria__nombre__icontains=q) | Q(nombre__icontains=q) | Q(linea__referencia__nombre__icontains=q) | Q(linea__nombre__icontains=q) | Q(categoria_referencia__nombre__icontains=q) | Q(categoria__nombre__icontains=q))
+        qs = qs.filter(Q(subcategoria__nombre__icontains=q) | Q(subcategoria__categoria__nombre__icontains=q) | Q(linea__referencia__nombre__icontains=q) | Q(linea__referencia__proveedor__nombre_empresa__icontains=q))
     pag = serializers.IntegerField(min_value=1).run_validation(request.query_params.get('page', 1))
     resultados = []
     for v in qs[(pag - 1) * 40:pag * 40]:
@@ -654,20 +692,33 @@ def catalogo_productos(request):
         # Si el juego tiene costos propios (además de sus piezas), se agrega entero.
         propios = any(not c.opcional and c.valor for c in v.cargos.all())  # el costo base no cuenta en un conjunto
         piezas = [{'variante': c.variante_id, 'nombre': c.variante.nombre_catalogo, 'cantidad': c.cantidad,
+                   'subcategoria': c.variante.subcategoria_id, 'referencia': c.variante.linea.referencia_id,
+                   'referencia_nombre': nombre_linea(c.variante.linea),
                    'tela': usa_tela(c.variante), 'grupos': [g['id'] for g in grupos if grupo_aplicable(c.variante, GrupoTela(**g))] if usa_tela(c.variante) else []}
                   for c in componentes_de(v)] if juego and not propios else []
-        from listaprecios.referencias import categoria_variante, nombre_linea
         categoria = categoria_variante(v)
+        actual = actuales is None or v.pk in actuales
+        estado = 'historico' if not actual else 'borrador' if not v.publicado else 'sin_costo' if not v.costo_confirmado else 'publicado'
+        referencia = v.linea.referencia
+        referencias_piezas = [c.variante.linea.referencia for c in componentes_de(v)] if juego else [referencia]
+        proveedores = {r.proveedor_id: r.proveedor.nombre_empresa for r in referencias_piezas if r}
+        proveedor_nombre = ' · '.join(proveedores.values())
         resultados.append({'id': v.pk, 'nombre': f'{nombre_linea(v.linea)} · {v.nombre_catalogo}', 'categoria': categoria.nombre if categoria else '',
-                           'activo': v.linea.activo, 'tela': usa_tela(v),
+                           'subcategoria': v.subcategoria_id, 'subcategoria_nombre': v.nombre_catalogo,
+                           'referencia': v.linea.referencia_id, 'referencia_nombre': nombre_linea(v.linea),
+                           'proveedor': next(iter(proveedores)) if len(proveedores) == 1 else None,
+                           'proveedor_nombre': proveedor_nombre,
+                           'catalogo_actual': actual, 'seleccionable': estado == 'publicado', 'estado_precio': estado,
+                           'activo': v.publicado, 'tela': usa_tela(v),
                            'metraje': str(metraje) if metraje else None, 'decimetraje_cuero': str(metraje_total(v, 'cuero') or '') or None, 'juego': juego, 'piezas': piezas,
-                           'decorativos_incluidos': 2 if da_decorativos(v) else 0, 'es_decorativo': es_decorativo(v),
+                           'decorativos_incluidos': 2 if da_decorativos(v, []) else 0, 'es_decorativo': es_decorativo(v),
                            'grupos': [g['id'] for g in grupos if grupo_aplicable(v, GrupoTela(**g))] if usa_tela(v) else [],
-                           'opcionales': [{'id': c.pk, 'descripcion': c.descripcion, 'especial': c.especial_id is not None, 'preseleccionado': c.preseleccionado}
+                           'opcionales': [{'id': c.pk, 'descripcion': c.descripcion, 'especial': c.especial_id is not None, 'preseleccionado': c.preseleccionado,
+                                           'decorativos': c.tipo == 'decorativos'}
                                           for c in v.cargos.all() if c.opcional]
                                          + [{'id': c.pk, 'descripcion': f'{c.descripcion} · {comp.variante.nombre_catalogo}', 'especial': c.especial_id is not None,
                                              'preseleccionado': c.preseleccionado} for comp, c in opcionales_piezas(v)],
-                           'referencias': [{'id': r.pk, 'nombre': f'{r.nombre} · {r.proveedor.nombre_empresa}'}
+                           'referencias': [{'id': r.pk, 'nombre': f'{r.nombre} · {v.nombre_catalogo} · {proveedor_nombre}' if actual else f'{r.nombre} · {r.proveedor.nombre_empresa}'}
                                            for r in referencias_sugeridas(v)][:5] if request.query_params.get('id') else []})
     return Response({'results': resultados, 'count': qs.count(), 'page': pag, 'grupos': grupos})
 

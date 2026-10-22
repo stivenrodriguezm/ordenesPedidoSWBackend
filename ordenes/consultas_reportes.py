@@ -10,7 +10,7 @@ from .permissions import ventas_visibles
 FILTROS = {
     'ventas': ('search', 'periods', 'start_date', 'end_date', 'month', 'year', 'estado', 'vendedor', 'excluir_vendedores', 'sede', 'es_feria_hogar'),
     'recibos': ('fecha_inicio', 'fecha_fin', 'medio_pago', 'venta_id', 'venta', 'query'),
-    'egresos': ('fecha_inicio', 'fecha_fin', 'medio_pago', 'medios_pago', 'proveedor', 'proveedores', 'estado', 'estados', 'query'),
+    'egresos': ('fecha_inicio', 'fecha_fin', 'medio_pago', 'medios_pago', 'proveedor', 'proveedores', 'estado', 'estados', 'query', 'banco_destino', 'solo_pagables'),
     'inventario': ('proveedor', 'search', 'categoria', 'subcategoria', 'disponibilidad', 'sede', 'zona', 'estado_fisico', 'fecha_inicio', 'fecha_fin'),
 }
 
@@ -58,7 +58,7 @@ def validar_filtros(params):
 def consultar_ventas(request):
     validar_filtros(request.query_params)
     # OPTIMIZACIÓN: Iniciar con la consulta optimizada (select_related + prefetch_related)
-    ventas = Venta.objects.select_related('cliente', 'vendedor').prefetch_related('vendedores_compartidos', 'lineas').all()
+    ventas = Venta.objects.select_related('cliente', 'vendedor', 'facturada_por').prefetch_related('vendedores_compartidos', 'lineas').all()
 
     # Alcance por objeto (propias/compartidas o todas) sin importar los filtros
     # o la búsqueda que envíe el cliente; misma regla en consulta y escritura.
@@ -294,12 +294,13 @@ def consultar_comprobantes_egreso(request):
             egresos = egresos.filter(proveedor__id__in=prov_ids)
 
     if query:
-        q_filter = Q(concepto__icontains=query) | Q(descripcion__icontains=query) | Q(proveedor__nombre_empresa__icontains=query)
+        q_filter = Q(concepto__icontains=query) | Q(descripcion__icontains=query) | Q(proveedor__nombre_empresa__icontains=query) | Q(proveedor_tela__nombre_empresa__icontains=query) | Q(proveedor_otro_nombre__icontains=query)
         if str(query).isdigit():
             q_filter |= Q(id=int(query))
         egresos = egresos.filter(q_filter)
 
-    return egresos
+    from pagos.beneficiarios import preparar_consulta
+    return preparar_consulta(egresos, request.query_params)
 
 def consultar_inventario(request):
     from django.db.models import CharField

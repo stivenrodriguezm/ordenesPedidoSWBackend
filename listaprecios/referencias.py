@@ -1,9 +1,41 @@
 """Identidad y clasificación del catálogo: siempre las Referencias existentes."""
 from django.db import IntegrityError, transaction
+from django.db.models import Case, F, IntegerField, Q, Value, When
 from rest_framework.exceptions import ValidationError
 
 from ordenes.models import Referencia
 from .models import LineaProducto, VarianteProducto
+
+
+def productos_actuales(queryset=None):
+    """Una opción comercial es la ficha de una subcategoría asignada a su Referencia.
+
+    Los productos anteriores siguen existiendo para documentos históricos, pero no
+    entran en los selectores de nuevas consultas/ventas, incluso después de restaurar SQL.
+    """
+    queryset = queryset if queryset is not None else VarianteProducto.objects.all()
+    return queryset.filter(linea__referencia__isnull=False, subcategoria__isnull=False,
+                           linea__referencia__subcategorias=F('subcategoria_id')).distinct()
+
+
+def productos_publicados(queryset=None):
+    """Estado individual en el catálogo unificado; compatibilidad de cálculos históricos."""
+    queryset = queryset if queryset is not None else VarianteProducto.objects.all()
+    return queryset.filter(Q(linea__referencia__isnull=False, publicado=True) |
+                           Q(linea__referencia__isnull=True, linea__activo=True))
+
+
+def ordenar_productos_actuales(queryset):
+    from .disposicion import clave_referencia, mapa_disposiciones
+    configuraciones = {clave: d for clave, d in mapa_disposiciones().items() if d['orden']}
+    referencias = {}
+    if configuraciones:
+        for pk, nombre in Referencia.objects.values_list('pk', 'nombre'):
+            referencias.setdefault(clave_referencia(nombre), []).append(pk)
+    casos = [When(Q(linea__referencia_id__in=referencias.get(clave, []), subcategoria_id=sub), then=Value(i))
+             for clave, d in configuraciones.items() for i, sub in enumerate(d['orden'])]
+    return queryset.annotate(_orden_subcategoria=Case(*casos, default=Value(1000000), output_field=IntegerField())).order_by(
+        'linea__referencia__nombre', 'linea_id', '_orden_subcategoria', 'orden', 'pk')
 
 
 def nombre_linea(linea):

@@ -121,6 +121,7 @@ class AgrupacionesYOrdenTests(LottusTestCase):
         self.assertEqual([p['grupo'] for p in r.data['precios_venta']], [self.grupo.pk])
 
     def test_simular_informa_costos_y_no_archiva_especiales_hasta_guardar(self):
+        self.vincular_subcategorias_catalogo(self.linea)
         self.piezas[1]['adicionales'] = [{'tipo': 'especial', 'nombre': 'Motor para el conjunto', 'configuracion': {'costo_base': '10000', 'multiplicador': '3'}}]
         antes = EspecialCatalogo.objects.count()
         r = self.c.post(f'/api/listaprecios/variantes/{self.juego.pk}/simular-componentes/', {'componentes': self.piezas}, format='json')
@@ -180,6 +181,7 @@ class AgrupacionesYOrdenTests(LottusTestCase):
         self.assertEqual(calcular_precio(juego, self.grupo), Decimal('2320000') + 2000 * 2 * 6)
 
     def test_el_conjunto_ofrece_los_opcionales_de_sus_piezas_por_cantidad(self):
+        self.vincular_subcategorias_catalogo(self.linea)
         usb = CargoVariante.objects.create(variante=self.silla, descripcion='USB', valor=3000, opcional=True, preseleccionado=True)
         self.armar()
         juego = VarianteProducto.objects.get(pk=self.juego.pk)
@@ -216,6 +218,7 @@ class AgrupacionesYOrdenTests(LottusTestCase):
         self.assertEqual(calcular_precio(silla, self.grupo, {luz.pk}), Decimal('240000'))
 
     def test_estado_del_cargo_habilitado_deshabilitado_u_obligatorio(self):
+        self.vincular_subcategorias_catalogo(self.linea)
         r = self.c.post('/api/listaprecios/cargos/', {'variante': self.silla.pk, 'descripcion': 'USB', 'valor': '3000', 'opcional': True, 'preseleccionado': True}, format='json')
         self.assertEqual(r.status_code, 201, r.data)
         self.assertTrue(r.data['preseleccionado'])
@@ -251,6 +254,7 @@ class AgrupacionesYOrdenTests(LottusTestCase):
         self.assertEqual(self.linea.variantes.count(), cantidad + 1)
 
     def test_el_orden_se_guarda_completo_y_es_igual_en_el_catalogo(self):
+        self.vincular_subcategorias_catalogo(self.linea)
         anteriores = [self.mesa.pk, self.silla.pk, self.juego.pk]
         nuevos = [self.juego.pk, self.mesa.pk, self.silla.pk]
         r = self.c.post(f'/api/listaprecios/lineas/{self.linea.pk}/orden-variantes/', {'variantes': nuevos, 'orden_anterior': anteriores}, format='json')
@@ -285,4 +289,3 @@ class AgrupacionesYOrdenTests(LottusTestCase):
         juego = VarianteProducto.objects.get(pk=self.juego.pk)
         from .services import precios_por_variante
         self.assertEqual(precios_por_variante(juego), [{'grupo': None, 'grupo_nombre': None, 'precio': Decimal('2000000')}])
-

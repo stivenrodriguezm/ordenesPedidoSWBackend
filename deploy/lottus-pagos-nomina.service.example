@@ -1,0 +1,20 @@
+# Opcional si no se utiliza el motor persistente del ERP. Ajustar rutas/usuario.
+[Unit]
+Description=Preparación mensual de pagos de nómina LOTTUS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lottus
+WorkingDirectory=/ruta/ordenesPedidoSWBackend
+EnvironmentFile=/ruta/ordenesPedidoSWBackend/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/ruta/ordenesPedidoSWBackend/venv/bin/python manage.py preparar_pagos_nomina --continuo
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

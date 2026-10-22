@@ -1,4 +1,5 @@
 import datetime
+from collections import Counter
 from decimal import Decimal, ROUND_HALF_UP
 import logging
 import uuid
@@ -13,9 +14,10 @@ from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.filters import SearchFilter
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
 
 from ordenes.models import Cliente, Venta, LineaVenta, Referencia
-from suministros.models import Categoria
+from suministros.models import Categoria, Subcategoria
 from ordenes.permissions import check_feature_permission, tiene_permiso_codigo
 from ordenes.serializers import ClienteSerializer
 from ordenes.servicios import auditar, siguiente_consecutivo
@@ -27,13 +29,14 @@ from .models import (
     Cotizacion, LineaCotizacion, EspecialCatalogo,
 )
 from .serializers import (
-    CategoriaListaSerializer, CategoriaListaPublicSerializer, GrupoTelaSerializer, MultiplicadorSerializer, OrdenVariantesSerializer, AgrupacionNuevaSerializer,
+    DisposicionSubcategoriasSerializer, RenombrarSubcategoriaSerializer, CategoriaListaSerializer, CategoriaListaPublicSerializer, GrupoTelaSerializer, MultiplicadorSerializer, OrdenVariantesSerializer, AgrupacionNuevaSerializer,
     LineaProductoSerializer, LineaProductoResumenSerializer, VarianteProductoSerializer, ReferenciaPrecioSerializer,
     CargoVarianteSerializer, PrecioVarianteSerializer, LineaCatalogoSerializer, EspecialLineaSerializer,
     CotizacionSerializer, LineaCotizacionSerializer, EspecialCatalogoSerializer,
 )
+from .disposicion import guardar_disposicion, renombrar_subcategoria, retirada, disposicion
 from .especiales import aplicar_configurado, archivar_historico
-from .referencias import categoria_variante, nombre_linea, sincronizar_subcategorias
+from .referencias import categoria_variante, nombre_linea, sincronizar_subcategorias, productos_actuales
 from . import cache_catalogo
 from .services import (
     impacto_categoria, impacto_multiplicador, impacto_grupo_tela, obtener_grupos_tela, calcular_precio, precios_por_variante,
@@ -46,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 
 ACCIONES_LECTURA = {'list', 'retrieve', 'impacto', 'biblioteca'}
+MAX_UNIDADES_OPCIONAL = 9  # unidades de un mismo adicional en una consulta
 
 
 def _permisos_por_accion(view, permiso_lectura):
@@ -70,16 +74,45 @@ def _precios_context():
     }
 
 
+def _ids_opcionales(opcionales):
+    """Ids de los opcionales de una línea de cotización (llegan como ids o como {id, …})."""
+    ids = []
+    for o in opcionales or []:
+        try:
+            ids.append(int(o['id'] if isinstance(o, dict) else o))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return ids
+
+
 def _aplicar_decorativos(lineas_info, lineas_instancias):
     """Descuenta de cada decorativo lo que cubren los «Decorativos x2» de los demás productos
     de la cotización (misma regla que en ventas). Devuelve el total incluido."""
     from .decorativos import calcular_incluidos
-    incluidos = calcular_incluidos([{'clave': i, 'variante': info['variante_obj'], 'grupo': info['grupo_obj'], 'cantidad': info['cantidad']}
+    incluidos = calcular_incluidos([{'clave': i, 'variante': info['variante_obj'], 'grupo': info['grupo_obj'], 'cantidad': info['cantidad'],
+                                     'opcionales': info.get('opcionales')}
                                     for i, info in enumerate(lineas_info)])
     total = Decimal(0)
     for i, r in incluidos.items():
         valor = min(r['valor'], lineas_instancias[i]['subtotal'])
         lineas_instancias[i]['incluido'] = valor
+        lineas_instancias[i]['subtotal'] -= valor
+        lineas_info[i]['subtotal'] -= valor
+        total += valor
+    return total
+
+
+def _aplicar_transportes(lineas_info, lineas_instancias):
+    """Transporte por envío (misma regla que en ventas): las piezas reunidas en un conjunto
+    cobran uno solo y cada transporte lleva su cupo de unidades. Devuelve el total descontado."""
+    from .transportes import calcular_compartidos
+    compartidos = calcular_compartidos([{'clave': i, 'variante': info['variante_obj'], 'cantidad': info['cantidad'],
+                                         'opcionales': info.get('opcionales'), 'conjunto': info.get('conjunto')}
+                                        for i, info in enumerate(lineas_info)])
+    total = Decimal(0)
+    for i, r in compartidos.items():
+        valor = min(r['valor'].quantize(Decimal('0.01')), lineas_instancias[i]['subtotal'])
+        lineas_instancias[i]['transporte_compartido'] = valor
         lineas_instancias[i]['subtotal'] -= valor
         lineas_info[i]['subtotal'] -= valor
         total += valor
@@ -188,6 +221,25 @@ class GrupoTelaViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         return _permisos_por_accion(self, 'VER_LISTA_PRECIOS')
 
+    @action(detail=False, methods=['post'])
+    def ordenar(self, request):
+        """POST /api/listaprecios/grupos-tela/ordenar/ — {grupos: [ids]} en el orden nuevo (todos).
+        Es el orden de la consulta; los dos primeros de tela son los que cubren «Cojines incluidos»."""
+        ids = request.data.get('grupos')
+        with transaction.atomic():
+            grupos = list(GrupoTela.objects.select_for_update())
+            if not isinstance(ids, list) or len(ids) != len(set(ids)) or set(ids) != {g.pk for g in grupos}:
+                raise serializers.ValidationError({'grupos': 'Los grupos cambiaron en otra sesión. Actualiza y vuelve a ordenarlos.'})
+            posicion = {pk: i for i, pk in enumerate(ids)}
+            for g in grupos:
+                g.orden = posicion[g.pk]
+            GrupoTela.objects.bulk_update(grupos, ['orden'])
+        from .cache_catalogo import invalidar
+        invalidar()  # bulk_update no dispara señales
+        if grupos:
+            auditar(request.user, 'precios.orden_grupos', grupos[0], {'grupos': ids})
+        return Response({'grupos': ids})
+
     @action(detail=True, methods=['get'])
     def impacto(self, request, pk=None):
         grupo = self.get_object()
@@ -200,6 +252,7 @@ class ReferenciasPrecioViewSet(viewsets.ReadOnlyModelViewSet):
         'categorias', 'subcategorias__categoria',
         'lista_precios__referencia__proveedor', 'lista_precios__referencia__categorias', 'lista_precios__referencia__subcategorias__categoria',
         Prefetch('lista_precios__variantes', queryset=VarianteProducto.objects.select_related('categoria', 'categoria_referencia', 'subcategoria__categoria', 'linea')),
+        'lista_precios__variantes__componentes',
     ).order_by('nombre', 'proveedor__nombre_empresa', 'pk')
     serializer_class = ReferenciaPrecioSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter]
@@ -207,7 +260,27 @@ class ReferenciasPrecioViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ['nombre', 'proveedor__nombre_empresa']
 
     def get_permissions(self):
-        return [IsAuthenticated(), check_feature_permission('VER_COSTOS_LISTA_PRECIOS')()]
+        return [IsAuthenticated(), check_feature_permission('EDITAR_LISTA_PRECIOS' if self.action == 'disposicion' else 'VER_COSTOS_LISTA_PRECIOS')()]
+
+    @action(detail=True, methods=['post'])
+    def disposicion(self, request, pk=None):
+        referencia = self.get_object()
+        entrada = DisposicionSubcategoriasSerializer(data=request.data)
+        entrada.is_valid(raise_exception=True)
+        datos = guardar_disposicion(referencia, **entrada.validated_data)
+        auditar(request.user, 'precios.disposicion_subcategorias', referencia, datos)
+        return Response(datos)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, check_feature_permission('EDITAR_LISTA_PRECIOS')])
+def renombrar_tipo(request, pk):
+    get_object_or_404(Subcategoria, pk=pk)
+    entrada = RenombrarSubcategoriaSerializer(data=request.data)
+    entrada.is_valid(raise_exception=True)
+    datos = renombrar_subcategoria(pk, entrada.validated_data['nombre'])
+    auditar(request.user, 'precios.renombrar_subcategoria', Subcategoria.objects.get(pk=pk), {'nombre': datos['nombre']})
+    return Response(datos)
 
 
 @api_view(['GET'])
@@ -234,7 +307,7 @@ class LineaProductoViewSet(viewsets.ModelViewSet):
     search_fields = ['referencia__nombre', 'referencia__proveedor__nombre_empresa', 'variantes__subcategoria__nombre', 'nombre', 'variantes__nombre']
 
     def get_queryset(self):
-        qs = (LineaProducto.objects.select_related('referencia__proveedor').prefetch_related('referencia__categorias', 'referencia__subcategorias__categoria', Prefetch('variantes', queryset=VarianteProducto.objects.select_related('categoria', 'categoria_referencia', 'subcategoria__categoria')))
+        qs = (LineaProducto.objects.select_related('referencia__proveedor').prefetch_related('referencia__categorias', 'referencia__subcategorias__categoria', Prefetch('variantes', queryset=VarianteProducto.objects.select_related('categoria', 'categoria_referencia', 'subcategoria__categoria')), 'variantes__componentes')
               if self._es_resumen() else self.queryset)
         categoria = self.request.query_params.get('categoria')
         if categoria:
@@ -279,7 +352,7 @@ class LineaProductoViewSet(viewsets.ModelViewSet):
         linea = self.get_object()
         orden = ordenar_variantes(linea, entrada.validated_data['variantes'], entrada.validated_data['orden_anterior'])
         auditar(request.user, 'precios.orden_variantes', linea, {'variantes': orden})
-        return Response({'variantes': orden})
+        return Response({'variantes': orden, **({'disposicion': linea._disposicion_resultado} if linea.referencia_id else {})})
 
     @action(detail=True, methods=['post'], url_path='agrupaciones')
     def agrupaciones(self, request, pk=None):
@@ -340,6 +413,27 @@ class VarianteProductoViewSet(viewsets.ModelViewSet):
         else:
             serializer.save()
 
+    @action(detail=True, methods=['post'], url_path='orden-cargos')
+    def orden_cargos(self, request, pk=None):
+        """POST /api/listaprecios/variantes/{id}/orden-cargos/ — {cargos: [ids]}: la posición de
+        los cargos del producto (los que se editan aquí); los de variantes especiales van después."""
+        variante = self.get_object()
+        ids = request.data.get('cargos')
+        with transaction.atomic():
+            cargos = list(CargoVariante.objects.select_for_update().filter(variante=variante))
+            propios = {c.pk for c in cargos if c.especial_id is None}
+            if not isinstance(ids, list) or len(ids) != len(set(ids)) or set(ids) != propios:
+                raise serializers.ValidationError({'cargos': 'Los cargos cambiaron en otra sesión. Actualiza y vuelve a ordenarlos.'})
+            posicion = {pk: i for i, pk in enumerate(ids)}
+            especiales = [c for c in cargos if c.especial_id is not None]
+            for c in cargos:
+                c.orden = posicion[c.pk] if c.pk in posicion else len(ids) + especiales.index(c)
+            CargoVariante.objects.bulk_update(cargos, ['orden'])
+        from .cache_catalogo import invalidar
+        invalidar()  # bulk_update no dispara señales
+        auditar(request.user, 'precios.orden_cargos', variante, {'cargos': ids})
+        return Response({'cargos': ids})
+
     @action(detail=True, methods=['put'], url_path='componentes')
     def componentes(self, request, pk=None):
         """PUT /api/listaprecios/variantes/{id}/componentes/ — {componentes: [{variante, cantidad}]}.
@@ -390,6 +484,19 @@ class CargoVarianteViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         return _permisos_por_accion(self, 'VER_COSTOS_LISTA_PRECIOS')
+
+    @action(detail=False, methods=['get'])
+    def nombres(self, request):
+        """GET /api/listaprecios/cargos/nombres/ — nombres de los cargos ya usados en los productos
+        (los más usados primero) para sugerirlos al escribir uno nuevo."""
+        filas = (CargoVariante.objects.filter(especial__isnull=True).exclude(tipo__in=[CargoVariante.TIPO_ESPECIAL_CONFIGURABLE])
+                 .values('descripcion').annotate(veces=models.Count('id')).order_by('-veces', 'descripcion')[:300])
+        vistos, nombres = set(), []
+        for f in filas:
+            nombre = (f['descripcion'] or '').strip()
+            if nombre and nombre.lower() not in vistos and nombre.lower() != 'nuevo cargo':
+                vistos.add(nombre.lower()); nombres.append(nombre)
+        return Response(nombres)
 
 
 class EspecialLineaViewSet(viewsets.ModelViewSet):
@@ -465,15 +572,20 @@ class PrecioVarianteViewSet(viewsets.ModelViewSet):
         return context
 
 
+def _datos_catalogo(qs):
+    datos = LineaCatalogoSerializer(qs, many=True, context=_contexto_catalogo()).data
+    return [linea for linea in datos if linea['variantes']]
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_LISTA_PRECIOS')])
 def catalogo(request):
     """GET /api/listaprecios/catalogo/ — vista de vendedor. Parámetros:
     categoria (slug del tipo de producto — Salas, Poltronas...), q (búsqueda).
     Nunca incluye costo_base, metraje_tela ni cargos crudos."""
-    qs = LineaProducto.objects.filter(activo=True).select_related('referencia__proveedor').prefetch_related(
+    qs = LineaProducto.objects.filter(referencia__isnull=False).select_related('referencia__proveedor').prefetch_related(
         'referencia__categorias', 'referencia__subcategorias__categoria',
-        Prefetch('variantes', queryset=VarianteProducto.objects.select_related('categoria', 'categoria_referencia', 'subcategoria__categoria', 'multiplicador')),
+        Prefetch('variantes', queryset=productos_actuales().filter(publicado=True, costo_confirmado=True).select_related('categoria', 'categoria_referencia', 'subcategoria__categoria', 'multiplicador')),
         'variantes__precios', 'variantes__precios__grupo', 'variantes__cargos__especial',
         *[f'variantes__{p}' for p in PREFETCH_JUEGOS],
     )
@@ -483,7 +595,7 @@ def catalogo(request):
 
     if not categoria_slug and not q:
         # El catálogo completo es igual para todos los vendedores: va desde la caché.
-        return Response(cache_catalogo.obtener('catalogo', lambda: LineaCatalogoSerializer(qs, many=True, context=_contexto_catalogo()).data))
+        return Response(cache_catalogo.obtener('catalogo-subcategorias-v3', lambda: _datos_catalogo(qs)))
 
     if categoria_slug:
         from django.utils.text import slugify
@@ -497,8 +609,7 @@ def catalogo(request):
             | Q(nombre__icontains=needle) | Q(notas__icontains=needle) | Q(variantes__notas__icontains=needle)
         ).distinct()
 
-    serializer = LineaCatalogoSerializer(qs, many=True, context=_contexto_catalogo())
-    return Response(serializer.data)
+    return Response(_datos_catalogo(qs))
 
 
 @api_view(['GET'])
@@ -510,11 +621,11 @@ def calcular_precio_variante(request, variante_id):
     Nunca expone costo_base/metraje_tela/cargos fijos — solo el precio final
     y el detalle de los opcionales que sí se incluyeron."""
     variante = (
-        VarianteProducto.objects.select_related('categoria', 'linea', 'multiplicador')
+        productos_actuales().select_related('categoria', 'linea__referencia', 'multiplicador')
         .prefetch_related('cargos__especial', 'precios', 'precios__grupo', *PREFETCH_JUEGOS)
-        .filter(id=variante_id, linea__activo=True).first()
+        .filter(id=variante_id, publicado=True, costo_confirmado=True).first()
     )
-    if variante is None:
+    if variante is None or retirada(variante):
         return Response({'error': 'Variante no encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
     try:
@@ -527,18 +638,23 @@ def calcular_precio_variante(request, variante_id):
         return Response({'error': 'Elige un grupo de tela disponible para este producto.'}, status=status.HTTP_400_BAD_REQUEST)
     grupo = GrupoTela.objects.filter(id=grupo_id).first() if grupo_id is not None else None
 
+    # Un id repetido es otra unidad del mismo adicional (p. ej. 2 reclinos eléctricos).
     opcionales_raw = request.GET.get('opcionales', '')
     try:
-        opcionales_ids = {int(x) for x in opcionales_raw.split(',') if x.strip()}
+        seleccion = [int(x) for x in opcionales_raw.split(',') if x.strip()]
     except ValueError:
         return Response({'error': 'Parámetro opcionales inválido'}, status=status.HTTP_400_BAD_REQUEST)
+    conteo = Counter(seleccion)
 
     disponibles_opcionales = opcionales_de_variante(variante, grupo=grupo)
-    if not opcionales_ids.issubset({o['id'] for o in disponibles_opcionales}):
+    por_id = {o['id']: o for o in disponibles_opcionales}
+    if not set(conteo).issubset(por_id):
         return Response({'error': 'Algún adicional ya no está disponible para este producto.'}, status=status.HTTP_400_BAD_REQUEST)
+    if any(n > (MAX_UNIDADES_OPCIONAL if por_id[i].get('multiple') else 1) for i, n in conteo.items()):
+        return Response({'error': f'Cada adicional admite hasta {MAX_UNIDADES_OPCIONAL} unidades (cojines y transporte, una).'}, status=status.HTTP_400_BAD_REQUEST)
 
-    precio = calcular_precio(variante, grupo, opcionales_ids=opcionales_ids)
-    incluidos = [o for o in disponibles_opcionales if o['id'] in opcionales_ids]
+    precio = calcular_precio(variante, grupo, opcionales_ids=seleccion)
+    incluidos = [{**o, 'cantidad': conteo[o['id']]} for o in disponibles_opcionales if o['id'] in conteo]
     return Response({'precio': precio, 'opcionales_incluidos': incluidos})
 
 
@@ -643,6 +759,8 @@ class CotizacionViewSet(viewsets.ModelViewSet):
 
                 v_id = l.get('variante') or l.get('variante_id')
                 v_obj = variantes_map.get(int(v_id)) if v_id else None
+                if v_obj and retirada(v_obj):
+                    raise serializers.ValidationError({'lineas': 'Una subcategoría se retiró de la lista de precios. Actualiza la consulta antes de cotizar.'})
                 g_id = l.get('grupo_tela') or l.get('grupoId')
                 g_obj = grupos_map.get(int(g_id)) if g_id else None
 
@@ -653,6 +771,8 @@ class CotizacionViewSet(viewsets.ModelViewSet):
                     'variante_obj': v_obj,
                     'grupo_obj': g_obj,
                     'cantidad': cant,
+                    'opcionales': _ids_opcionales(l.get('opcionales', [])),
+                    'conjunto': str(l.get('conjunto') or '')[:64],
                 })
                 lineas_instancias.append({
                     'variante_id': v_obj.id if v_obj else None,
@@ -671,6 +791,7 @@ class CotizacionViewSet(viewsets.ModelViewSet):
                 })
 
             subtotal -= _aplicar_decorativos(lineas_info, lineas_instancias)
+            subtotal -= _aplicar_transportes(lineas_info, lineas_instancias)
             descuento = Decimal(str(self.request.data.get('descuento', 0)))
             validar_descuento_documento(lineas_info, descuento)
             descuento_porcentaje = ((descuento / subtotal) * Decimal('100')).quantize(Decimal('0.01')) if subtotal > 0 else Decimal('0.00')
@@ -748,6 +869,8 @@ class CotizacionViewSet(viewsets.ModelViewSet):
                         'variante_obj': v_obj,
                         'grupo_obj': g_obj,
                         'cantidad': cant,
+                        'opcionales': _ids_opcionales(l.get('opcionales', [])),
+                        'conjunto': str(l.get('conjunto') or '')[:64],
                     })
                     lineas_instancias.append({
                         'variante_id': v_obj.id if v_obj else None,
@@ -766,6 +889,7 @@ class CotizacionViewSet(viewsets.ModelViewSet):
                     })
 
                 subtotal -= _aplicar_decorativos(lineas_info, lineas_instancias)
+                subtotal -= _aplicar_transportes(lineas_info, lineas_instancias)
                 validar_descuento_documento(lineas_info, descuento)
                 for li in lineas_instancias:
                     LineaCotizacion.objects.create(

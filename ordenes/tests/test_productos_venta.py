@@ -71,6 +71,7 @@ class ProductosVentaTests(LottusTestCase):
         linea = self.variante.linea
         linea.referencia = self.ref
         linea.save()
+        self.vincular_subcategorias_catalogo(linea)
         datos = self.guardar([self.fila(referencia=None)])
         self.assertEqual(self.v.lineas.get().referencia_id, self.ref.pk)
         r = self.pedir(datos)
@@ -283,6 +284,7 @@ class ProductosVentaTests(LottusTestCase):
     def test_catalogo_completo_paginado_sin_costos(self):
         for n in range(43):
             VarianteProducto.objects.create(linea=self.variante.linea, categoria=self.variante.categoria, nombre=f'Extra{n}', costo_base=88)
+        self.vincular_subcategorias_catalogo(self.variante.linea)
         r = self.api_asesor.get('/api/productos-venta/catalogo/', {'page': 2})
         self.assertEqual((r.status_code, r.data['count'], len(r.data['results'])), (200, 44, 4))
         self.assertNotIn('costo_base', str(r.data))

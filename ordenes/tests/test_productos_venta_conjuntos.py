@@ -117,8 +117,9 @@ class DecorativosTests(LottusTestCase):
         self.deco = VarianteProducto.objects.create(linea=LineaProducto.objects.get(slug='decorativos'), categoria=self.variante.categoria,
                                                     nombre='Cojín 45 × 45', costo_base=10, metraje_tela=1)
 
-    def incluir(self):
-        r = self.api_admin.post('/api/listaprecios/cargos/', {'variante': self.variante.pk, 'tipo': 'decorativos'}, format='json')
+    def incluir(self, **extra):
+        # Valor 0 para que las cuentas de estas pruebas midan solo el cupo de decorativos.
+        r = self.api_admin.post('/api/listaprecios/cargos/', {'variante': self.variante.pk, 'tipo': 'decorativos', 'valor': 0, **extra}, format='json')
         self.assertEqual(r.status_code, 201, r.data)
         return r.data
 
@@ -164,14 +165,33 @@ class DecorativosTests(LottusTestCase):
         deco = c.lineas.get(variante=self.deco)
         self.assertEqual((deco.incluido, deco.subtotal, c.subtotal), (Decimal(120), Decimal(180), Decimal(410)))
 
-    def test_el_cargo_es_fijo_y_unico(self):
-        cargo = self.incluir()
-        url = f"/api/listaprecios/cargos/{cargo['id']}/"
-        self.assertEqual(self.api_admin.patch(url, {'valor': 5000}, format='json').status_code, 400)
+    def test_el_cargo_tiene_valor_sugerido_es_editable_y_unico(self):
+        r = self.api_admin.post('/api/listaprecios/cargos/', {'variante': self.variante.pk, 'tipo': 'decorativos'}, format='json')
+        self.assertEqual(r.status_code, 201, r.data)
+        # 2 × el decorativo de mayor costo en el último grupo incluido: 2 × (10 + 1 m × 20) = 60.
+        self.assertEqual((r.data['descripcion'], Decimal(r.data['valor']), r.data['opcional']), ('Decorativos x2', Decimal(60), False))
+        url = f"/api/listaprecios/cargos/{r.data['id']}/"
+        cambio = self.api_admin.patch(url, {'valor': 5000, 'descripcion': 'Cojines x2'}, format='json')
+        self.assertEqual((cambio.status_code, Decimal(cambio.data['valor']), cambio.data['tipo']), (200, Decimal(5000), 'decorativos'))
+        self.assertEqual(self.api_admin.patch(url, {'tipo': ''}, format='json').status_code, 400)
         self.assertEqual(self.api_admin.post('/api/listaprecios/cargos/', {'variante': self.variante.pk, 'tipo': 'decorativos'}, format='json').status_code, 400)
         self.assertEqual(self.api_admin.delete(url).status_code, 204)
 
+    def test_como_opcional_solo_cubre_si_se_elige(self):
+        cargo = self.incluir(opcional=True, preseleccionado=False)
+        filas = self.filas()
+        d = self.guardar(filas)
+        self.assertEqual(Decimal(d['valor_lista']), Decimal(230 + 40 + 200))  # no elegido: no cubre
+        filas[0]['opcionales'] = [*filas[0]['opcionales'], cargo['id']]
+        for f, l in zip(filas, d['lineas']):
+            f['id'] = l['id']
+        d = self.guardar(filas, revision=d['revision'])
+        self.assertEqual(Decimal(d['valor_lista']), Decimal(230 + 40 + 200 - 120))
+        self.assertTrue(d['lineas'][0]['da_decorativos'])
+
     def test_catalogo_informa_cupo_y_tope_y_se_actualiza(self):
+        self.vincular_subcategorias_catalogo(self.variante.linea)
+        self.vincular_subcategorias_catalogo(self.deco.linea)
         def catalogo():
             lineas = self.api_admin.get('/api/listaprecios/catalogo/').data
             return {v['id']: v for l in lineas for v in l['variantes']}
@@ -182,3 +202,38 @@ class DecorativosTests(LottusTestCase):
         self.assertEqual(cat[self.variante.pk]['decorativos_incluidos'], 2)
         topes = {f['grupo']: Decimal(str(f['tope_incluido'])) for f in cat[self.deco.pk]['precios']}
         self.assertEqual(topes, {self.grupo.pk: Decimal(40), self.g2.pk: Decimal(60), self.g3.pk: Decimal(60)})
+
+
+class TransportesVentaTests(LottusTestCase):
+    """2026-10-21: el transporte se cobra por envío; las piezas de un conjunto llevan uno solo."""
+    fila = base.ProductosVentaTests.fila
+    guardar = base.ProductosVentaTests.guardar
+
+    def setUp(self):
+        base.ProductosVentaTests.setUp(self)
+        self.permisos('administrador', ['ALL'])
+        # Sofá: (100 + 2 m × 10 + 5 fijo − 10 «Sin tapa») × 2 = 230; con transporte 50 → 330 por unidad.
+        CargoVariante.objects.create(variante=self.variante, descripcion='Transporte', valor=50, tipo='transporte', unidades_por_transporte=2)
+        self.mesa = VarianteProducto.objects.create(linea=self.variante.linea, categoria=self.variante.categoria, nombre='Mesa', costo_base=50)
+        CargoVariante.objects.create(variante=self.mesa, descripcion='Transporte', valor=30, tipo='transporte')  # mesa: (50 + 30) × 2 = 160
+
+    def test_cupo_por_transporte_en_una_linea(self):
+        d = self.guardar([self.fila(cantidad=3)])
+        # 3 sofás con cupo 2: dos transportes; se descuenta uno (100).
+        self.assertEqual(Decimal(d['valor_lista']), Decimal(3 * 330 - 100))
+        self.assertEqual(d['lineas'][0]['transporte_compartido'], {'transportes': 2, 'valor': '100.00'})
+
+    def test_las_piezas_de_un_conjunto_cobran_un_solo_transporte(self):
+        piezas = [self.fila(cantidad=1, conjunto='c-1', conjunto_nombre='Sala comedor'),
+                  self.fila(variante=self.mesa.pk, grupo_catalogo=None, opcionales=[], tela_modo='no_aplica', cantidad=1,
+                            conjunto='c-1', conjunto_nombre='Sala comedor')]
+        d = self.guardar(piezas)
+        # Se cobra el transporte mayor (sofá, 100); el de la mesa (60) no.
+        self.assertEqual(Decimal(d['valor_lista']), Decimal(330 + 160 - 60))
+        self.assertEqual([l['transporte_compartido'] for l in d['lineas']], [None, {'transportes': 0, 'valor': '60.00'}])
+        # Sueltos, cada producto lleva el suyo.
+        sueltos = [dict(p, conjunto='', conjunto_nombre='') for p in piezas]
+        for f, l in zip(sueltos, d['lineas']):
+            f['id'] = l['id']
+        d = self.guardar(sueltos, revision=d['revision'])
+        self.assertEqual(Decimal(d['valor_lista']), Decimal(330 + 160))

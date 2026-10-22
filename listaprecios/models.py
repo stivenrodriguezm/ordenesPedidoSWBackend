@@ -94,6 +94,14 @@ class GrupoTela(models.Model):
         return f"{self.nombre} (${self.precio_por_metro}/{self.unidad_medida})"
 
 
+class DisposicionReferenciaPrecio(models.Model):
+    """Orden y bajas reversibles de subcategorías de una referencia comercial."""
+    clave = models.CharField(max_length=255, unique=True)
+    orden = models.JSONField(default=list)
+    retiradas = models.JSONField(default=list)
+    revision = models.PositiveIntegerField(default=0)
+
+
 class LineaProducto(models.Model):
     """Una colección de producto (ej. "Detroit", "Altus"). Ya NO pertenece a
     una sola categoría — puede agrupar variantes de distintos tipos de
@@ -138,6 +146,7 @@ class VarianteProducto(models.Model):
     orden = models.PositiveIntegerField(default=0, verbose_name="Orden")
     costo_base = models.DecimalField(max_digits=12, decimal_places=2, default=0, verbose_name="Costo base")
     costo_confirmado = models.BooleanField(default=True)
+    publicado = models.BooleanField(default=False, verbose_name="Publicado en consulta y ventas")
     metraje_tela = models.DecimalField(
         max_digits=8, decimal_places=2, null=True, blank=True, verbose_name="Metraje de tela (mt.)"
     )
@@ -197,15 +206,23 @@ class CargoVariante(models.Model):
     TIPO_DECORATIVOS = 'decorativos'
     TIPO_DIFERENCIA_PRECIO = 'diferencia_precio'
     TIPO_ESPECIAL_CONFIGURABLE = 'especial_producto'
+    # «Transporte» (2026-10-21): uno por envío, no por unidad. Dentro de un conjunto se
+    # cobra uno solo (el mayor de las piezas) y cada transporte lleva hasta
+    # `unidades_por_transporte` unidades del producto (vacío = todas). Ver transportes.py.
+    TIPO_TRANSPORTE = 'transporte'
     TIPO_CHOICES = [('', 'Cargo'), (TIPO_DECORATIVOS, 'Cojines incluidos (Decorativos x2)'),
                     (TIPO_DIFERENCIA_PRECIO, 'Diferencia sobre precio de venta'),
-                    (TIPO_ESPECIAL_CONFIGURABLE, 'Especial con costo y multiplicador')]
+                    (TIPO_ESPECIAL_CONFIGURABLE, 'Especial con costo y multiplicador'),
+                    (TIPO_TRANSPORTE, 'Transporte')]
     tipo = models.CharField(max_length=20, choices=TIPO_CHOICES, blank=True, default='')
     configuracion_especial = models.JSONField(default=dict, blank=True)
+    unidades_por_transporte = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name='Unidades por transporte')
+    # Posición en el producto (2026-10-21): se ordena arrastrando, igual que las subcategorías.
+    orden = models.PositiveIntegerField(default=0)
 
     class Meta:
         db_table = 'listaprecios_cargo_variante'
-        ordering = ['id']
+        ordering = ['orden', 'id']
         verbose_name = 'Cargo de Variante'
         verbose_name_plural = 'Cargos de Variante'
 
@@ -248,7 +265,8 @@ class EspecialCatalogo(models.Model):
 
 
 class ComponenteJuego(models.Model):
-    """Juego compuesto (2026-10-09): una variante armada con otras de la misma línea, p. ej.
+    """Juego compuesto (2026-10-09): una variante armada con otras de la misma referencia (de
+    cualquiera de sus proveedores desde 2026-10-16), p. ej.
     «Comedor 6 puestos» = 1 Mesa de 6 + 6 Sillas de comedor. En ventas es un solo producto;
     su precio es la suma de los componentes (más sus propios cargos)."""
     juego = models.ForeignKey(VarianteProducto, on_delete=models.CASCADE, related_name='componentes')
@@ -384,6 +402,8 @@ class LineaCotizacion(models.Model):
     foto = models.URLField(max_length=500, blank=True, null=True, verbose_name="Foto referencial")
     # Parte del precio cubierta por los «Decorativos x2» de otro producto de la cotización.
     incluido = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'), verbose_name="Valor incluido")
+    # Transportes que no se cobran porque viajan juntos (conjunto o varias unidades por envío).
+    transporte_compartido = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'), verbose_name="Transporte compartido")
 
     class Meta:
         db_table = 'listaprecios_linea_cotizacion'

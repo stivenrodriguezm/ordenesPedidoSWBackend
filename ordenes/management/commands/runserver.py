@@ -2,12 +2,13 @@
 import logging
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from django.contrib.staticfiles.management.commands.runserver import Command as Runserver
 from django.core.management import call_command
 from django.core.servers.basehttp import WSGIServer
-from django.db import connections
+from django.db import OperationalError, connections
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +70,25 @@ class Command(Runserver):
             options['use_threading'] = False
             self.server_cls = ServidorConHilos
         return super().inner_run(*args, **options)
+
+    # Esperas entre intentos si la base de datos no responde al arrancar (segundos).
+    esperas_arranque = (2, 5, 10, 20)
+
+    def check_migrations(self):
+        # Si MySQL (Hostinger) no responde justo al arrancar, Django falla aquí y el
+        # autoreloader queda «esperando cambios» sin atender peticiones: el frontend solo
+        # recibe 500. Se reintenta y, si sigue caída, el servidor arranca igual; cada
+        # petición vuelve a conectarse cuando la base de datos responda.
+        for espera in (*self.esperas_arranque, None):
+            try:
+                return super().check_migrations()
+            except OperationalError as error:
+                connections.close_all()
+                if espera is None:
+                    self.stderr.write(f'No se pudieron revisar las migraciones ({error}). El servidor arranca igual.')
+                    return None
+                self.stderr.write(f'La base de datos no respondió al arrancar ({error}); nuevo intento en {espera} s.')
+                time.sleep(espera)
 
     def _motor(self, detener):
         while not detener.is_set():

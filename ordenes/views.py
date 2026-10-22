@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from django.http import HttpResponse
+from django.shortcuts import get_object_or_404
 from .models import (
     Referencia, Proveedor, OrdenPedido, DetallePedido, CustomUser, Cliente,
     Venta, LineaVenta, ObservacionVenta, Caja, ReciboCaja, PagoReciboCaja, ComprobanteEgreso,
@@ -1028,6 +1029,30 @@ def listar_ventas(request):
     serializer = VentaSerializer(ventas, many=True, context={'request': request, 'ver_margenes': tiene_permiso_codigo(request, 'VER_MARGENES')})
     return Response(serializer.data)
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, check_feature_permission('MARCAR_VENTA_FACTURADA')])
+def marcar_venta_facturada(request, id):
+    """POST /api/ventas/<id>/facturada/ — {facturada: true|false}. Contabilidad (o quien tenga
+    MARCAR_VENTA_FACTURADA) marca la venta como facturada; queda quién y cuándo (2026-10-21)."""
+    facturada = request.data.get('facturada')
+    if not isinstance(facturada, bool):
+        return Response({'facturada': 'Indica true o false.'}, status=status.HTTP_400_BAD_REQUEST)
+    with transaction.atomic():
+        venta = ventas_visibles(request, Venta.objects.select_for_update()).filter(id=id).first()
+        if venta is None:
+            return Response({'error': 'Venta no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+        if facturada and venta.estado == Venta.ESTADO_ANULADA:
+            return Response({'error': 'Una venta anulada no se marca como facturada.'}, status=status.HTTP_400_BAD_REQUEST)
+        if venta.facturada != facturada:
+            venta.facturada = facturada
+            venta.facturada_en = timezone.now() if facturada else None
+            venta.facturada_por = request.user if facturada else None
+            venta.save(update_fields=['facturada', 'facturada_en', 'facturada_por'])
+            auditar(request.user, 'venta.facturada' if facturada else 'venta.no_facturada', venta, {'facturada': facturada})
+    nombre = (venta.facturada_por.get_full_name() or venta.facturada_por.username) if venta.facturada_por else ''
+    return Response({'id': venta.id, 'facturada': venta.facturada, 'facturada_en': venta.facturada_en, 'facturada_por_nombre': nombre})
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_VENTAS')])
 def detalle_venta(request, id):
@@ -1279,7 +1304,7 @@ def listar_recibos_caja(request):
     return respuesta
 
 class ComprobanteEgresoPagination(StandardResultsSetPagination):
-    pass
+    max_page_size = 500
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, check_feature_permission('VER_COMPROBANTES_EGRESO')])
@@ -1382,13 +1407,18 @@ def crear_comprobante_egreso(request):
 
 
 def _crear_egreso(request):
+    from pagos.servicios import cuenta_ce, snapshot
     data_in = request.data
     recibido_por = (data_in.get('recibido_por') or '').strip()
     if not recibido_por:
         raise ErrorNegocio("El campo 'Quien recibe' es obligatorio.")
     proveedor_id = data_in.get('proveedor') or None
+    proveedor_tela_id = data_in.get('proveedor_tela') or None
+    if proveedor_id and proveedor_tela_id:
+        raise ErrorNegocio('Selecciona un único beneficiario.')
+    proveedor_tela = get_object_or_404(ProveedorTela, pk=proveedor_tela_id) if proveedor_tela_id else None
     proveedor_otro_nombre = (data_in.get('proveedor_otro_nombre') or '').strip()
-    if not proveedor_id and not proveedor_otro_nombre:
+    if not proveedor_id and not proveedor_tela_id and not proveedor_otro_nombre:
         raise ErrorNegocio("Debes seleccionar un proveedor o indicar el nombre en 'Otro'.")
     proveedor = None
     if proveedor_id:
@@ -1398,6 +1428,7 @@ def _crear_egreso(request):
     medio_pago = data_in.get('medio_pago')
     if medio_pago not in dict(ComprobanteEgreso.MEDIO_PAGO_CHOICES):
         raise ErrorNegocio('Medio de pago inválido.', campo='medio_pago')
+    destino = cuenta_ce(data_in.get('cuenta_destino'), proveedor_id, medio_pago, proveedor_tela_id)
     valor = a_decimal(data_in.get('valor'))
     otros, otros_total = _otros_conceptos_validos(data_in.get('otros_conceptos'))
     facturas = _facturas_para_egreso(proveedor_id, _ids_enteros(data_in.get('facturas_ids')))
@@ -1407,7 +1438,7 @@ def _crear_egreso(request):
     data = {k: v for k, v in data_in.items() if k not in ('facturas_ids', 'id', 'estado', 'otros_conceptos')}
     data.update({
         'recibido_por': recibido_por, 'valor': str(valor), 'otros_conceptos': otros,
-        'proveedor': proveedor.id if proveedor else None,
+        'proveedor': proveedor.id if proveedor else None, 'proveedor_tela': proveedor_tela_id,
         'proveedor_otro_nombre': '' if proveedor else proveedor_otro_nombre,
         # El efectivo sale de caja en este mismo acto; la transferencia queda
         # por confirmar hasta la aprobación (el PDF siempre imprime "Pagado").
@@ -1423,6 +1454,7 @@ def _crear_egreso(request):
     serializer = ComprobanteEgresoSerializer(data=data)
     serializer.is_valid(raise_exception=True)
     egreso = serializer.save(
+        cuenta_destino=destino, cuenta_destino_snapshot=snapshot(destino) if destino else {},
         creado_por=request.user,
         aprobado_por=request.user if is_efectivo else None,
         fecha_aprobacion=timezone.now() if is_efectivo else None,
@@ -1452,7 +1484,7 @@ def _crear_egreso(request):
 @permission_classes([IsAuthenticated, check_feature_permission('APROBAR_EGRESO')])
 @transaction.atomic
 def confirmar_comprobante_egreso(request, id):
-    from suministros.models import FacturaProveedor
+    from .servicios import confirmar_pago_egreso
     try:
         egreso = ComprobanteEgreso.objects.select_for_update().get(id=id)
     except ComprobanteEgreso.DoesNotExist:
@@ -1461,17 +1493,7 @@ def confirmar_comprobante_egreso(request, id):
     if egreso.estado == 'Pagado':
         return Response({"message": "El comprobante ya se encuentra pagado."}, status=status.HTTP_200_OK)
 
-    egreso.estado = 'Pagado'
-    egreso.aprobado_por = request.user
-    egreso.fecha_aprobacion = timezone.now()
-    egreso.save(update_fields=['estado', 'aprobado_por', 'fecha_aprobacion'])
-
-    # Transition linked facturas from 'pago_en_proceso' → 'pagada'
-    FacturaProveedor.objects.filter(
-        comprobante_egreso=egreso,
-        estado='pago_en_proceso',
-    ).update(estado='pagada', fecha_pago_real=business_time.hoy())
-    auditar(request.user, 'egreso.aprobar', egreso)
+    confirmar_pago_egreso(egreso, request.user)
 
     return Response({"message": "Transferencia de egreso confirmada exitosamente.", "id": egreso.id, "estado": "Pagado"}, status=status.HTTP_200_OK)
 
@@ -1506,10 +1528,12 @@ def editar_comprobante_egreso(request, id):
 
 
 def _editar_egreso(request, id):
+    from pagos.servicios import cuenta_ce, snapshot, proteger_ce
     from suministros.models import FacturaProveedor
     egreso = ComprobanteEgreso.objects.select_for_update().select_related('proveedor').filter(id=id).first()
     if egreso is None:
         raise ErrorNegocio("Comprobante de Egreso no encontrado.", status.HTTP_404_NOT_FOUND)
+    proteger_ce(egreso)
     data = request.data
 
     # --- 1. Validar toda la entrada (sin escribir) ---
@@ -1517,8 +1541,13 @@ def _editar_egreso(request, id):
     if not recibido_por:
         raise ErrorNegocio("El campo 'Quien recibe' es obligatorio.")
     proveedor_id = data.get('proveedor') or None
+    proveedor_tela_id = data.get('proveedor_tela', egreso.proveedor_tela_id) or None
+    if proveedor_id and proveedor_tela_id:
+        raise ErrorNegocio('Selecciona un único beneficiario.')
+    if proveedor_tela_id:
+        get_object_or_404(ProveedorTela, pk=proveedor_tela_id)
     proveedor_otro_nombre = (data.get('proveedor_otro_nombre') or '').strip()
-    if not proveedor_id and not proveedor_otro_nombre:
+    if not proveedor_id and not proveedor_tela_id and not proveedor_otro_nombre:
         raise ErrorNegocio("Debes seleccionar un proveedor o indicar el nombre en 'Otro'.")
     proveedor = None
     if proveedor_id:
@@ -1536,6 +1565,7 @@ def _editar_egreso(request, id):
     if nuevo_medio_pago not in dict(ComprobanteEgreso.MEDIO_PAGO_CHOICES):
         raise ErrorNegocio("Medio de pago inválido.")
     nuevo_valor = a_decimal(data.get('valor'))
+    destino = cuenta_ce(data.get('cuenta_destino', egreso.cuenta_destino_id), proveedor_id, nuevo_medio_pago, proveedor_tela_id)
 
     nueva_fecha = egreso.fecha
     if data.get('fecha'):
@@ -1578,10 +1608,13 @@ def _editar_egreso(request, id):
             estado=estado_factura_final, fecha_pago_real=fecha_pago_final)
 
     egreso.fecha = nueva_fecha
+    egreso.proveedor_tela_id = proveedor_tela_id
     egreso.proveedor = proveedor
     egreso.proveedor_otro_nombre = '' if proveedor else proveedor_otro_nombre
     egreso.recibido_por = recibido_por
     egreso.medio_pago = nuevo_medio_pago
+    egreso.cuenta_destino = destino
+    egreso.cuenta_destino_snapshot = snapshot(destino) if destino else {}
     egreso.valor = nuevo_valor
     egreso.concepto = (data.get('concepto') or '').strip() or egreso.concepto
     egreso.descripcion = data.get('descripcion', egreso.descripcion)

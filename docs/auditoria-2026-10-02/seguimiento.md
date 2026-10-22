@@ -523,3 +523,99 @@ Verificado: backend 551 OK (nuevas pruebas de estado del cargo, opcionales de pi
 
 **Ajuste: los opcionales habilitados cuentan en el costo y el precio (2026-10-15).** Sin selección explícita (`opcionales_ids=None`), `calcular_precio` y `costo_lista` incluyen los cargos «Opcional habilitado» del producto y de las piezas de un conjunto (`ids_preseleccionados`): costo total del producto, precio calculado, venta por grupo, catálogo y simulación de la agrupación, con el múltiplo y el grupo de tela de cada pieza. Una lista (aunque esté vacía) es la selección exacta del vendedor: al quitar un habilitado en la consulta el precio se recalcula y baja. Un conjunto sin tela cuyas filas de grupo no aplican muestra su precio único (antes quedaba sin precio). Ejemplo en pruebasv3, «Alcoba Queen»: costo total $4.260.000 (antes $4.000.000) y precio $7.497.600. Caché del catálogo invalidada. Verificado: backend 553 OK, frontend 302/302, lint 0 errores, build OK, en navegador.
 
+## 2026-10-16 — Conjuntos sin proveedor: cada pieza con el suyo
+
+| Cambio | Detalle |
+| --- | --- |
+| Piezas de varios proveedores | `misma_coleccion` (services.py): las piezas de un conjunto pueden ser subcategorías de cualquier proveedor de la misma referencia comercial (misma `clave_referencia`), p. ej. tapa de un proveedor, base de otro y sillas de un tercero. Piezas de otra referencia se rechazan. Sin referencia (líneas antiguas) sigue la regla de su propia línea. Cada pieza conserva su costo, múltiplo y proveedor (en ventas se pide a su referencia) |
+| Vista unificada | La subcategoría que es conjunto ya no muestra selector de proveedor: «Conjunto · cada pieza con el suyo». El resumen de referencias expone `es_conjunto` (con prefetch, sin consultas extra). Con un conjunto en la referencia, o al abrir «Publicación, agrupaciones y especiales», se cargan las fichas de todos los proveedores; si no, solo las de los proveedores elegidos |
+| Agrupación | El selector «Agregar pieza» agrupa por proveedor y cada fila muestra el proveedor de la pieza. Al editar costos de una pieza se refrescan también los conjuntos de otras fichas que la usan |
+
+Verificado: backend 593 OK (nuevas `ConjuntoVariosProveedoresTests`), frontend 330/330, lint 0 errores, build OK.
+
+
+## 2026-10-19 — Consultar precios vacía en pruebasv3
+
+Causa: con la lista por referencias y subcategorías (migraciones `listaprecios 0021–0024`), las 66 líneas antiguas con precios quedaron archivadas e inactivas y las 41 fichas nuevas por referencia quedaron en borrador (costos sin capturar). El vendedor solo ve líneas activas, así que el catálogo devolvía `[]`. Los nombres antiguos («Sofá 3p 235cm») no coinciden con las subcategorías nuevas (7 de 91), por lo que no se pueden trasladar los precios automáticamente.
+
+Por decisión del usuario se publicaron las 41 fichas nuevas tal como están (solo `activo=True`, en pruebasv3; estado previo en `respaldos_locales/pruebasv3_lineas_activo_antes_publicar_20261019.json`) y se invalidó la caché del catálogo. Resultado: 19 referencias y 91 productos visibles; 88 de 103 precios en $0 hasta capturar sus costos. Las 22 referencias sin subcategorías asignadas en Referencias no aparecen. **Antes de desplegar 0021–0024 a producción**: la consulta de precios quedará vacía igual, salvo que se capturen y publiquen los costos.
+
+## 2026-10-19 — «Cojines incluidos» con valor y estado; cargo «Transporte»
+
+| Cambio | Detalle |
+| --- | --- |
+| «Decorativos x2» | Ya no es fijo en $0: se edita como cualquier cargo (nombre, valor en pesos y select Opcional habilitado / deshabilitado / Obligatorio); solo su tipo no cambia y sigue siendo uno por producto. Al crearlo toma el valor sugerido `decorativos.valor_sugerido()`: 2 × el decorativo de mayor costo en el último grupo incluido (hoy Cojín en Grupo 2, 2 × $57.000 = **$114.000**). Por defecto es obligatorio |
+| Cupo de decorativos | `da_decorativos(variante, opcionales)`: obligatorio → siempre; opcional → solo si se eligió (en ventas y cotizaciones se pasan los opcionales de cada línea); sin selección, si está habilitado. En el catálogo `decorativos_incluidos` solo refleja el obligatorio; el opcional viaja en `opcionales` con `decorativos: true` y la consulta/venta dan el cupo al elegirlo |
+| «Transporte» | Botón junto a «Cojines incluidos» que agrega el cargo «Transporte» con costo $120.000 (obligatorio por defecto, editable); se oculta si el producto ya tiene un cargo con ese nombre |
+| Datos pruebasv3 | Los 3 cargos «Decorativos x2» existentes pasaron de $0 a $114.000 (estado previo en `respaldos_locales/pruebasv3_cargos_decorativos_antes_valor_20261019.json`); sube el precio de esos productos (× su múltiplo) |
+
+Verificado: backend 594 OK, frontend 332/332, lint 0 errores, build OK, en navegador.
+
+**Ajuste: el backend local quedaba caído tras un corte de MySQL al arrancar (2026-10-19).** Al reiniciar, la base de datos de Hostinger no respondió a tiempo (`2003 … timed out`); Django falló al revisar migraciones y su autoreloader quedó «esperando cambios» sin atender, así que el proxy de Vite devolvía 500 («El servidor no pudo cargar tu sesión»). `runserver.Command.check_migrations` ahora reintenta (2, 5, 10, 20 s) y, si sigue sin respuesta, arranca igual; cada petición vuelve a conectarse cuando MySQL responda. Pruebas `ArranqueSinBaseDeDatosTests`.
+
+## 2026-10-21 — Modo diurno y modo nocturno
+
+| Cambio | Detalle |
+| --- | --- |
+| Paletas | `styles/tokens.css`: diurno (azul marino `#1f3a52` sobre grises fríos, menú lateral claro con el activo en azul) y nocturno (verde esmeralda `#12a26e` sobre negro verdoso, menú lateral negro con el activo en verde), tomadas de las capturas del usuario. Se aplican con `data-tema` en `<html>`; tokens nuevos `--sidebar-*`, `--hero-*`, `--overlay`, `--surface-raised` |
+| Interruptor | Menú del perfil al pie del menú lateral: «Modo nocturno» (`role="switch"`). Se guarda por equipo en `localStorage` (`lottus-tema`) y `index.html` lo aplica antes de pintar (sin parpadeo). `hooks/useTema.js` es un estado compartido; los gráficos del inicio toman sus colores del modo activo |
+| Colores fijos | ~720 colores hexadecimales y `white` en CSS y estilos en línea pasaron a tokens según la propiedad (fondo, texto, borde). Menú lateral, barra del celular y cabecera del inicio usan tokens propios |
+| Excepciones | Imprimibles (comprobante de egreso, cotización, remisión, imágenes de pedidos) siempre en diurno, porque son papel. Oficina IA y el chat `/chat` conservan su propia paleta |
+
+Verificado: frontend 384/384, lint 0 errores, build OK; en navegador ambos modos en Inicio, Ventas, Nueva venta, Pedidos, Caja, Comprobantes de egreso, Facturas, Remisiones, Lista de precios y Administrar lista, y el menú del perfil.
+
+## 2026-10-21 — Consulta sin proveedores y transporte por envío
+
+| Cambio | Detalle |
+| --- | --- |
+| Consulta sin proveedor | Consultar precios ya no muestra proveedores (tarjeta, cabecera, configurador, propuesta). Si una subcategoría tiene varias fichas se eligen como «Opción N · desde $X»; el proveedor sigue en el ítem para ventas. Los conjuntos no dicen «Conjunto»: se ven sus piezas |
+| Transporte por envío | Cargo de tipo `transporte` (botón «Transporte», $120.000) con `unidades_por_transporte` (vacío = todas las de la línea). Migración `listaprecios 0026` (pruebasv3, respaldo `respaldos_locales/pruebasv3_antes_migr_listaprecios0026_20261021_1349.sql.gz`, 117 tablas; marca como transporte los cargos «Transporte» existentes). Regla única en `listaprecios/transportes.py`: un producto suelto lleva su transporte; el conjunto de la lista cobra uno solo (el mayor de sus piezas) en precio y costo; en cotizaciones y ventas, las piezas reunidas en un conjunto cobran uno y cada transporte lleva su cupo (6 sillas con cupo 6 = 1 transporte); productos distintos conservan el suyo. Lo no cobrado se descuenta de la línea (`LineaCotizacion.transporte_compartido`, `precio_snapshot['transporte']` en ventas) y la consulta lo calcula igual en pantalla (`transportesCompartidos`) |
+
+Verificado: backend 661 OK (`test_transportes`, `TransportesVentaTests`), frontend 387/387, lint 0 errores, build OK, en navegador.
+
+**Ajuste: verde del modo nocturno a #023328 (2026-10-21).** Botones principales, opción activa del menú, cabecera del inicio y marcas usan el verde profundo `#023328`. Como ese tono no se lee sobre fondo oscuro, el acento como texto, icono o borde usa tokens nuevos (`--accent-texto` #5cc9ab, `--accent-borde` #1a7a63; en diurno equivalen al azul marino, sin cambios) y el botón principal lleva un borde sutil (`--accent-boton-borde`) para distinguirse del fondo. 41 archivos pasaron de `color/border: var(--accent)` a estos tokens. Frontend 387/387, build OK, verificado en navegador.
+
+## 2026-10-21 — Administrar lista: sin «Subcategorías eliminadas» y botón «Nueva referencia»
+
+- Se quitó la sección desplegable «Subcategorías eliminadas» (texto y lista para recuperar) de cada referencia. Eliminar una subcategoría de la lista sigue igual (con confirmación); ya no se ofrece recuperarla desde aquí.
+- Botón «Nueva referencia» en la barra (solo con permiso ADMINISTRAR_REFERENCIAS): ventana compacta con nombre, proveedor y subcategorías (chips agrupados por categoría con buscador sin tildes); las categorías se toman de las subcategorías elegidas. Crea la referencia en el maestro de Referencias (`POST /api/referencias/`) y la deja a la vista en la lista para capturar sus costos. `usePermissions` tolera renderizar sin sesión (pruebas).
+
+Verificado: frontend 389/389 (nuevas `NuevaReferencia.test.jsx`), lint 0 errores, build OK, en navegador en ambos modos.
+
+**Ajuste: «Agregar subcategoría» en cada referencia de Administrar lista (2026-10-21).** Botón al final de las subcategorías de la referencia (permiso ADMINISTRAR_REFERENCIAS). Ventana compacta: proveedor (o todos) y subcategorías del maestro; si no existe, se crea ahí con su categoría (`POST /api/suministros/subcategorias/`). Se guarda en Referencias con `PATCH /api/referencias/<id>/` (subcategorías y categorías, sin repetir) y, si estaba eliminada de la lista, vuelve a mostrarse. Luego se le agregan los costos como a cualquier otra. El selector de subcategorías es compartido con «Nueva referencia», que ahora también puede crearlas. Verificado: frontend 392/392, backend `test_referencias_unificadas` 29 OK, build OK, en navegador.
+
+## 2026-10-21 — Cargos: orden, sugerencias de nombre y sin «Unidades por transporte»
+
+| Cambio | Detalle |
+| --- | --- |
+| Orden de los cargos | `CargoVariante.orden` (migración `listaprecios 0027`, pruebasv3 con respaldo `respaldos_locales/pruebasv3_antes_migr_listaprecios0027_20261021_1448.sql.gz`, 117 tablas); los cargos se listan por `orden, id` (también los opcionales de la consulta). Se arrastran con el asa, igual que las subcategorías (`VariantesOrdenables`), o con flechas del teclado; `POST /api/listaprecios/variantes/<id>/orden-cargos/` exige la lista completa de cargos propios (los de variantes especiales van después). Un cargo nuevo queda al final |
+| Sugerencias | `GET /api/listaprecios/cargos/nombres/`: nombres ya usados en todos los productos, los más usados primero (sin «Nuevo cargo»), en un `datalist` del nombre del cargo. Un cargo nuevo aparece vacío con el foco puesto para escribir |
+| Transporte | Se quitó de la pantalla la fila «Unidades por transporte» (el cupo queda vacío: un transporte por línea; la regla de conjuntos sigue igual) |
+| Formato | En espacios angostos (columna lateral, piezas) cada cargo usa dos líneas: nombre arriba; valor y estado abajo |
+
+Verificado: backend 664 OK (`OrdenYNombresDeCargosTests`), frontend 395/395 (`CargosVariante.test.jsx`), lint 0 errores, build OK, en navegador.
+
+## 2026-10-21 — Matriz ordenable, adicionales con unidades y adicionales al elegir la subcategoría
+
+| Cambio | Detalle |
+| --- | --- |
+| Matriz de grupos | Filas con asa para arrastrar (o flechas del teclado), igual que subcategorías y cargos. `POST /api/listaprecios/grupos-tela/ordenar/` con la lista completa; es el orden de la consulta y los dos primeros grupos de tela son los que cubren «Cojines incluidos» (se avisa en la pantalla) |
+| Varias unidades de un adicional | En Consultar precios, un adicional seleccionado muestra un contador «− n +» (hasta 9; «Cojines incluidos» y transporte, una). La selección viaja con ids repetidos; `services.conteo_opcionales` y `calcular_precio`/`costo_lista` multiplican por la cantidad (también en piezas de conjuntos y en la cotización, que guarda `cantidad` en cada opcional). La propuesta y el impreso muestran «2 × Reclino…». Las ventas siguen con una unidad por opcional |
+| Adicionales al elegir la subcategoría | La sección «Adicionales» va justo después de «Subcategoría» (antes del grupo de tela). Muestra los cargos obligatorios como fijos («incluido», solo el nombre; el catálogo expone `incluidos`) y los opcionales habilitados ya seleccionados. Mientras el vendedor no los toque, siguen a los habilitados aunque el catálogo guardado en el equipo se actualice después de abrir la consulta (causa de que no salieran seleccionados) |
+
+Verificado: backend 667 OK (`CantidadesYConsultaTests`), frontend 398/398, lint 0 errores, build OK, en navegador.
+
+**Ajuste: consulta sin lema y con nota por producto (2026-10-21).** Se quitó «Una referencia. Todas sus posibilidades.». En el configurador, entre el precio de venta y «Agregar», hay una línea compacta «Nota para este producto (opcional)» (hasta 200 caracteres): viaja en el ítem (`notaVendedor`), se ve en la propuesta y entra en las notas de la cotización y del impreso como «Nota: …». Tras agregar, la nota se limpia para la siguiente combinación; al editar un ítem se conserva. Frontend 399/399, build OK, verificado en navegador.
+
+## 2026-10-21 — Rol Contabilidad y ventas facturadas
+
+| Cambio | Detalle |
+| --- | --- |
+| Rol | `contabilidad` en `CustomUser.ROLE_CHOICES`; fila de permisos sembrada por la migración `ordenes 0080` (pruebasv3, respaldo `respaldos_locales/pruebasv3_antes_migr_ordenes0080_20261021_1551.sql.gz`, 117 tablas; se aplicó solo hasta 0080, la 0057 de Bancos sigue sin aplicar y 0061 ahora depende de 0080). Por defecto: ver todas las ventas y sus montos, ver recibos de caja y comprobantes de egreso, y marcar ventas facturadas; nada de crear ni editar (configurable en Gestión de usuarios) |
+| Permiso | `MARCAR_VENTA_FACTURADA` («Facturación: ver la columna «Facturado» y marcar ventas como facturadas») en el módulo Ventas de Gestión de usuarios |
+| Venta facturada | `Venta.facturada`, `facturada_en`, `facturada_por`; `POST /api/ventas/<id>/facturada/` {facturada: bool} con ese permiso y el alcance de ventas visible; registra auditoría; una venta anulada no se marca. Editar la venta no cambia la marca |
+| Ventas | Columna «Facturado» solo para quien tiene el permiso (los administradores lo tienen todo): botón «Marcar» → «✓ Facturada» (quién y cuándo en el título); quitar la marca pide confirmación. Sin el permiso la página no cambia |
+
+Verificado: backend 672 OK (`test_contabilidad.py`), frontend 401/401 (`FacturadoVenta.test.jsx`), lint 0 errores, build OK, en navegador.
+
+**Ajuste: fila de subcategoría compacta en Administrar lista (2026-10-22).** «Publicar / Publicada» salió de debajo del nombre y va a la derecha, después del multiplicador y antes de expandir (en celular comparte fila con el tope y el multiplicador). El selector de proveedor es más angosto (110–165 px) y todos los campos se alinean arriba, a la misma altura; se quitó el texto «Nombre compartido con Referencias» (sigue en el título al pasar el mouse). Verificado en PC (1520 px), portátil (1180 px) y celular (393 px); frontend 401/401, build OK.

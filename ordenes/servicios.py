@@ -145,6 +145,20 @@ def auditar(usuario, accion, objeto, detalle=None):
 # Idempotencia (cabecera Idempotency-Key)
 # ---------------------------------------------------------------------------
 
+
+def confirmar_pago_egreso(egreso, usuario):
+    """Con el CE bloqueado por el llamador, confirma una sola vez sus facturas."""
+    from django.utils import timezone
+    from suministros.models import FacturaProveedor
+    from . import business_time
+    if egreso.estado == 'Pagado':
+        return
+    egreso.estado, egreso.aprobado_por, egreso.fecha_aprobacion = 'Pagado', usuario, timezone.now()
+    egreso.save(update_fields=['estado', 'aprobado_por', 'fecha_aprobacion'])
+    FacturaProveedor.objects.filter(comprobante_egreso=egreso, estado='pago_en_proceso').update(
+        estado='pagada', fecha_pago_real=business_time.hoy())
+    auditar(usuario, 'egreso.aprobar', egreso)
+
 def _huella(request):
     datos = json.dumps(request.data, sort_keys=True, default=str) if hasattr(request, 'data') else ''
     return hashlib.sha256(f'{request.method}:{request.path}:{datos}'.encode()).hexdigest()

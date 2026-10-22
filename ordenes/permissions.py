@@ -50,7 +50,14 @@ AUXILIAR_FINANCIAL_FEATURES = {
     'VER_MARGENES',
 }
 
-ROLES = ('vendedor', 'administrador', 'auxiliar', 'transportador', 'marketing')
+# Contabilidad sin fila de configuración: ver ventas, recibos y comprobantes y marcar ventas
+# facturadas; nunca crear ni editar (2026-10-21). La migración siembra esta misma fila.
+CONTABILIDAD_FEATURES = {
+    'VER_TODAS_VENTAS', 'VER_PRECIOS_VENTA', 'MARCAR_VENTA_FACTURADA',
+    'ACCESO_RECIBOS', 'VER_RECIBOS', 'ACCESO_EGRESOS', 'VER_COMPROBANTES_EGRESO', 'VER_TODOS_EGRESOS',
+}
+
+ROLES = ('vendedor', 'administrador', 'auxiliar', 'transportador', 'marketing', 'contabilidad')
 
 
 def permisos_efectivos(user):
@@ -70,6 +77,8 @@ def permisos_efectivos(user):
         perms.discard('ALL')
     elif user.role == 'auxiliar':
         perms = set(AUXILIAR_FINANCIAL_FEATURES)
+    elif user.role == 'contabilidad':
+        perms = set(CONTABILIDAD_FEATURES)
     else:
         perms = set()
     if user.role == 'transportador':
