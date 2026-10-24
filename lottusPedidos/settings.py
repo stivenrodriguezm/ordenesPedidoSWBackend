@@ -210,6 +210,7 @@ INSTALLED_APPS = [
     'paginaweb',
     'listaprecios',
     'pagos',
+    'impresion',
     'django_extensions',
     'django_filters',
 ]
@@ -385,6 +386,7 @@ REST_FRAMEWORK = {
         'login': '10/min',
         'pqrs_create': '5/hour',
         'pqrs_track': '20/hour',
+        'impresion': '120/hour',
     }
 }
 

@@ -28,7 +28,12 @@ ABIERTOS = ['pendiente','en_curso','bloqueada']
 def acceso_oficina(usuario):
     if not usuario.is_active:
         return False
-    return usuario.role == 'administrador' or MiembroOficina.objects.filter(usuario=usuario,habilitado=True).exists()
+    # El administrador entra si su rol tiene la IA habilitada en Gestión de usuarios; los
+    # miembros agregados al equipo de la oficina entran siempre.
+    from types import SimpleNamespace
+    if usuario.role == 'administrador' and tiene_permiso_codigo(SimpleNamespace(user=usuario), 'USAR_ASISTENTE_IA'):
+        return True
+    return MiembroOficina.objects.filter(usuario=usuario,habilitado=True).exists()
 
 
 def _contexto(request, miembro=False, gestionar=False):

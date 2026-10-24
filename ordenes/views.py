@@ -22,7 +22,7 @@ from .serializers import (
     ProveedorTelaSerializer, PedidoTelaSerializer, DetallePedidoTelaSerializer, DireccionEntregaSerializer, UserManageSerializer
 )
 from .permissions import (
-    IsAdministradorRole, check_feature_permission, tiene_permiso_codigo, permisos_efectivos,
+    IsAdministradorRole, check_feature_permission, tiene_permiso_codigo, permisos_efectivos, ADMIN_SIEMPRE,
     ventas_visibles, ordenes_visibles, clientes_visibles, ve_todas_las_ventas,
 )
 from .consultas_reportes import consultar_ventas, consultar_recibos_caja, consultar_comprobantes_egreso
@@ -277,7 +277,7 @@ class RolePermissionViewSet(viewsets.ModelViewSet):
         # a esta misma pantalla, para no bloquear la única vía de recuperación.
         if serializer.instance.role == 'administrador':
             perms = set(serializer.validated_data.get('permissions') or [])
-            perms.update({'VER_USUARIOS', 'GESTION_USUARIOS', 'EDITAR_PERMISOS_SISTEMA'})
+            perms.update(ADMIN_SIEMPRE)
             instancia = serializer.save(permissions=sorted(perms))
         else:
             instancia = serializer.save()
@@ -427,8 +427,6 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
                 def has_permission(self, request, view):
                     if not request.user or not request.user.is_authenticated:
                         return False
-                    if request.user.role == 'administrador':
-                        return True
                     from .permissions import check_feature_permission
                     can_edit_estado = check_feature_permission('EDITAR_ESTADO_ORDEN')().has_permission(request, view)
                     can_edit_tela = check_feature_permission('EDITAR_ESTADO_TELA_ORDEN')().has_permission(request, view)
@@ -485,12 +483,8 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
         data = request.data.copy()
         from .permissions import check_feature_permission
 
-        can_edit_estado = (
-            request.user.role == 'administrador' or 
-            check_feature_permission('EDITAR_ESTADO_ORDEN')().has_permission(request, self)
-        )
+        can_edit_estado = check_feature_permission('EDITAR_ESTADO_ORDEN')().has_permission(request, self)
         can_edit_tela = (
-            request.user.role == 'administrador' or 
             request.user.role == 'vendedor' or 
             check_feature_permission('EDITAR_ESTADO_TELA_ORDEN')().has_permission(request, self)
         )
@@ -501,7 +495,7 @@ class OrdenPedidoViewSet(viewsets.ModelViewSet):
 
         new_estado = data.get('estado')
         if new_estado == 'anulado' and instance.estado != 'anulado':
-            if not (request.user.role == 'administrador' or check_feature_permission('ANULAR_ORDEN_PEDIDO')().has_permission(request, self)):
+            if not check_feature_permission('ANULAR_ORDEN_PEDIDO')().has_permission(request, self):
                 return Response({"error": "No tienes permiso para anular órdenes de pedido."}, status=status.HTTP_403_FORBIDDEN)
 
         filtered_data = {}
@@ -678,14 +672,7 @@ class _PuedeCrearOrdenPermission(BasePermission):
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
-        if request.user.role == 'administrador':
-            return True
-        from .models import RolePermission
-        rp = RolePermission.objects.filter(role=request.user.role).first()
-        if rp:
-            p = rp.permissions
-            return ('CREAR_ORDEN' in p or 'CREAR_PROPIAS_ORDENES' in p or 'CREAR_ORDENES_OTROS' in p)
-        return False
+        return any(tiene_permiso_codigo(request, c) for c in ('CREAR_ORDEN', 'CREAR_PROPIAS_ORDENES', 'CREAR_ORDENES_OTROS'))
 
 
 @api_view(['POST'])
@@ -2124,17 +2111,8 @@ def listar_ventas_pendientes_ids(request):
     # Se filtran solo las ventas en estado pendiente que no hayan finalizado pedidos
     ventas = Venta.objects.filter(estado__iexact='pendiente', estado_pedidos=False)
     
-    can_see_all = False
-    if user.role == 'administrador':
-        can_see_all = True
-    else:
-        from .models import RolePermission
-        rp = RolePermission.objects.filter(role=user.role).first()
-        if rp:
-            p = rp.permissions
-            if 'CREAR_ORDENES_OTROS' in p or 'VER_TODAS_VENTAS' in p or 'VER_TODAS_ORDENES' in p or 'ALL' in p:
-                can_see_all = True
-                
+    can_see_all = any(tiene_permiso_codigo(request, c) for c in ('CREAR_ORDENES_OTROS', 'VER_TODAS_VENTAS', 'VER_TODAS_ORDENES'))
+
     if not can_see_all:
         ventas = ventas.filter(Q(vendedor=user) | Q(vendedores_compartidos=user)).distinct()
         
@@ -2159,17 +2137,16 @@ def editar_eliminar_observacion_venta(request, obs_id):
     user = request.user
     venta = observacion.venta
     es_autor = observacion.autor_id == user.id
-    es_admin = user.role == 'administrador'
 
     if user.role == 'vendedor':
         # EDITAR_VENTA es un permiso de ROL compartido por todos los vendedores (no por venta
         # individual), así que aquí NO debe usarse como bypass: solo el autor de la nota o el
         # vendedor dueño (propio o compartido) de esa venta puntual puede editarla/borrarla.
         es_vendedor_dueno = venta.vendedor_id == user.id or venta.vendedores_compartidos.filter(id=user.id).exists()
-        autorizado = es_admin or es_autor or es_vendedor_dueno
+        autorizado = es_autor or es_vendedor_dueno
     else:
         tiene_permiso_edicion = check_feature_permission('EDITAR_VENTA')().has_permission(request, None)
-        autorizado = es_admin or es_autor or tiene_permiso_edicion
+        autorizado = es_autor or tiene_permiso_edicion
 
     if not autorizado:
         return Response({'error': 'No tienes permiso para modificar esta observación.'}, status=403)
@@ -2196,10 +2173,9 @@ def editar_eliminar_observacion_cliente(request, obs_id):
 
     user = request.user
     es_autor = observacion.autor_id == user.id
-    es_admin = user.role == 'administrador'
     tiene_permiso_edicion = check_feature_permission('EDITAR_CLIENTE')().has_permission(request, None)
 
-    if not (es_admin or es_autor or tiene_permiso_edicion):
+    if not (es_autor or tiene_permiso_edicion):
         return Response({'error': 'No tienes permiso para modificar esta observación.'}, status=403)
 
     if request.method == 'PUT':

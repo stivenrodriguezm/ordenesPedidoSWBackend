@@ -26,6 +26,7 @@ urlpatterns = [
     path("api/paginaweb/", include("paginaweb.urls")),
     path("api/listaprecios/", include("listaprecios.urls")),
     path("api/pagos-bancarios/", include("pagos.urls")),
+    path("api/impresion/", include("impresion.urls")),
     path("api/", include("ordenes.urls")),  # Incluye las rutas de la app ordenes
     path("admin/", admin.site.urls),
 ]

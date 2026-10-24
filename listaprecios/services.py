@@ -248,6 +248,29 @@ def _precio_componente(componente, grupo, general, opcionales_ids=None):
     return precio
 
 
+def precio_pieza(componente, grupo=None, opcionales_ids=None, multiplicador_general=None):
+    """Precio de una unidad de la pieza dentro de su conjunto (con sus ajustes en el conjunto)."""
+    return _precio_componente(componente, grupo, multiplicador_general, opcionales_ids or [])
+
+
+def costos_propios(juego, grupo=None, multiplicador_general=None):
+    """Lo que el conjunto suma por sí mismo además de sus piezas: sus cargos (p. ej. su
+    Transporte) con su multiplicador, menos el transporte que no se cobra por viajar junto.
+    Precio del conjunto − suma de sus piezas, con los opcionales habilitados (2026-10-24).
+    Puede ser negativo (piezas que traen cada una su transporte)."""
+    ops = list(ids_preseleccionados(juego))
+    total = calcular_precio(juego, grupo, ops, multiplicador_general=multiplicador_general)
+    piezas = sum((_precio_componente(c, grupo, multiplicador_general, ops) * c.cantidad for c in componentes_de(juego)), Decimal('0'))
+    return total - piezas
+
+
+def nombre_costos_propios(juego):
+    """«Transporte» (o los cargos propios del conjunto) y si todos son transporte."""
+    cargos = [c for c in juego.cargos.all() if not c.opcional or c.preseleccionado]
+    nombres = ', '.join(dict.fromkeys(c.descripcion for c in cargos)) or 'Transporte compartido'
+    return nombres, all(c.tipo == CargoVariante.TIPO_TRANSPORTE for c in cargos)
+
+
 def calcular_precio(variante, grupo=None, opcionales_ids=None, multiplicador_general=None, multiplicador_override=None,
                     costo_base_override=None, ignorar_precio_manual=False):
     """Calcula el precio de venta de una variante para un grupo de tela (o

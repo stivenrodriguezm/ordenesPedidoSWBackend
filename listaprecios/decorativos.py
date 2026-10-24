@@ -96,16 +96,17 @@ def elegir_incluidos(cupo, unidades):
 
 def calcular_incluidos(items, incluidos=None):
     """`items` = [{'clave', 'variante', 'grupo', 'cantidad', 'opcionales'?}] (variante con línea y
-    cargos precargados, o None; `opcionales` = ids elegidos, si se conocen). Devuelve
-    {clave: {'unidades', 'valor'}} de los decorativos cubiertos."""
+    cargos precargados, o None; `opcionales` = ids elegidos, si se conocen). Una venta guardada
+    pasa además `da_decorativos` y `tope` tal como se vendió. Devuelve {clave: {'unidades',
+    'valor'}} de los decorativos cubiertos."""
     cupo = sum(UNIDADES_POR_PRODUCTO * it['cantidad'] for it in items
-               if it['variante'] and da_decorativos(it['variante'], it.get('opcionales')))
+               if it['variante'] and (it['da_decorativos'] if 'da_decorativos' in it else da_decorativos(it['variante'], it.get('opcionales'))))
     decorativos = [it for it in items if it['variante'] and es_decorativo(it['variante'])]
     if not cupo or not decorativos:
         return {}
     incluidos = grupos_incluidos() if incluidos is None else incluidos
     unidades = []
     for it in decorativos:
-        tope = tope_por_unidad(it['variante'], it['grupo'], incluidos)
+        tope = Decimal(str(it['tope'])) if it.get('tope') is not None else tope_por_unidad(it['variante'], it['grupo'], incluidos)
         unidades += [(it['clave'], tope)] * it['cantidad']
     return elegir_incluidos(cupo, unidades)

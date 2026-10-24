@@ -23,11 +23,13 @@ actualízala aquí. El esquema de la base de datos se agrega automáticamente
   pueden llevar decimales, y se escriben con coma: `11,5 dm`, `25 %`.
 - Cada opción del menú exige un permiso; si el usuario no ve algo, puede ser falta de
   permiso (se asigna en Gestión de usuarios, `/gestion-usuarios`, solo administradores).
+  El administrador también sigue los permisos de su rol (solo Gestión de usuarios queda
+  siempre activa para él): si algo está apagado para su rol, tampoco lo ve.
 
 ## Menú lateral (sidebar) y pantallas
 
 ### General
-- **Inicio** (`/`): para el administrador es el **Panel general**: ventas del período comercial
+- **Inicio** (`/`): con el permiso de dashboard general es el **Panel general**: ventas del período comercial
   frente al mismo día del período anterior (variación, proyección al cierre, ticket), ventas de
   hoy, recaudo confirmado, caja y saldo por cobrar (ventas de los últimos 90 días); gráfico de
   ritmo acumulado (o comparación anual), ranking de asesores (compartidas Total / N) y ventas por
@@ -214,3 +216,7 @@ No hay barra superior.
   (faltan pedidos de productos o de tela).
 - **Ventas del período**: se cuentan por fecha de venta, sin anuladas; las compartidas
   se reparten Total / N entre asesores.
+- **Imprimir en la oficina**: todo botón «Imprimir» pregunta dónde: «Esta computadora»
+  (diálogo del navegador) o la Ricoh SP 3710SF de la oficina principal, que recibe el
+  documento desde cualquier lugar. Sale solo si la computadora de la oficina está
+  encendida y conectada («En línea»); si no, queda en cola hasta 12 horas.

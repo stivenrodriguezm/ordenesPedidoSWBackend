@@ -52,6 +52,9 @@ class Referencia(models.Model):
         return f'{self.nombre} ({self.proveedor.nombre_empresa})'
 
 class Cliente(models.Model):
+    TIPO_PERSONA_CHOICES = [('natural', 'Persona natural'), ('juridica', 'Persona jurídica')]
+    tipo_persona = models.CharField(max_length=8, choices=TIPO_PERSONA_CHOICES, default='natural', db_index=True)
+    # Nombre/razón social y cédula/NIT conservan sus columnas e identidad histórica.
     nombre = models.CharField(max_length=255, db_index=True)
     cedula = models.CharField(max_length=20, unique=True, db_index=True)
     correo = models.EmailField(blank=True, null=True)

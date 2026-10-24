@@ -59,15 +59,17 @@ CONTABILIDAD_FEATURES = {
 
 ROLES = ('vendedor', 'administrador', 'auxiliar', 'transportador', 'marketing', 'contabilidad')
 
+# El administrador obedece los permisos de su rol como cualquier otro (2026-10-24); solo
+# conserva siempre Gestión de usuarios, la única vía para corregir una configuración.
+ADMIN_SIEMPRE = {'VER_USUARIOS', 'GESTION_USUARIOS', 'ADMINISTRAR_USUARIOS', 'EDITAR_PERMISOS_SISTEMA'}
+
 
 def permisos_efectivos(user):
     """Conjunto de códigos de permiso del usuario. 'ALL' significa acceso total
-    (solo el rol administrador). Distingue rol sin configuración (usa los
-    valores por defecto) de una lista deliberadamente vacía (sin permisos)."""
+    (solo el administrador cuyo rol aún no tiene configuración). Distingue rol sin
+    configuración (usa los valores por defecto) de una lista deliberadamente vacía."""
     if not user or not user.is_authenticated:
         return set()
-    if user.role == 'administrador':
-        return {'ALL'}
     from .models import RolePermission
     rp = RolePermission.objects.filter(role=user.role).first()
     if rp is not None and isinstance(rp.permissions, list):
@@ -75,6 +77,10 @@ def permisos_efectivos(user):
         # la UI; se ignora una vez que existe una configuración explícita.
         perms = set(rp.permissions)
         perms.discard('ALL')
+        if user.role == 'administrador':
+            perms |= ADMIN_SIEMPRE
+    elif user.role == 'administrador':
+        return {'ALL'}
     elif user.role == 'auxiliar':
         perms = set(AUXILIAR_FINANCIAL_FEATURES)
     elif user.role == 'contabilidad':
@@ -125,7 +131,7 @@ def ve_todas_las_ventas(request):
     """Rol vendedor o permiso 'solo propias' sin 'todas' → solo propias/compartidas.
     Los demás roles conservan el alcance completo que ya tenían."""
     user = request.user
-    if user.role == 'administrador' or tiene_permiso_codigo(request, 'VER_TODAS_VENTAS'):
+    if tiene_permiso_codigo(request, 'VER_TODAS_VENTAS'):
         return True
     perms = _permisos_de_request(request)
     if user.role == 'vendedor' or 'VER_PROPIAS_VENTAS' in perms:

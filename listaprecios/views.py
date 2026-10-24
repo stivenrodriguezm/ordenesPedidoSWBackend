@@ -6,7 +6,6 @@ import uuid
 
 from django.db import models, transaction
 from django.db.models import Q, Prefetch
-from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import viewsets, status, serializers
@@ -170,24 +169,37 @@ class MultiplicadorViewSet(viewsets.ModelViewSet):
         })
 
     def destroy(self, request, *args, **kwargs):
+        """Eliminar un multiplicador en uso (2026-10-24): sus productos pasan al que se elija
+        (`?reasignar_a=<id>`, por defecto el general). Las ventas no cambian: cada línea guardó
+        su precio y su multiplicador al venderse."""
         instance = self.get_object()
         if instance.es_general:
             return Response(
                 {'error': 'No se puede eliminar el multiplicador general. Marca otro como general primero.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        try:
-            return super().destroy(request, *args, **kwargs)
-        except ProtectedError:
-            return Response(
-                {'error': 'No se puede eliminar: hay variantes usando este multiplicador. Reasígnalas primero.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        crudo = request.query_params.get('reasignar_a') or ''
+        destino = None
+        if crudo not in ('', 'general'):
+            destino = Multiplicador.objects.exclude(pk=instance.pk).filter(pk=crudo if crudo.isdigit() else None).first()
+            if destino is None:
+                return Response({'error': 'El multiplicador al que pasarían sus productos no existe.'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            ids = list(instance.variantes.values_list('pk', flat=True))
+            VarianteProducto.objects.filter(pk__in=ids).update(multiplicador=destino)
+            auditar(request.user, 'precios.multiplicador.eliminar', instance, {
+                'nombre': instance.nombre, 'valor': str(instance.valor),
+                'productos_reasignados': ids, 'destino': destino.pk if destino else 'general',
+            })
+            instance.delete()
+            transaction.on_commit(cache_catalogo.invalidar)
+        return Response({'reasignados': len(ids), 'destino': destino.nombre if destino else 'General'})
 
     @action(detail=True, methods=['get'])
     def impacto(self, request, pk=None):
         multiplicador = self.get_object()
-        return Response(impacto_multiplicador(multiplicador))
+        # Para eliminarlo: todos los productos que lo tienen asignado, publicados o no.
+        return Response({**impacto_multiplicador(multiplicador), 'productos_asignados': multiplicador.variantes.count()})
 
     @action(detail=True, methods=['post'], url_path='simular')
     def simular(self, request, pk=None):
@@ -717,8 +729,8 @@ class CotizacionViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if not user or not user.is_authenticated:
             return qs.none()
-        # Administrador y VER_TODAS_VENTAS ven todas las cotizaciones
-        if getattr(user, 'role', '') == 'administrador' or tiene_permiso_codigo(self.request, 'VER_TODAS_VENTAS'):
+        # VER_TODAS_VENTAS ve todas las cotizaciones
+        if tiene_permiso_codigo(self.request, 'VER_TODAS_VENTAS'):
             return qs
         if getattr(user, 'role', '') == 'vendedor' or tiene_permiso_codigo(self.request, 'VER_PROPIAS_VENTAS'):
             return qs.filter(asesor=user)

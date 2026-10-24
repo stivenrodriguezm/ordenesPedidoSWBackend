@@ -1,9 +1,11 @@
 """Filtros compartidos por directorio y exportación de clientes."""
 from django.db.models import Q
 from rest_framework import serializers
+from .models import Cliente
 
 
 class FiltrosClientes(serializers.Serializer):
+    tipo_persona = serializers.ChoiceField(choices=Cliente.TIPO_PERSONA_CHOICES, required=False, allow_blank=True)
     query = serializers.CharField(max_length=255, required=False, allow_blank=True)
     search = serializers.CharField(max_length=255, required=False, allow_blank=True)
     cedula = serializers.CharField(max_length=20, required=False, allow_blank=True)
@@ -23,4 +25,6 @@ def filtrar_clientes(qs, parametros):
             qs = qs.filter(consulta)
     if filtros.get('cedula'):
         qs = qs.filter(cedula=filtros['cedula'])
+    if filtros.get('tipo_persona'):
+        qs = qs.filter(tipo_persona=filtros['tipo_persona'])
     return qs.order_by('-id'), filtros

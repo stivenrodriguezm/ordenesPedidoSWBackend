@@ -20,7 +20,8 @@ from .serializers import (
     CostoAdicionalInventarioSerializer, ItemInventarioTelaCueroSerializer
 )
 from rest_framework.permissions import IsAuthenticated, BasePermission
-from ordenes.permissions import check_feature_permission
+from ordenes.permissions import check_feature_permission, tiene_permiso_codigo
+from rest_framework.exceptions import PermissionDenied
 from ordenes.servicios import idempotente
 from django.db import transaction
 from . import entregas, movimientos, recepcion
@@ -161,6 +162,9 @@ class InventarioViewSet(viewsets.ModelViewSet):
         # (remisión activa, devolución al proveedor) y deja su movimiento.
         item = Inventario.objects.select_for_update().get(pk=serializer.instance.pk)
         datos = serializer.validated_data
+        cambia_estado = any(c in datos and datos[c] != getattr(item, c) for c in ('disponibilidad', 'estado_fisico'))
+        if cambia_estado and not tiene_permiso_codigo(self.request, 'EDITAR_ESTADO_ITEM'):
+            raise PermissionDenied('No tienes permiso para cambiar el estado físico o la disponibilidad.')
         venta = datos['venta'].pk if datos.get('venta') else None
         movimientos.validar_edicion_manual(
             item, datos.get('disponibilidad'), venta if 'venta' in datos else False,
@@ -261,6 +265,15 @@ class ItemInventarioTelaCueroViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return ItemInventarioTelaCuero.objects.all()
 
+def _dia(valor):
+    """Día local de una fecha o fecha-hora (el formulario reenvía la hora del momento)."""
+    from datetime import datetime
+    from django.utils import timezone
+    if isinstance(valor, datetime):
+        return timezone.localtime(valor).date() if timezone.is_aware(valor) else valor.date()
+    return valor
+
+
 class FacturaProveedorViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ['create']:
@@ -304,6 +317,15 @@ class FacturaProveedorViewSet(viewsets.ModelViewSet):
     search_fields = ['id_manual', 'proveedor__nombre_empresa']
     ordering_fields = ['fecha_factura', 'fecha_pago']
     ordering = ['-fecha_factura', '-id']
+
+    def perform_update(self, serializer):
+        # Las fechas de una factura ya registrada solo las cambia quien tiene el permiso.
+        if not tiene_permiso_codigo(self.request, 'EDITAR_FECHAS_FACTURA'):
+            factura, datos = serializer.instance, serializer.validated_data
+            if 'fecha_factura' in datos and _dia(datos['fecha_factura']) != _dia(factura.fecha_factura) \
+                    or 'fecha_pago' in datos and datos['fecha_pago'] != factura.fecha_pago:
+                raise PermissionDenied('No tienes permiso para cambiar las fechas de la factura.')
+        serializer.save()
 
     @idempotente('factura.crear')
     def create(self, request, *args, **kwargs):

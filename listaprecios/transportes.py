@@ -83,10 +83,11 @@ def calcular_compartidos(items):
         v = it.get('variante')
         if v is None or componentes_de(v):
             continue
-        t = valor_venta(v, it.get('opcionales'))
+        # Una venta guardada pasa su transporte y cupo como se vendió (no los de la lista actual).
+        t = Decimal(str(it['valor_transporte'])) if it.get('valor_transporte') is not None else valor_venta(v, it.get('opcionales'))
         if t <= 0:
             continue
-        linea = {'clave': it['clave'], 'valor': t, 'cantidad': it['cantidad'], 'cupo': cupo(v),
+        linea = {'clave': it['clave'], 'valor': t, 'cantidad': it['cantidad'], 'cupo': it['cupo'] if 'cupo' in it else cupo(v),
                  'veces': max(1, int(it.get('conjunto_cantidad') or 1))}
         if it.get('conjunto'):
             grupos.setdefault(it['conjunto'], []).append(linea)

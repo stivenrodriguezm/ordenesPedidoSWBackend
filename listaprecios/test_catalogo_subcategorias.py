@@ -92,6 +92,7 @@ class CatalogoSubcategoriasTests(LottusTestCase):
         self.assertEqual(self.c.get(f'/api/listaprecios/variantes/{self.producto.pk}/precio/').status_code, 404)
         LineaProducto.objects.filter(pk=self.linea.pk).update(activo=False)
         self.linea.variantes.update(publicado=False)
+        cache.clear()  # cambio directo en la base (sin señales): la caché del catálogo no se entera
         self.assertEqual(self.c.get('/api/listaprecios/catalogo/', {'q': 'Valencia'}).data, [])
         self.assertTrue(all(not p['seleccionable'] and p['estado_precio'] == 'borrador' for p in self.c.get('/api/productos-venta/catalogo/').data['results']))
 
@@ -109,6 +110,7 @@ class CatalogoSubcategoriasTests(LottusTestCase):
         self.assertEqual([v['subcategoria'] for v in publico], [self.silla.pk, self.mesa.pk])
         self.assertEqual([v['subcategoria'] for v in ventas], [self.silla.pk, self.mesa.pk])
         DisposicionReferenciaPrecio.objects.update(retiradas=[self.mesa.pk])
+        cache.clear()  # cambio directo en la base (sin señales)
         self.assertEqual([v['subcategoria'] for v in self.c.get('/api/productos-venta/catalogo/').data['results']], [self.silla.pk])
 
     def test_proveedores_homonimos_no_se_mezclan_al_buscar_y_elegir(self):

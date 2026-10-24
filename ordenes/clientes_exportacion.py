@@ -10,15 +10,15 @@ from rest_framework.permissions import IsAuthenticated
 
 from .clientes_datos import filtrar_clientes
 from .exportaciones import filtros_sin_datos_personales
-from .models import RegistroAuditoria
+from .models import Cliente, RegistroAuditoria
 from .permissions import check_feature_permission, clientes_visibles, ve_todas_las_ventas
 from .servicios import ErrorNegocio
 
 LIMITE_EXPORTACION = 10000
 COLUMNAS = (
-    ('id', 'ID'), ('nombre', 'Nombre'), ('cedula', 'Cédula'), ('correo', 'Correo'),
+    ('id', 'ID'), ('nombre', 'Nombre / Razón social'), ('cedula', 'Cédula / NIT'), ('correo', 'Correo'),
     ('direccion', 'Dirección'), ('barrio', 'Barrio'), ('ciudad', 'Ciudad'),
-    ('telefono1', 'Teléfono 1'), ('telefono2', 'Teléfono 2'),
+    ('telefono1', 'Teléfono 1'), ('telefono2', 'Teléfono 2'), ('tipo_persona', 'Tipo de persona'),
 )
 
 
@@ -38,7 +38,9 @@ def exportar_clientes(request):
     hoja.append([titulo for _, titulo in COLUMNAS])
     for fila in filas:
         celdas = []
-        for valor in fila:
+        for campo, valor in zip(campos, fila):
+            if campo == 'tipo_persona':
+                valor = dict(Cliente.TIPO_PERSONA_CHOICES).get(valor, valor)
             texto = '' if valor is None else str(valor)
             if ILLEGAL_CHARACTERS_RE.search(texto):
                 raise ErrorNegocio('Hay caracteres de control no admitidos por Excel. Revisa el formato de las fichas antes de exportar.', 400)

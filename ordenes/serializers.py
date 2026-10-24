@@ -604,7 +604,7 @@ class ClienteDetalleSerializer(serializers.ModelSerializer):
     observaciones = ObservacionClienteSerializer(many=True, read_only=True)
     class Meta:
         model = Cliente
-        fields = ['id', 'nombre', 'cedula', 'correo', 'direccion', 'ciudad', 'telefono1', 'telefono2', 'observaciones']
+        fields = ['id', 'tipo_persona', 'nombre', 'cedula', 'correo', 'direccion', 'barrio', 'ciudad', 'telefono1', 'telefono2', 'observaciones']
 
 class VentaDetalleSerializer(SinMargenSinPermisoMixin, serializers.ModelSerializer):
     gestion = serializers.SerializerMethodField(read_only=True)

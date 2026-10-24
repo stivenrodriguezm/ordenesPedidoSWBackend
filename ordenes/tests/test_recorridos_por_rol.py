@@ -11,7 +11,7 @@ from datetime import date
 from decimal import Decimal
 
 from ordenes.models import DetallePedido, OrdenPedido, PagoReciboCaja, ReciboCaja, RolePermission, Venta
-from ordenes.permissions import PERMISSION_ALIASES
+from ordenes.permissions import ADMIN_SIEMPRE, PERMISSION_ALIASES
 from ordenes.servicios import cuenta_principal
 from ordenes.tests.roles_reales import ROLES_REALES_2026_10_06 as ROLES
 from ordenes.tests.utils import LottusTestCase
@@ -19,8 +19,12 @@ from suministros.models import Inventario, MovimientoInventario, RemisionSuminis
 
 
 def tiene(rol, codigo):
-    codigos = set(ROLES.get(rol, []))
-    return rol == 'administrador' or 'ALL' in codigos or bool(PERMISSION_ALIASES.get(codigo, {codigo}) & codigos)
+    # Con configuración guardada, 'ALL' heredado no cuenta; el administrador también la sigue
+    # y solo conserva siempre Gestión de usuarios (2026-10-24).
+    codigos = set(ROLES.get(rol, [])) - {'ALL'}
+    if rol == 'administrador':
+        codigos |= ADMIN_SIEMPRE
+    return bool(PERMISSION_ALIASES.get(codigo, {codigo}) & codigos)
 
 
 class RecorridosPorRolTests(LottusTestCase):
@@ -132,7 +136,12 @@ class RecorridosPorRolTests(LottusTestCase):
         self.assertEqual(r.status_code, 201, r.data)
         rem2 = r.data['id']
         self.assertEqual(self.api(self.principal).patch(f'/api/suministros/remisiones/{rem2}/', {'estado': 'anulada', 'motivo': 'Cambio de fecha'}, format='json').status_code, 403)
-        self.assertEqual(self.api(self.admin).patch(f'/api/suministros/remisiones/{rem2}/', {'estado': 'anulada', 'motivo': 'Cambio de fecha'}, format='json').status_code, 200)
+        # Con la configuración real el administrador no ve remisiones ajenas ni anula cobros
+        # (le faltan VER_TODAS_REMISIONES y EDITAR_RECIBO); con esos permisos sí.
+        anular = lambda: self.api(self.admin).patch(f'/api/suministros/remisiones/{rem2}/', {'estado': 'anulada', 'motivo': 'Cambio de fecha'}, format='json')
+        self.assertEqual(anular().status_code, 404)
+        self.permisos('administrador', ROLES['administrador'] + ['VER_TODAS_REMISIONES', 'EDITAR_RECIBO'])
+        self.assertEqual(anular().status_code, 200)
         u3.refresh_from_db()
         self.assertEqual(u3.disponibilidad, 'cliente')
 

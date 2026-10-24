@@ -64,7 +64,7 @@ class DatosClientesTests(LottusTestCase):
         hoja = self.hoja(r)
         celdas = list(hoja.rows)[1]
         self.assertEqual([c.value for c in celdas], [str(self.propio.pk), valores['nombre'], '001234', None,
-            valores['direccion'], valores['barrio'], valores['ciudad'], valores['telefono1'], valores['telefono2']])
+            valores['direccion'], valores['barrio'], valores['ciudad'], valores['telefono1'], valores['telefono2'], 'Persona natural'])
         for celda in celdas:
             self.assertNotEqual(celda.data_type, 'f')
             self.assertIsNone(celda.hyperlink)

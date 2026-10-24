@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from listaprecios.models import CargoVariante, ComponenteJuego, GrupoTela, LineaProducto, VarianteProducto
 from ordenes.gestion_venta import texto_remision
-from ordenes.models import LineaVenta, ProveedorTela
+from ordenes.models import LineaVenta, ProveedorTela, RolePermission
 from ordenes.tests import test_productos_venta as base
 from ordenes.tests.utils import LottusTestCase
 
@@ -16,7 +16,7 @@ class ConjuntosYFacturaTests(LottusTestCase):
 
     def setUp(self):
         base.ProductosVentaTests.setUp(self)
-        self.permisos('administrador', ['ALL'])
+        RolePermission.objects.filter(role='administrador').delete()  # sin configuración = acceso total
 
     def test_sin_texto_para_el_cliente_la_remision_usa_el_nombre(self):
         d = self.guardar([self.fila(texto_cliente='')])
@@ -53,9 +53,10 @@ class ConjuntosYFacturaTests(LottusTestCase):
         juego.costo_base = 10
         juego.save()
         self.assertEqual(len(self.api_asesor.get('/api/productos-venta/catalogo/', {'id': juego.pk}).data['results'][0]['piezas']), 2)
-        # Con cargos fijos propios del juego no se divide: se agrega entero.
+        # Con cargos propios también se divide (2026-10-24): los cargos van aparte, como costos del conjunto.
         CargoVariante.objects.create(variante=juego, descripcion='Armado', valor=10)
-        self.assertEqual(self.api_asesor.get('/api/productos-venta/catalogo/', {'id': juego.pk}).data['results'][0]['piezas'], [])
+        p = self.api_asesor.get('/api/productos-venta/catalogo/', {'id': juego.pk}).data['results'][0]
+        self.assertEqual((len(p['piezas']), p['costos_conjunto'], p['costos_conjunto_tipo']), (2, '20.00', 'ajuste'))
 
     def test_costo_sugerido_para_la_factura(self):
         # Lista 230 por unidad (ver ProductosVentaTests) ÷ multiplicador 2 = 115.
@@ -108,7 +109,7 @@ class DecorativosTests(LottusTestCase):
 
     def setUp(self):
         base.ProductosVentaTests.setUp(self)
-        self.permisos('administrador', ['ALL'])
+        RolePermission.objects.filter(role='administrador').delete()  # sin configuración = acceso total
         self.g2 = GrupoTela.objects.create(nombre='Grupo 2', precio_por_metro=20, orden=2)
         self.g3 = GrupoTela.objects.create(nombre='Grupo 3', precio_por_metro=40, orden=3)
         # Decorativo: (10 + 1 m × precio del grupo) × 2 → grupo 1 = 40, grupo 2 = 60, grupo 3 = 100.
@@ -143,7 +144,11 @@ class DecorativosTests(LottusTestCase):
         filas = self.filas()
         for f, l in zip(filas, sin['lineas']):
             f['id'] = l['id']
+        # La venta ya guardada queda como se vendió (2026-10-24) hasta actualizar su precio.
         d = self.guardar(filas, revision=sin['revision'])
+        self.assertEqual(Decimal(d['valor_lista']), Decimal(230 + 40 + 200))
+        filas[0]['recalcular'] = True
+        d = self.guardar(filas, revision=d['revision'])
         # Cupo 2 (1 sofá): los dos de grupo 3 (cubren 60 c/u, lo que valen en grupo 2); el de grupo 1 se cobra.
         self.assertEqual(Decimal(d['valor_lista']), Decimal(230 + 40 + 200 - 120))
         sofa, g1, g3 = d['lineas']
@@ -211,7 +216,7 @@ class TransportesVentaTests(LottusTestCase):
 
     def setUp(self):
         base.ProductosVentaTests.setUp(self)
-        self.permisos('administrador', ['ALL'])
+        RolePermission.objects.filter(role='administrador').delete()  # sin configuración = acceso total
         # Sofá: (100 + 2 m × 10 + 5 fijo − 10 «Sin tapa») × 2 = 230; con transporte 50 → 330 por unidad.
         CargoVariante.objects.create(variante=self.variante, descripcion='Transporte', valor=50, tipo='transporte', unidades_por_transporte=2)
         self.mesa = VarianteProducto.objects.create(linea=self.variante.linea, categoria=self.variante.categoria, nombre='Mesa', costo_base=50)

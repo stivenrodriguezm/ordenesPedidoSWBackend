@@ -18,7 +18,7 @@ from .permissions import clientes_visibles, ventas_visibles
 from .serializers import ClienteSerializer
 from .servicios import ErrorNegocio, auditar
 
-CAMPOS = ('nombre', 'cedula', 'correo', 'telefono1', 'telefono2', 'direccion', 'barrio', 'ciudad')
+CAMPOS = ('nombre', 'cedula', 'correo', 'telefono1', 'telefono2', 'direccion', 'barrio', 'ciudad', 'tipo_persona')
 EDITABLES = ('nombre', 'correo', 'telefono1', 'telefono2', 'direccion', 'barrio', 'ciudad')
 LIMITE_CLIENTES = 5000
 LIMITE_GRUPO = 50
