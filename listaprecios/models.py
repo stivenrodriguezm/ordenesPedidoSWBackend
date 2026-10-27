@@ -161,6 +161,12 @@ class VarianteProducto(models.Model):
     descuento_maximo = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True, verbose_name="Descuento máximo (%)"
     )
+    # Variación en cuero (2026-10-27): al tapizar en un grupo de cuero el costo cambia en pesos
+    # o en % (sobre costo base + cuero), antes del multiplicador. Vacío = sin variación.
+    VARIACION_PESOS, VARIACION_PORCENTAJE = 'pesos', 'porcentaje'
+    VARIACION_CHOICES = [(VARIACION_PESOS, 'Pesos'), (VARIACION_PORCENTAJE, 'Porcentaje')]
+    variacion_cuero_tipo = models.CharField(max_length=10, choices=VARIACION_CHOICES, blank=True, default='')
+    variacion_cuero_valor = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
 
     class Meta:
         db_table = 'listaprecios_variante_producto'
@@ -219,6 +225,17 @@ class CargoVariante(models.Model):
     unidades_por_transporte = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name='Unidades por transporte')
     # Posición en el producto (2026-10-21): se ordena arrastrando, igual que las subcategorías.
     orden = models.PositiveIntegerField(default=0)
+    # (2026-10-27) Un cargo normal puede valer un % del costo base (valor = el porcentaje) y
+    # consumir tela/cuero, cobrados con el grupo que se elige para el producto.
+    MODO_PESOS, MODO_PORCENTAJE = 'pesos', 'porcentaje'
+    MODO_CHOICES = [(MODO_PESOS, 'Pesos'), (MODO_PORCENTAJE, 'Porcentaje del costo base')]
+    modo_valor = models.CharField(max_length=10, choices=MODO_CHOICES, default=MODO_PESOS)
+    metraje_tela = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True, verbose_name='Tela (m)')
+    decimetraje_cuero = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True, verbose_name='Cuero (dm)')
+    # No = cuando el producto es pieza de una agrupación, el cargo no aparece ni se cobra allí.
+    en_agrupacion = models.BooleanField(default=True, verbose_name='Mostrar en agrupación')
+    # Máximo de unidades de un opcional (p. ej. 3 reclinos en un sofá de 3). Vacío = el general.
+    cantidad_maxima = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name='Máximo de unidades')
 
     class Meta:
         db_table = 'listaprecios_cargo_variante'

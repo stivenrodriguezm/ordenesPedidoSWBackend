@@ -638,7 +638,7 @@ def listar_pedidos(request):
 
 def _detalles_con_recibidas():
     """Líneas con su referencia y las unidades recibidas por factura (P11-01), en una consulta."""
-    return Prefetch('detalles', queryset=DetallePedido.objects.select_related('referencia').annotate(
+    return Prefetch('detalles', queryset=DetallePedido.objects.select_related('referencia', 'subcategoria').annotate(
         n_recibidas=contar_recibidas(), n_rechazadas=sumar_rechazadas()))
 
 
@@ -721,8 +721,8 @@ def detalles_pedido(request, orden_id):
         return Response({"error": "Orden no encontrada"}, status=404)
     try:
         # OPTIMIZACIÓN: Usar `select_related` y `only` para traer solo lo necesario
-        detalles = DetallePedido.objects.filter(orden_id=orden_id).select_related('referencia').only(
-            'cantidad', 'especificaciones', 'referencia__nombre'
+        detalles = DetallePedido.objects.filter(orden_id=orden_id).select_related('referencia', 'subcategoria').only(
+            'cantidad', 'especificaciones', 'referencia__nombre', 'subcategoria__nombre'
         ).annotate(n_recibidas=contar_recibidas(), n_rechazadas=sumar_rechazadas())
         
         # Obtener la observación de la orden
@@ -737,6 +737,7 @@ def detalles_pedido(request, orden_id):
             "especificaciones": d.especificaciones,
             "referencia": d.referencia.nombre if d.referencia else "N/A",
             "referencia_nombre": d.referencia.nombre if d.referencia else "N/A",
+            "subcategoria_nombre": d.subcategoria.nombre if d.subcategoria_id else "",
             # Unidades recibidas por factura y rechazadas al recibir (P11-01).
             "id": d.id,
             "recibidas": d.n_recibidas,
@@ -2010,12 +2011,37 @@ class PedidoTelaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
 
+        if instance.estado == PedidoTela.ANULADO:
+            return Response({'error': 'Este pedido de tela está anulado; su estado ya no cambia.'}, status=status.HTTP_400_BAD_REQUEST)
         # Only allow the 'estado' field to be updated via PATCH
         new_estado = request.data.get('estado', instance.estado)
+        if new_estado == PedidoTela.ANULADO:
+            return self._anular(request, instance)
         serializer = self.get_serializer(instance, data={'estado': new_estado}, partial=True)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
         return Response(serializer.data)
+
+    def _anular(self, request, instance):
+        """Anula sin borrar (permiso ANULAR_PEDIDO_TELA): queda el motivo, quién y cuándo, y la
+        tela de sus productos vuelve a quedar por pedir."""
+        from .productos_venta import liberar_tela_anulada
+        if not tiene_permiso_codigo(request, 'ANULAR_PEDIDO_TELA'):
+            return Response({'error': 'No tienes permiso para anular pedidos de tela.'}, status=status.HTTP_403_FORBIDDEN)
+        motivo = str(request.data.get('motivo_anulacion') or '').strip()
+        if not motivo:
+            return Response({'error': 'Escribe el motivo de la anulación.'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            pedido = PedidoTela.objects.select_for_update().get(pk=instance.pk)
+            if pedido.estado == PedidoTela.ANULADO:
+                return Response({'error': 'Este pedido de tela ya está anulado.'}, status=status.HTTP_400_BAD_REQUEST)
+            anterior = pedido.estado
+            pedido.estado, pedido.motivo_anulacion = PedidoTela.ANULADO, motivo[:1000]
+            pedido.anulado_por, pedido.anulado_en = request.user, timezone.now()
+            pedido.save(update_fields=['estado', 'motivo_anulacion', 'anulado_por', 'anulado_en'])
+            liberar_tela_anulada(pedido)
+            auditar(request.user, 'pedido_tela.anulado', pedido, {'estado_anterior': anterior, 'motivo': pedido.motivo_anulacion})
+        return Response(self.get_serializer(self.get_queryset().get(pk=pedido.pk)).data)
 
 class DetallePedidoTelaViewSet(viewsets.ModelViewSet):
     queryset = DetallePedidoTela.objects.all()

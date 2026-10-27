@@ -35,20 +35,20 @@ from .serializers import (
 )
 from .disposicion import guardar_disposicion, renombrar_subcategoria, retirada, disposicion
 from .especiales import aplicar_configurado, archivar_historico
-from .referencias import categoria_variante, nombre_linea, sincronizar_subcategorias, productos_actuales
+from .referencias import categoria_variante, nombre_linea, sincronizar_subcategorias, productos_actuales, subcategoria_pedida
 from . import cache_catalogo
 from .services import (
     impacto_categoria, impacto_multiplicador, impacto_grupo_tela, obtener_grupos_tela, calcular_precio, precios_por_variante,
     opcionales_de_variante, obtener_multiplicador_general, establecer_multiplicador_general,
     asignar_multiplicador_masivo, simular_multiplicador, validar_descuento_documento, costo_lista, tope_descuento,
     PREFETCH_JUEGOS, guardar_componentes, simular_componentes, ordenar_variantes, crear_agrupacion, aplicar_especial,
+    validar_unidades_opcionales,
 )
 
 logger = logging.getLogger(__name__)
 
 
 ACCIONES_LECTURA = {'list', 'retrieve', 'impacto', 'biblioteca'}
-MAX_UNIDADES_OPCIONAL = 9  # unidades de un mismo adicional en una consulta
 
 
 def _permisos_por_accion(view, permiso_lectura):
@@ -331,8 +331,10 @@ class LineaProductoViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='sincronizar-subcategorias')
     def sincronizar(self, request, pk=None):
-        linea = self.get_object()
-        sincronizar_subcategorias(linea)
+        # Sin la precarga completa de get_object(): la ficha se carga una sola vez, al responder.
+        linea = get_object_or_404(LineaProducto.objects.select_related('referencia'), pk=pk)
+        self.check_object_permissions(request, linea)
+        sincronizar_subcategorias(linea, subcategoria_pedida(request.data.get('subcategoria')))
         linea = self.get_queryset().get(pk=linea.pk)
         return Response(LineaProductoSerializer(linea, context=self.get_serializer_context()).data)
 
@@ -662,8 +664,10 @@ def calcular_precio_variante(request, variante_id):
     por_id = {o['id']: o for o in disponibles_opcionales}
     if not set(conteo).issubset(por_id):
         return Response({'error': 'Algún adicional ya no está disponible para este producto.'}, status=status.HTTP_400_BAD_REQUEST)
-    if any(n > (MAX_UNIDADES_OPCIONAL if por_id[i].get('multiple') else 1) for i, n in conteo.items()):
-        return Response({'error': f'Cada adicional admite hasta {MAX_UNIDADES_OPCIONAL} unidades (cojines y transporte, una).'}, status=status.HTTP_400_BAD_REQUEST)
+    excedido = next((por_id[i] for i, n in conteo.items() if n > por_id[i]['maximo']), None)
+    if excedido:
+        return Response({'error': f"«{excedido['descripcion']}» admite hasta {excedido['maximo']} unidad{'es' if excedido['maximo'] != 1 else ''}."},
+                        status=status.HTTP_400_BAD_REQUEST)
 
     precio = calcular_precio(variante, grupo, opcionales_ids=seleccion)
     incluidos = [{**o, 'cantidad': conteo[o['id']]} for o in disponibles_opcionales if o['id'] in conteo]
@@ -776,6 +780,8 @@ class CotizacionViewSet(viewsets.ModelViewSet):
                 g_id = l.get('grupo_tela') or l.get('grupoId')
                 g_obj = grupos_map.get(int(g_id)) if g_id else None
 
+                if v_obj:
+                    validar_unidades_opcionales(v_obj, l.get('opcionales', []))
                 costo_est = costo_lista(v_obj, g_obj, l.get('opcionales', [])) if v_obj else None
 
                 lineas_info.append({
@@ -874,6 +880,8 @@ class CotizacionViewSet(viewsets.ModelViewSet):
                     g_id = l.get('grupo_tela') or l.get('grupoId')
                     g_obj = grupos_map.get(int(g_id)) if g_id else None
 
+                    if v_obj:
+                        validar_unidades_opcionales(v_obj, l.get('opcionales', []))
                     costo_est = costo_lista(v_obj, g_obj, l.get('opcionales', [])) if v_obj else None
 
                     lineas_info.append({

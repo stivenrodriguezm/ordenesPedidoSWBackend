@@ -35,7 +35,7 @@ from collections import defaultdict
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 from django.db import transaction
-from django.db.models import Prefetch, Q, Sum
+from django.db.models import F, Prefetch, Q, Sum
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import serializers
@@ -50,9 +50,10 @@ from listaprecios.decorativos import calcular_incluidos, da_decorativos, es_deco
 from listaprecios.transportes import calcular_compartidos
 from listaprecios.services import (PREFETCH_JUEGOS, calcular_precio, componentes_de, costo_lista, metraje_total,
                                    multiplicador_efectivo, obtener_multiplicador_general, resumen_componentes, usa_tela, grupo_aplicable,
-                                   ids_opcionales, opcionales_piezas, precio_pieza, costos_propios, nombre_costos_propios)
+                                   ids_opcionales, opcionales_piezas, precio_pieza, costos_propios, nombre_costos_propios,
+                                   valor_cargo, vista_en_conjunto)
 from . import gestion_venta
-from .models import DetallePedido, DetallePedidoTela, DireccionEntrega, LineaVenta, OrdenPedido, ProveedorTela, Referencia, Venta
+from .models import DetallePedido, DetallePedidoTela, DireccionEntrega, LineaVenta, OrdenPedido, PedidoTela, ProveedorTela, Referencia, Venta
 from .permissions import tiene_permiso_codigo, ventas_visibles
 from .servicios import ErrorNegocio, auditar, idempotente
 
@@ -217,7 +218,7 @@ def preparar_adicional(d, anterior):
         raise ValidationError(faltan)
     if abs(valor) > Decimal('9999999999.99'):
         raise ValidationError({'precio_lista_override': 'El valor supera el límite permitido.'})
-    if anterior and (anterior.detalles.exists() or anterior.inventario_origen_id or anterior.detalles_tela.exists()):
+    if anterior and (anterior.detalles.exists() or anterior.inventario_origen_id or tela_pedida(anterior)):
         raise ValidationError('Este producto ya tiene pedidos; no se puede convertir en servicio o ajuste.')
     cantidad = d['cantidad'] if tipo == LineaVenta.TIPO_ARTICULO else 1
     valor = dinero(valor)
@@ -246,6 +247,8 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
     juego_lista, pieza = d.get('juego'), d.get('pieza')
     if (juego_lista or pieza) and not (juego_lista and pieza and pieza.juego_id == juego_lista.pk and v and pieza.variante_id == v.pk):
         raise ValidationError('La pieza no corresponde a ese conjunto de la lista de precios.')
+    if pieza:
+        v = vista_en_conjunto(v)  # sin los cargos que no se muestran en la agrupación
     huella = huella_config(d)
     conservar = anterior and anterior.precio_snapshot.get('config') == huella and not d['recalcular']
     if conservar:
@@ -291,7 +294,9 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
                         'cupo_transporte': transportes.cupo(v), 'da_decorativos': da_decorativos(v, d['opcionales']),
                         **({'tope_decorativo': str(deco.tope_por_unidad(v, grupo, deco.grupos_incluidos()))} if es_decorativo(v) else {}),
                         **({'juego': juego_lista.pk, 'pieza': pieza.pk} if pieza else {}),
-                        'cargos': [{'id': c.pk, 'descripcion': c.descripcion, ('diferencia_precio' if c.tipo == 'diferencia_precio' else 'costo'): str(c.valor),
+                        'cargos': [{'id': c.pk, 'descripcion': c.descripcion,
+                                    ('diferencia_precio' if c.tipo == 'diferencia_precio' else 'costo'): str(c.valor if c.tipo == 'diferencia_precio' else valor_cargo(
+                                        c, 0 if juego else pieza.costo_unitario if pieza and pieza.costo_unitario is not None else v.costo_base, grupo)),
                                     **({'configuracion': {**c.especial.configuracion, **c.configuracion_especial}} if c.tipo == 'especial_producto' else {})}
                                    for c in v.cargos.all() if not c.opcional or c.pk in d['opcionales']]
                                   + [{'id': c.pk, 'descripcion': c.descripcion, 'pieza': comp.variante.nombre_catalogo, 'cantidad': comp.cantidad}
@@ -520,7 +525,7 @@ def preparar_tela(d, v, anterior, completo=True):
             cantidad = dinero(metraje_total(v, material) * d['cantidad'])
     else:
         proveedor = cantidad = grupo = costo = None
-    pedida = bool(anterior and anterior.detalles_tela.exists())
+    pedida = bool(anterior and tela_pedida(anterior))
     if completo:
         faltan = {}
         if not modo:
@@ -592,7 +597,8 @@ def representar(request, venta):
         d['da_decorativos'] = bool(l.variante_id and da_decorativos(l.variante, d['opcionales']))
         d['decorativos_incluidos'] = l.precio_snapshot.get('decorativos')
         d['transporte_compartido'] = l.precio_snapshot.get('transporte')
-        d['tela_pedidos'] = [{'id': t.pedido_id, 'estado': t.pedido.estado, 'cantidad': str(t.cantidad), 'tela': t.tela} for t in l.detalles_tela.all()]
+        d['tela_pedidos'] = [{'id': t.pedido_id, 'estado': t.pedido.estado, 'cantidad': str(t.cantidad), 'tela': t.tela}
+                             for t in l.detalles_tela.all() if t.pedido.estado != PedidoTela.ANULADO]
         orden = next((x.orden_id for x in detalles), None)
         d['tela_orden'] = orden
         sugerida = direcciones.get(l.referencia.proveedor.nombre_empresa.strip().lower()) if l.referencia_id else None
@@ -703,7 +709,30 @@ def estado_tela_de(lineas):
     aparte = [l for l in lineas if gestion_venta.tela_modo(l) == LineaVenta.TELA_APARTE]
     if not aparte:
         return 'Sin tela'
-    return 'Pedida' if all(l.detalles_tela.exists() for l in aparte) else 'Por pedir'
+    return 'Pedida' if all(tela_pedida(l) for l in aparte) else 'Por pedir'
+
+
+def tela_pedida(linea):
+    """La tela del producto ya está pedida (un pedido de tela anulado no cuenta)."""
+    return linea.detalles_tela.exclude(pedido__estado=PedidoTela.ANULADO).exists()
+
+
+def liberar_tela_anulada(pedido):
+    """Al anular un pedido de tela, la tela de sus productos vuelve a quedar por pedir: la orden
+    que había pasado a «Pedida» vuelve a «Por pedir» y la venta cambia de revisión."""
+    lineas_ids = list(pedido.detalles.filter(linea_venta__isnull=False).values_list('linea_venta_id', flat=True))
+    ordenes = OrdenPedido.objects.filter(Q(pk=pedido.orden_asociada_id) | Q(detalles__linea_venta_id__in=lineas_ids)).distinct()
+    for orden in ordenes.filter(tela='Pedida'):
+        lineas = list(LineaVenta.objects.filter(detalles__orden=orden).distinct())
+        sigue = (estado_tela_de(lineas) == 'Pedida' if lineas
+                 else orden.pedidos_telas.exclude(pk=pedido.pk).exclude(estado=PedidoTela.ANULADO).exists())
+        if not sigue:
+            orden.tela = 'Por pedir'
+            orden.save(update_fields=['tela'])
+    ventas = set(LineaVenta.objects.filter(pk__in=lineas_ids).values_list('venta_id', flat=True))
+    if pedido.venta_id:
+        ventas.add(pedido.venta_id)
+    Venta.objects.filter(pk__in=ventas).update(revision_productos=F('revision_productos') + 1)
 
 
 @api_view(['POST'])
@@ -754,7 +783,8 @@ def generar_pedidos(request, venta_id):
                                           es_feria_hogar=venta.es_feria_hogar)
         for l, d in lineas:
             texto = d.get('texto_proveedor', l.texto_proveedor) or ('-' if l.sin_texto_proveedor else l.especificaciones or l.producto_nombre)
-            DetallePedido.objects.create(orden=orden, referencia=l.referencia, linea_venta=l, cantidad=d['cantidad'], especificaciones=texto)
+            DetallePedido.objects.create(orden=orden, referencia=l.referencia, linea_venta=l, cantidad=d['cantidad'], especificaciones=texto,
+                                         subcategoria=l.variante.subcategoria if l.variante_id else None)
         resultado.append(orden.pk)
         detalle.append({'id': orden.pk, 'proveedor': proveedor, 'tela': orden.tela, 'fecha_esperada': str(orden.fecha_esperada)})
         auditar(request.user, 'venta.pedido_generado', orden, {'venta': venta.pk, 'lineas': [l.pk for l, _ in lineas]})

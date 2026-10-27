@@ -12,8 +12,8 @@ from .models import (
     Cotizacion, LineaCotizacion, EspecialCatalogo,
 )
 from .especiales import validar_configuracion, configuracion_base, configuracion_cargo
-from .services import calcular_precio, costo_lista, precios_por_variante, opcionales_de_variante, multiplicador_efectivo, obtener_multiplicador_general, resumen_componentes, componentes_de
-from .referencias import categoria_variante, clasificacion, crear_configuracion, datos_referencia
+from .services import calcular_precio, costo_lista, precios_por_variante, opcionales_de_variante, multiplicador_efectivo, obtener_multiplicador_general, resumen_componentes, componentes_de, completar_grupos_material
+from .referencias import categoria_variante, clasificacion, crear_configuracion, datos_referencia, subcategoria_pedida
 from .disposicion import disposicion, mapa_disposiciones, variantes_visibles, retirada
 
 
@@ -111,13 +111,57 @@ class CategoriaListaPublicSerializer(serializers.ModelSerializer):
         fields = ['id', 'nombre', 'slug', 'orden']
 
 
+def porcentaje_valido(valor, campo, minimo=Decimal('-100')):
+    if valor is None or not minimo < valor <= 1000 or valor != valor.quantize(Decimal('0.01')):
+        raise serializers.ValidationError({campo: f'Indica un porcentaje entre {minimo} y 1000, con máximo 2 decimales.'})
+    return valor
+
+
+def materiales_nuevos(antes, datos):
+    """Materiales que pasan de vacío a configurado: 'tela' (metraje) y 'cuero' (decimetraje)."""
+    return [material for material, campo in (('tela', 'metraje_tela'), ('cuero', 'decimetraje_cuero'))
+            if datos.get(campo) and not (antes and getattr(antes, campo))]
+
+
 class CargoVarianteSerializer(serializers.ModelSerializer):
-    def validate_valor(self, valor):
-        return pesos_enteros(valor, permite_negativo=True)
+    def validate_cantidad_maxima(self, valor):
+        if valor is not None and not 1 <= valor <= 99:
+            raise serializers.ValidationError('Indica de 1 a 99 unidades, o déjalo vacío.')
+        return valor
+
+    def _validar_valor_y_material(self, attrs, tipo):
+        """(2026-10-27) Un cargo normal vale pesos enteros o un % del costo base y puede llevar
+        tela/cuero; los cargos especiales (transporte, cojines, diferencias) solo pesos."""
+        actual = self.instance
+        modo = attrs.get('modo_valor', actual.modo_valor if actual else CargoVariante.MODO_PESOS)
+        if tipo:
+            if modo != CargoVariante.MODO_PESOS or attrs.get('metraje_tela') or attrs.get('decimetraje_cuero'):
+                raise serializers.ValidationError({'modo_valor': 'Este tipo de cargo solo admite un valor en pesos, sin tela ni cuero.'})
+        for campo in ('metraje_tela', 'decimetraje_cuero'):
+            if campo in attrs:
+                consumo = attrs[campo]
+                if consumo is not None and not 0 <= consumo < 1000:
+                    raise serializers.ValidationError({campo: 'Indica un consumo entre 0 y 999,99.'})
+                attrs[campo] = consumo or None
+        if actual and 'modo_valor' in attrs and modo != actual.modo_valor and 'valor' not in attrs:
+            attrs['valor'] = Decimal(0)  # al cambiar de pesos a % (o al revés) el valor anterior no sirve
+        if 'valor' not in attrs or attrs['valor'] is None:
+            return
+        if modo == CargoVariante.MODO_PORCENTAJE:
+            variante = attrs.get('variante', actual.variante if actual else None)
+            if variante is not None and variante.componentes.exists():
+                raise serializers.ValidationError({'modo_valor': 'Una agrupación no tiene costo base propio: usa un cargo en pesos.'})
+            porcentaje_valido(attrs['valor'], 'valor')
+        else:
+            try:
+                pesos_enteros(attrs['valor'], permite_negativo=True)
+            except serializers.ValidationError as e:
+                raise serializers.ValidationError({'valor': e.detail})
 
     def validate(self, attrs):
         from .decorativos import DESCRIPCION
         tipo = attrs.get('tipo', self.instance.tipo if self.instance else '')
+        self._validar_valor_y_material(attrs, tipo)
         if tipo == CargoVariante.TIPO_ESPECIAL_CONFIGURABLE:
             raise serializers.ValidationError('Este cargo se administra desde las opciones especiales de la colección.')
         if self.instance is not None:
@@ -157,15 +201,26 @@ class CargoVarianteSerializer(serializers.ModelSerializer):
             attrs['preseleccionado'] = False
         return attrs
 
+    @transaction.atomic
     def create(self, validated_data):
         # Un cargo nuevo queda al final de los del producto.
         ultimo = CargoVariante.objects.filter(variante=validated_data['variante']).aggregate(m=models.Max('orden'))['m']
         validated_data['orden'] = 0 if ultimo is None else ultimo + 1
-        return super().create(validated_data)
+        cargo = super().create(validated_data)
+        completar_grupos_material(cargo.variante, materiales_nuevos(None, validated_data))
+        return cargo
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        nuevos = materiales_nuevos(instance, validated_data)
+        cargo = super().update(instance, validated_data)
+        completar_grupos_material(cargo.variante, nuevos)
+        return cargo
 
     class Meta:
         model = CargoVariante
-        fields = ['id', 'variante', 'descripcion', 'valor', 'opcional', 'preseleccionado', 'especial', 'tipo', 'unidades_por_transporte', 'orden']
+        fields = ['id', 'variante', 'descripcion', 'valor', 'opcional', 'preseleccionado', 'especial', 'tipo', 'unidades_por_transporte', 'orden',
+                  'modo_valor', 'metraje_tela', 'decimetraje_cuero', 'en_agrupacion', 'cantidad_maxima']
         read_only_fields = ['especial', 'orden']
         # El cargo «Cojines incluidos» puede llegar solo con el tipo: el servidor pone nombre y valor.
         extra_kwargs = {'descripcion': {'required': False}, 'valor': {'required': False}}
@@ -238,6 +293,7 @@ class VarianteProductoSerializer(ClasificacionVarianteMixin, serializers.ModelSe
             'id', 'linea', 'categoria', 'categoria_nombre', 'nombre', 'orden',
             'costo_base', 'costo_confirmado', 'publicado', 'costo_total_producto', 'metraje_tela', 'decimetraje_cuero', 'descuento_maximo', 'notas', 'cargos', 'precios',
             'multiplicador', 'multiplicador_nombre', 'multiplicador_efectivo', 'componentes', 'precios_venta', 'subcategoria',
+            'variacion_cuero_tipo', 'variacion_cuero_valor',
         ]
         read_only_fields = ['costo_confirmado']
         validators = []  # La pertenencia/unicidad se valida bajo bloqueo al crear.
@@ -255,7 +311,31 @@ class VarianteProductoSerializer(ClasificacionVarianteMixin, serializers.ModelSe
             campos['nombre'].required = False
         return campos
 
+    def _validar_variacion_cuero(self, attrs):
+        """Variación en cuero (2026-10-27): pesos enteros (puede bajar) o un % del costo base + cuero."""
+        if 'variacion_cuero_tipo' not in attrs and 'variacion_cuero_valor' not in attrs:
+            return
+        actual = self.instance
+        tipo = attrs.get('variacion_cuero_tipo', actual.variacion_cuero_tipo if actual else '')
+        if actual and 'variacion_cuero_tipo' in attrs and tipo != actual.variacion_cuero_tipo and 'variacion_cuero_valor' not in attrs:
+            attrs['variacion_cuero_valor'] = None  # cambiar de $ a % (o al revés) pide el valor de nuevo
+        valor = attrs.get('variacion_cuero_valor', actual.variacion_cuero_valor if actual else None)
+        if not tipo:
+            attrs['variacion_cuero_valor'] = None
+        elif actual is not None and actual.componentes.exists():
+            raise serializers.ValidationError({'variacion_cuero_tipo': 'En una agrupación la variación en cuero la pone cada pieza.'})
+        elif valor is None:
+            return  # el tipo se elige primero; sin valor no cambia el precio
+        elif tipo == VarianteProducto.VARIACION_PORCENTAJE:
+            porcentaje_valido(valor, 'variacion_cuero_valor')
+        else:
+            try:
+                pesos_enteros(valor, permite_negativo=True)
+            except serializers.ValidationError as e:
+                raise serializers.ValidationError({'variacion_cuero_valor': e.detail})
+
     def validate(self, attrs):
+        self._validar_variacion_cuero(attrs)
         linea = attrs.get('linea', self.instance.linea if self.instance else None)
         if self.instance and linea.pk != self.instance.linea_id:
             raise serializers.ValidationError({'linea': 'Un producto no cambia de referencia. Crea su configuración en la referencia correcta.'})
@@ -292,7 +372,10 @@ class VarianteProductoSerializer(ClasificacionVarianteMixin, serializers.ModelSe
         LineaProducto.objects.select_for_update().get(pk=instance.linea_id)
         self.instance = VarianteProducto.objects.select_for_update().select_related('linea__referencia', 'subcategoria').get(pk=instance.pk)
         self.validate(validated_data)
-        return super().update(self.instance, validated_data)
+        nuevos = materiales_nuevos(self.instance, validated_data)
+        variante = super().update(self.instance, validated_data)
+        completar_grupos_material(variante, nuevos)
+        return variante
 
     @transaction.atomic
     def create(self, validated_data):
@@ -485,7 +568,8 @@ class LineaProductoSerializer(IdentidadLineaMixin, serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data.setdefault('activo', False)
-        return crear_configuracion(validated_data.pop('referencia'), **validated_data)
+        sub = subcategoria_pedida(getattr(self, 'initial_data', {}).get('subcategoria'))
+        return crear_configuracion(validated_data.pop('referencia'), subcategoria=sub, **validated_data)
 
     @transaction.atomic
     def update(self, instance, validated_data):

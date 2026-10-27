@@ -395,3 +395,43 @@ class AgregarSubcategoriaDesdeListaTests(LottusTestCase):
         datos = datos['results'] if isinstance(datos, dict) else datos
         fila = next(x for x in datos if x['id'] == ref.pk)
         self.assertEqual(sorted(s['id'] for s in fila['subcategorias']), sorted([mesa.pk, nueva.data['id']]))
+
+
+class AgregarCostosSubcategoriaTests(LottusTestCase):
+    """«Agregar costos» en una fila (2026-10-26): crea solo la ficha de esa subcategoría,
+    aunque otras compartan el mismo proveedor."""
+    configurar = ReferenciasUnificadasTests.configurar
+
+    def setUp(self):
+        ReferenciasUnificadasTests.setUp(self)
+        self.silla = Subcategoria.objects.create(categoria=self.cat, nombre='Silla')
+        self.ref.subcategorias.add(self.silla)
+
+    def subcategorias(self, linea_id):
+        return set(VarianteProducto.objects.filter(linea_id=linea_id).values_list('subcategoria_id', flat=True))
+
+    def test_crear_la_configuracion_desde_una_fila_crea_solo_esa_subcategoria(self):
+        r = self.c.post('/api/listaprecios/lineas/', {'referencia': self.ref.pk, 'subcategoria': self.silla.pk}, format='json')
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(self.subcategorias(r.data['id']), {self.silla.pk})
+
+    def test_sincronizar_una_fila_no_agrega_las_demas(self):
+        r = self.c.post('/api/listaprecios/lineas/', {'referencia': self.ref.pk, 'subcategoria': self.silla.pk}, format='json')
+        linea = r.data['id']
+        r = self.c.post(f'/api/listaprecios/lineas/{linea}/sincronizar-subcategorias/', {'subcategoria': self.sub.pk}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual({v['subcategoria'] for v in r.data['variantes']}, {self.silla.pk, self.sub.pk})
+        # Repetir el clic no duplica la ficha.
+        self.c.post(f'/api/listaprecios/lineas/{linea}/sincronizar-subcategorias/', {'subcategoria': self.sub.pk}, format='json')
+        self.assertEqual(VarianteProducto.objects.filter(linea_id=linea).count(), 2)
+
+    def test_sin_subcategoria_sigue_creando_todas(self):
+        self.assertEqual(self.subcategorias(self.configurar()['id']), {self.sub.pk, self.silla.pk})
+
+    def test_una_subcategoria_ajena_o_invalida_se_rechaza(self):
+        ajena = Subcategoria.objects.create(categoria=self.cat, nombre='Ajena')
+        for valor in (ajena.pk, 'x'):
+            r = self.c.post('/api/listaprecios/lineas/', {'referencia': self.ref.pk, 'subcategoria': valor}, format='json')
+            self.assertEqual(r.status_code, 400, r.data)
+            self.assertIn('subcategoria', r.data)
+        self.assertFalse(LineaProducto.objects.filter(referencia=self.ref).exists())

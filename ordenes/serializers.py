@@ -1,5 +1,6 @@
 from .permissions import tiene_permiso_codigo
 from rest_framework import serializers
+from suministros.models import Subcategoria
 from suministros.recepcion import recibidas_de
 import logging
 from decimal import Decimal
@@ -93,9 +94,15 @@ class DetallePedidoSerializer(serializers.ModelSerializer):
     recibidas = serializers.SerializerMethodField()
     rechazadas = serializers.SerializerMethodField()
 
+    subcategoria_nombre = serializers.SerializerMethodField()
+
     class Meta:
         model = DetallePedido
-        fields = ['id', 'cantidad', 'especificaciones', 'referencia', 'referencia_nombre', 'recibidas', 'rechazadas', 'linea_venta']
+        fields = ['id', 'cantidad', 'especificaciones', 'referencia', 'referencia_nombre', 'subcategoria', 'subcategoria_nombre',
+                  'recibidas', 'rechazadas', 'linea_venta']
+
+    def get_subcategoria_nombre(self, obj):
+        return obj.subcategoria.nombre if obj.subcategoria_id else ''
 
     def get_rechazadas(self, obj):
         n = getattr(obj, 'n_rechazadas', None)
@@ -174,8 +181,28 @@ class DetallePedidoWriteSerializer(serializers.ModelSerializer):
         return attrs
 
 
+def subcategoria_del_detalle(datos):
+    """Completa y valida la subcategoría de un producto del pedido; devuelve el error o None."""
+    ref, linea = datos['referencia'], datos.get('linea_venta')
+    sub = datos.get('subcategoria')
+    validas = set(ref.subcategorias.values_list('pk', flat=True))
+    if sub is not None and sub.pk not in validas:
+        return f'«{sub.nombre}» no es una subcategoría de {ref.nombre}.'
+    if sub is None and linea is not None:
+        # Producto de una venta: la subcategoría del producto vendido, si sigue en la referencia.
+        vendida = linea.variante.subcategoria if linea.variante_id else None
+        datos['subcategoria'] = vendida if vendida is not None and vendida.pk in validas else None
+        return None
+    if sub is None and validas:
+        return f'Elige la subcategoría de {ref.nombre}.'
+    return None
+
+
 class DetalleOrdenEntradaSerializer(serializers.Serializer):
     referencia = serializers.PrimaryKeyRelatedField(queryset=Referencia.objects.all())
+    # (2026-10-27) Subcategoría de la referencia (p. ej. Silla). Obligatoria si la referencia tiene
+    # subcategorías; con línea de venta se toma la del producto vendido.
+    subcategoria = serializers.PrimaryKeyRelatedField(queryset=Subcategoria.objects.all(), required=False, allow_null=True)
     cantidad = serializers.IntegerField(min_value=1, max_value=10000, default=1)
     especificaciones = serializers.CharField(allow_blank=True, required=False, default='-')
     # Línea de la venta que esta compra atiende (P09-03 / P11-04): mismo hilo de
@@ -277,6 +304,10 @@ class OrdenPedidoSerializer(SinCostoSinPermisoMixin, serializers.ModelSerializer
                 if linea is not None and (venta is None or linea.venta_id != venta.pk):
                     errores[idx] = {'linea_venta': 'La línea de venta no pertenece a la venta de la orden.'}
                     continue
+                error = subcategoria_del_detalle(entrada.validated_data)
+                if error:
+                    errores[idx] = {'subcategoria': error}
+                    continue
                 detalles.append(entrada.validated_data)
             if errores:
                 # Una fila inválida rechaza la orden completa, con el error por fila (U03).
@@ -309,7 +340,7 @@ class OrdenPedidoSerializer(SinCostoSinPermisoMixin, serializers.ModelSerializer
                 raise serializers.ValidationError('La referencia no coincide con la línea de venta.')
         orden = OrdenPedido.objects.create(**validated_data)
         DetallePedido.objects.bulk_create([
-            DetallePedido(orden=orden, referencia=d['referencia'], cantidad=d['cantidad'],
+            DetallePedido(orden=orden, referencia=d['referencia'], subcategoria=d.get('subcategoria'), cantidad=d['cantidad'],
                           especificaciones=d.get('especificaciones') or '-', linea_venta=d.get('linea_venta'))
             for d in self._detalles_validados
         ])
@@ -687,6 +718,7 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
     venta_id = serializers.SerializerMethodField()
     venta_vendedor_nombre = serializers.SerializerMethodField()
     venta = serializers.PrimaryKeyRelatedField(queryset=Venta.objects.all(), required=False, allow_null=True, write_only=True)
+    anulado_por_nombre = serializers.SerializerMethodField()
 
     class Meta:
         model = PedidoTela
@@ -694,9 +726,12 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
             'id', 'usuario', 'usuario_nombre', 'proveedor', 'proveedor_nombre',
             'direccion_entrega', 'fecha_creacion', 'estado', 'observacion',
             'orden_asociada_id', 'detalles', 'orden_id', 'orden_proveedor_nombre', 'venta_id',
-            'venta_vendedor_nombre', 'venta'
+            'venta_vendedor_nombre', 'venta', 'motivo_anulacion', 'anulado_por_nombre', 'anulado_en'
         ]
-        read_only_fields = ['fecha_creacion', 'usuario', 'id']
+        read_only_fields = ['fecha_creacion', 'usuario', 'id', 'motivo_anulacion', 'anulado_en']
+
+    def get_anulado_por_nombre(self, obj):
+        return obj.anulado_por.first_name if obj.anulado_por_id else None
 
     def get_proveedor_nombre(self, obj):
         return obj.proveedor.nombre_empresa if obj.proveedor else None
@@ -749,7 +784,7 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'detalles': 'Todos los productos deben ser de la misma venta.'})
         if not ventas_visibles(self.context['request']).filter(pk=venta.pk).exists():
             raise serializers.ValidationError({'venta': 'No puedes pedir telas para esta venta.'})
-        ya = DetallePedidoTela.objects.filter(linea_venta_id__in=ids).select_related('linea_venta').first()
+        ya = DetallePedidoTela.objects.filter(linea_venta_id__in=ids).exclude(pedido__estado=PedidoTela.ANULADO).select_related('linea_venta').first()
         if ya:
             raise serializers.ValidationError({'detalles': f'La tela de {ya.linea_venta.producto_nombre} ya se pidió (PT {ya.pedido_id}).'})
         validated_data['venta'] = venta

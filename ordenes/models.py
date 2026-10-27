@@ -245,6 +245,9 @@ class OrdenPedido(models.Model):
 class DetallePedido(models.Model):
     orden = models.ForeignKey(OrdenPedido, on_delete=models.CASCADE, related_name='detalles')
     referencia = models.ForeignKey(Referencia, on_delete=models.SET_NULL, null=True, blank=True)
+    # (2026-10-27) El pedido se basa en referencia y subcategoría (p. ej. Valencia · Silla). Vacía en
+    # pedidos anteriores o si la referencia no tiene subcategorías.
+    subcategoria = models.ForeignKey('suministros.Subcategoria', on_delete=models.SET_NULL, null=True, blank=True, related_name='detalles_pedido')
     linea_venta = models.ForeignKey(LineaVenta, on_delete=models.SET_NULL, null=True, blank=True, related_name='detalles')
     # Pedido anterior que el asesor marcó como "no es de un producto de esta venta":
     # ya no se ofrece para vincular ni bloquea nuevos pedidos.
@@ -419,10 +422,12 @@ class ProveedorTela(models.Model):
         return self.nombre_empresa
 
 class PedidoTela(models.Model):
+    ANULADO = 'Anulado'
     ESTADO_CHOICES = [
         ('En fabrica', 'En fabrica'),
         ('En Lottus', 'En Lottus'),
         ('Pendiente', 'Pendiente'),
+        (ANULADO, 'Anulado'),
     ]
     id = models.PositiveIntegerField(primary_key=True)
     usuario = models.ForeignKey(CustomUser, on_delete=models.PROTECT, related_name='pedidos_telas')
@@ -434,6 +439,11 @@ class PedidoTela(models.Model):
     # Venta directa: un pedido de tela hecho desde la venta puede no tener OP todavía.
     venta = models.ForeignKey(Venta, on_delete=models.SET_NULL, null=True, blank=True, related_name='pedidos_tela')
     observacion = models.TextField(blank=True, null=True)
+    # Anulación (2026-10-26, permiso ANULAR_PEDIDO_TELA): el pedido no se borra; queda Anulado con
+    # su motivo y la tela de sus productos vuelve a quedar por pedir. Un pedido anulado no cambia más.
+    motivo_anulacion = models.TextField(blank=True, default='')
+    anulado_por = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='pedidos_tela_anulados')
+    anulado_en = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"Pedido Tela {self.id} - {self.proveedor.nombre_empresa}"

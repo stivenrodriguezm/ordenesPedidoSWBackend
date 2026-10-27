@@ -76,8 +76,18 @@ def clasificacion(linea, categoria=None, subcategoria=None):
     return categoria or (next(iter(permitidas.values())) if len(permitidas) == 1 else None)
 
 
+def subcategoria_pedida(valor):
+    """La subcategoría que pide el navegador (vacía = todas)."""
+    if valor in (None, ''):
+        return None
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        raise ValidationError({'subcategoria': 'Subcategoría inválida.'})
+
+
 @transaction.atomic
-def crear_configuracion(referencia, **datos):
+def crear_configuracion(referencia, subcategoria=None, **datos):
     # Bloquear no modifica la referencia; impide dos configuraciones simultáneas.
     Referencia.objects.select_for_update().get(pk=referencia.pk)
     if LineaProducto.objects.filter(referencia=referencia).exists():
@@ -86,15 +96,17 @@ def crear_configuracion(referencia, **datos):
         with transaction.atomic():
             linea = LineaProducto.objects.create(referencia=referencia, nombre=referencia.nombre[:150],
                                                   slug=f'referencia-{referencia.pk}', **datos)
-            sincronizar_subcategorias(linea)
+            sincronizar_subcategorias(linea, subcategoria)
             return linea
     except IntegrityError:
         raise ValidationError({'referencia': 'Esta referencia ya tiene una configuración. Actualiza la lista.'})
 
 
 @transaction.atomic
-def sincronizar_subcategorias(linea):
-    """Una ficha de costos por tipo asignado; nunca modifica el catálogo maestro."""
+def sincronizar_subcategorias(linea, subcategoria=None):
+    """Una ficha de costos por tipo asignado; nunca modifica el catálogo maestro.
+
+    Con `subcategoria` (el «Agregar costos» de una fila) crea solo esa ficha; sin ella, todas."""
     LineaProducto.objects.select_for_update().get(pk=linea.pk)
     if not linea.referencia_id:
         raise ValidationError('Esta configuración no está vinculada a una referencia.')
@@ -103,6 +115,10 @@ def sincronizar_subcategorias(linea):
     ids = {s.pk for s in subs}
     if any(v.subcategoria_id not in ids for v in actuales):
         raise ValidationError('Hay precios de subcategorías retiradas de la referencia. Revisa su clasificación antes de continuar.')
+    if subcategoria is not None:
+        if subcategoria not in ids:
+            raise ValidationError({'subcategoria': 'Esta subcategoría no pertenece a la referencia.'})
+        subs = [s for s in subs if s.pk == subcategoria]
     existentes = {v.subcategoria_id for v in actuales}
     orden = max((v.orden for v in actuales), default=-1) + 1
     nuevas = [VarianteProducto(linea=linea, subcategoria=s, categoria_referencia=s.categoria,

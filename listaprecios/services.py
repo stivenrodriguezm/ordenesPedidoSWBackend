@@ -25,12 +25,60 @@ def _invalidar_catalogo():
     invalidar()
 
 
+def vista_en_conjunto(variante):
+    """La pieza como se ve dentro de una agrupación: sin los cargos marcados «Mostrar en
+    agrupación: No» (2026-10-27), que allí ni se ofrecen ni se cobran."""
+    cargos = list(variante.cargos.all())
+    if all(c.en_agrupacion for c in cargos):
+        return variante
+    vista = copy(variante)
+    vista._prefetched_objects_cache = {**getattr(variante, '_prefetched_objects_cache', {}), 'cargos': [c for c in cargos if c.en_agrupacion]}
+    return vista
+
+
+def pieza_en_conjunto(componente):
+    """El componente con su pieza vista dentro del conjunto (ver vista_en_conjunto)."""
+    vista = vista_en_conjunto(componente.variante)
+    if vista is componente.variante:
+        return componente
+    copia = copy(componente)
+    copia.variante = vista
+    return copia
+
+
 def componentes_de(variante):
     """Componentes de un juego (lista vacía si es un producto normal)."""
     precargados = getattr(variante, '_prefetched_objects_cache', {}).get('componentes')
-    if precargados is not None:
-        return list(precargados)
-    return list(variante.componentes.all()) if variante is not None and variante.pk else []
+    if precargados is None:
+        precargados = variante.componentes.all() if variante is not None and variante.pk else []
+    return [pieza_en_conjunto(c) for c in precargados]
+
+
+def consumo_cargo(cargo, material):
+    return (cargo.decimetraje_cuero if material == 'cuero' else cargo.metraje_tela) or Decimal('0')
+
+
+def valor_cargo(cargo, base, grupo=None, sin_material=False):
+    """Costo de una unidad de un cargo (2026-10-27): en pesos o en % del costo base, más la tela
+    o el cuero que consume, con el grupo que se elige para el producto."""
+    valor = cargo.valor * base / 100 if cargo.modo_valor == CargoVariante.MODO_PORCENTAJE else cargo.valor
+    if grupo is not None and not sin_material:
+        valor += consumo_cargo(cargo, grupo.tipo) * (grupo.precio_por_metro or Decimal('0'))
+    return valor
+
+
+def cargo_con_material(cargo):
+    return bool(cargo.metraje_tela or cargo.decimetraje_cuero)
+
+
+def variacion_cuero(variante, base, material, grupo):
+    """Lo que cambia el costo al tapizar en cuero (2026-10-27): pesos fijos o un % del costo
+    base más el cuero. Se suma antes del multiplicador; 0 en tela o sin variación."""
+    if grupo is None or grupo.tipo != 'cuero' or not variante.variacion_cuero_tipo or variante.variacion_cuero_valor is None:
+        return Decimal('0')
+    if variante.variacion_cuero_tipo == VarianteProducto.VARIACION_PORCENTAJE:
+        return (base + material) * variante.variacion_cuero_valor / 100
+    return variante.variacion_cuero_valor
 
 
 def usa_tela(variante):
@@ -38,7 +86,8 @@ def usa_tela(variante):
     comps = componentes_de(variante)
     if comps:
         return any(usa_tela(c.variante) or tiene_material(c) for c in comps)
-    return bool(variante.metraje_tela or variante.decimetraje_cuero) or any(p.grupo_id for p in variante.precios.all())
+    return (bool(variante.metraje_tela or variante.decimetraje_cuero) or any(p.grupo_id for p in variante.precios.all())
+            or any(cargo_con_material(c) for c in variante.cargos.all()))
 
 
 def metraje_total(variante, material='tela'):
@@ -94,7 +143,29 @@ def grupo_aplicable(variante, grupo):
         tapizados = [c for c in comps if usa_tela(c.variante) or tiene_material(c)]
         return bool(tapizados) and all((not usa_tela(c.variante) or grupo_aplicable(c.variante, grupo))
                                      and admite_material(c, grupo) for c in tapizados)
-    return bool(metraje_total(variante, grupo.tipo))
+    if variante.metraje_tela or variante.decimetraje_cuero:
+        return bool(metraje_total(variante, grupo.tipo))
+    # Sin consumo propio: el material de sus cargos decide (p. ej. un cargo que lleva tela).
+    return any(consumo_cargo(c, grupo.tipo) for c in variante.cargos.all())
+
+
+def completar_grupos_material(variante, materiales):
+    """Un material recién configurado (consumo propio o de un cargo) suma sus grupos a los precios
+    por grupo ya guardados (2026-10-27): con filas propias, un grupo sin fila no aplica, y el
+    grupo Cuero quedaba oculto hasta agregarlo a mano. Sin filas propias todos salen solos."""
+    if componentes_de(variante):
+        return []  # los grupos de un conjunto dependen de sus piezas
+    propio = variante.metraje_tela or variante.decimetraje_cuero
+    materiales = [m for m in materiales if (metraje_total(variante, m) if propio else any(consumo_cargo(c, m) for c in variante.cargos.all()))]
+    if not materiales:
+        return []
+    existentes = set(PrecioVariante.objects.filter(variante=variante).values_list('grupo_id', flat=True))
+    if not existentes:
+        return []
+    nuevos = [PrecioVariante(variante=variante, grupo=g) for g in GrupoTela.objects.filter(tipo__in=materiales).order_by('orden')
+              if g.pk not in existentes]
+    PrecioVariante.objects.bulk_create(nuevos)
+    return nuevos
 
 
 def resumen_componentes(variante):
@@ -176,9 +247,12 @@ def costo_lista(variante, grupo=None, opcionales_ids=None, costo_base_override=N
     # Cada opcional puede ir varias veces (p. ej. 2 reclinos): `conteo` = {id: cantidad}.
     conteo = Counter(ids_preseleccionados(variante)) if opcionales_ids is None else conteo_opcionales(opcionales_ids)
     opcionales_ids_set = set(conteo)
+    comps = componentes_de(variante)
+    # Un conjunto no tiene costo base propio: sus cargos en % no suman (no se permiten).
+    base = Decimal('0') if comps else variante.costo_base if costo_base_override is None else costo_base_override
 
     cargos_opcionales = sum(
-        (c.valor * conteo[c.id] for c in variante.cargos.all() if c.opcional and c.id in opcionales_ids_set and c.tipo not in (CargoVariante.TIPO_DIFERENCIA_PRECIO, CargoVariante.TIPO_ESPECIAL_CONFIGURABLE)), Decimal('0')
+        (valor_cargo(c, base, grupo, sin_material) * conteo[c.id] for c in variante.cargos.all() if c.opcional and c.id in opcionales_ids_set and c.tipo not in (CargoVariante.TIPO_DIFERENCIA_PRECIO, CargoVariante.TIPO_ESPECIAL_CONFIGURABLE)), Decimal('0')
     )
 
     cargos_opcionales += sum((costo_especial(configuracion_cargo(c), grupo, sin_material) * conteo[c.id]
@@ -189,9 +263,8 @@ def costo_lista(variante, grupo=None, opcionales_ids=None, costo_base_override=N
     if grupo is not None and not sin_material:
         metros_costo = (metraje_total(variante, grupo.tipo) or Decimal('0')) * (grupo.precio_por_metro or Decimal('0'))
 
-    cargos_fijos = sum((c.valor for c in variante.cargos.all() if not c.opcional), Decimal('0'))
+    cargos_fijos = sum((valor_cargo(c, base, grupo, sin_material) for c in variante.cargos.all() if not c.opcional), Decimal('0'))
 
-    comps = componentes_de(variante)
     if comps:  # juego: costo de sus piezas (con sus opcionales elegidos) más sus propios cargos
         # El costo base guardado en un conjunto no cuenta: su costo sale solo de las piezas y cargos.
         partes = sum(((costo_lista(c.variante, grupo if usa_tela(c.variante) else None, list(conteo.elements()), costo_base_override=c.costo_unitario, sin_material=sin_material)
@@ -201,8 +274,7 @@ def costo_lista(variante, grupo=None, opcionales_ids=None, costo_base_override=N
         transportes = [(valor_costo(c.variante, opcionales_ids_set), c.cantidad) for c in comps] + [(valor_costo(variante, opcionales_ids_set), 1)]
         return (partes + cargos_fijos + cargos_opcionales - descuento_conjunto(transportes)).quantize(Decimal('0.01'))
 
-    base = variante.costo_base if costo_base_override is None else costo_base_override
-    return (base + metros_costo + cargos_fijos + cargos_opcionales).quantize(Decimal('0.01'))
+    return (base + metros_costo + variacion_cuero(variante, base, metros_costo, grupo) + cargos_fijos + cargos_opcionales).quantize(Decimal('0.01'))
 
 
 def validar_descuento_documento(lineas_info, descuento_total):
@@ -235,6 +307,7 @@ def validar_descuento_documento(lineas_info, descuento_total):
 
 
 def _precio_componente(componente, grupo, general, opcionales_ids=None):
+    componente = pieza_en_conjunto(componente)
     pieza = componente.variante
     de_pieza = {c.pk for c in pieza.cargos.all() if c.opcional}
     propios = [i for i in Counter(opcionales_ids or ()).elements() if i in de_pieza]
@@ -319,8 +392,10 @@ def calcular_precio(variante, grupo=None, opcionales_ids=None, multiplicador_gen
     # aunque esté vacía, es exactamente lo que eligió el vendedor.
     conteo = Counter(ids_preseleccionados(variante)) if opcionales_ids is None else conteo_opcionales(opcionales_ids)
     opcionales_ids = set(conteo)
+    comps = componentes_de(variante)
+    base = Decimal('0') if comps else variante.costo_base if costo_base_override is None else costo_base_override
     cargos_opcionales = sum(
-        (c.valor * conteo[c.id] for c in variante.cargos.all() if c.opcional and c.id in opcionales_ids and c.tipo not in (CargoVariante.TIPO_DIFERENCIA_PRECIO, CargoVariante.TIPO_ESPECIAL_CONFIGURABLE)), Decimal('0')
+        (valor_cargo(c, base, grupo) * conteo[c.id] for c in variante.cargos.all() if c.opcional and c.id in opcionales_ids and c.tipo not in (CargoVariante.TIPO_DIFERENCIA_PRECIO, CargoVariante.TIPO_ESPECIAL_CONFIGURABLE)), Decimal('0')
     )
 
     diferencia = sum((c.valor * conteo[c.id] for c in variante.cargos.all()
@@ -338,7 +413,6 @@ def calcular_precio(variante, grupo=None, opcionales_ids=None, multiplicador_gen
 
     grupo_id = grupo.id if grupo is not None else None
     override = next((p for p in variante.precios.all() if p.grupo_id == grupo_id), None)
-    comps = componentes_de(variante)
     # Opcionales de las piezas elegidos en el conjunto (cada uno por la cantidad de su pieza).
     de_piezas = [c for c in comps if opcionales_ids & {x.pk for x in c.variante.cargos.all() if x.opcional}]
     if not ignorar_precio_manual and override is not None and override.precio_manual is not None:
@@ -351,7 +425,7 @@ def calcular_precio(variante, grupo=None, opcionales_ids=None, multiplicador_gen
         # opcionales elegidos) más sus propios cargos y opcionales con el multiplicador del
         # juego. El costo base guardado en un conjunto no cuenta.
         partes = sum((_precio_componente(c, grupo, multiplicador_general, conteo) * c.cantidad for c in comps), Decimal('0'))
-        propios = sum((c.valor for c in variante.cargos.all() if not c.opcional), Decimal('0')) + cargos_opcionales
+        propios = sum((valor_cargo(c, base, grupo) for c in variante.cargos.all() if not c.opcional), Decimal('0')) + cargos_opcionales
         # Un solo transporte por conjunto (2026-10-21): el mayor entre sus piezas y el propio.
         from .transportes import descuento_conjunto, valor_venta
         transportes = [(valor_venta(c.variante, opcionales_ids, c.multiplicador if c.multiplicador is not None
@@ -363,17 +437,40 @@ def calcular_precio(variante, grupo=None, opcionales_ids=None, multiplicador_gen
     if grupo is not None:
         metros_costo = (metraje_total(variante, grupo.tipo) or Decimal('0')) * (grupo.precio_por_metro or Decimal('0'))
 
-    cargos_fijos = sum((c.valor for c in variante.cargos.all() if not c.opcional), Decimal('0'))
+    cargos_fijos = sum((valor_cargo(c, base, grupo) for c in variante.cargos.all() if not c.opcional), Decimal('0'))
 
-    base = variante.costo_base if costo_base_override is None else costo_base_override
-    return finalizar((base + metros_costo + cargos_fijos + cargos_opcionales) * multiplicador)
+    return finalizar((base + metros_costo + variacion_cuero(variante, base, metros_costo, grupo) + cargos_fijos + cargos_opcionales) * multiplicador)
 
 
-def opcionales_de_variante(variante, multiplicador_general=None, grupo=None, grupos=None, multiplicador_override=None):
-    """Solo importes de venta. Los especiales con material ofrecen valores por grupo.
+MAX_UNIDADES_OPCIONAL = 9  # unidades de un mismo adicional cuando el cargo no fija su máximo
+
+
+def maximo_unidades(cargo):
+    """Unidades que admite un opcional: cojines y transporte, una; los demás, su máximo
+    (p. ej. 3 reclinos en un sofá de 3) o el general. En un conjunto, por cada pieza."""
+    if cargo.tipo in (CargoVariante.TIPO_DECORATIVOS, CargoVariante.TIPO_TRANSPORTE):
+        return 1
+    return cargo.cantidad_maxima or MAX_UNIDADES_OPCIONAL
+
+
+def validar_unidades_opcionales(variante, opcionales):
+    """Ninguna selección supera el máximo de unidades de su cargo (en un conjunto, por pieza)."""
+    cargos = {c.pk: c for c in variante.cargos.all() if c.opcional}
+    cargos.update({c.pk: c for _, c in opcionales_piezas(variante)})
+    for pk, n in conteo_opcionales(opcionales).items():
+        cargo = cargos.get(pk)
+        if cargo is not None and n > maximo_unidades(cargo):
+            maximo = maximo_unidades(cargo)
+            raise ValidationError({'opcionales': f'«{cargo.descripcion}» admite hasta {maximo} unidad{"es" if maximo != 1 else ""}.'})
+
+
+def opcionales_de_variante(variante, multiplicador_general=None, grupo=None, grupos=None, multiplicador_override=None, costo_base_override=None):
+    """Solo importes de venta. Los especiales y cargos con material ofrecen valores por grupo.
     Un conjunto ofrece además los opcionales de sus piezas, por la cantidad de cada pieza."""
     multiplicador = (Decimal(str(multiplicador_override)) if multiplicador_override is not None
                      else multiplicador_efectivo(variante, multiplicador_general))
+    comps = componentes_de(variante)
+    base = Decimal('0') if comps else variante.costo_base if costo_base_override is None else costo_base_override
     resultado = []
     for c in variante.cargos.all():
         if not c.opcional:
@@ -381,7 +478,8 @@ def opcionales_de_variante(variante, multiplicador_general=None, grupo=None, gru
         item = {'id': c.id, 'descripcion': c.descripcion, 'especial': c.especial_id is not None, 'preseleccionado': c.preseleccionado,
                 'decorativos': c.tipo == CargoVariante.TIPO_DECORATIVOS,
                 # Se puede llevar más de una unidad (p. ej. 2 reclinos); cojines y transporte, una.
-                'multiple': c.tipo not in (CargoVariante.TIPO_DECORATIVOS, CargoVariante.TIPO_TRANSPORTE)}
+                'multiple': c.tipo not in (CargoVariante.TIPO_DECORATIVOS, CargoVariante.TIPO_TRANSPORTE),
+                'maximo': maximo_unidades(c)}
         if c.tipo == CargoVariante.TIPO_ESPECIAL_CONFIGURABLE:
             config = configuracion_cargo(c)
             material = bool(config.get('metraje_tela') or config.get('decimetraje_cuero'))
@@ -394,11 +492,18 @@ def opcionales_de_variante(variante, multiplicador_general=None, grupo=None, gru
                 item['valor'] = precio_configuracion(config, grupo, multiplicador_general) if grupo is not None else None
             else:
                 item['valor'] = precio_configuracion(config, grupo, multiplicador_general)
+        elif c.tipo == CargoVariante.TIPO_DIFERENCIA_PRECIO:
+            item['valor'] = c.valor
+        elif cargo_con_material(c) and grupo is None:
+            # Su tela o cuero se cobra con el grupo del producto: un valor por grupo.
+            disponibles = grupos if grupos is not None else obtener_grupos_tela()
+            item['precios'] = [{'grupo': g.pk, 'valor': valor_cargo(c, base, g) * multiplicador} for g in disponibles]
+            item['valor'] = None
         else:
-            item['valor'] = c.valor if c.tipo == CargoVariante.TIPO_DIFERENCIA_PRECIO else c.valor * multiplicador
+            item['valor'] = valor_cargo(c, base, grupo) * multiplicador
         resultado.append(item)
-    for comp in componentes_de(variante):
-        for item in opcionales_de_variante(comp.variante, multiplicador_general, grupo, grupos, comp.multiplicador):
+    for comp in comps:
+        for item in opcionales_de_variante(comp.variante, multiplicador_general, grupo, grupos, comp.multiplicador, comp.costo_unitario):
             n = comp.cantidad
             item['pieza'] = comp.variante.nombre_catalogo
             item['descripcion'] = f"{item['descripcion']} · {comp.variante.nombre_catalogo}{f' ×{n}' if n > 1 else ''}"
