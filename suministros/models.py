@@ -198,6 +198,24 @@ class FacturaProveedor(models.Model):
     def __str__(self):
         return f"Factura {self.id_manual}"
 
+class AjusteFactura(models.Model):
+    """Adicional de una factura de proveedor (2026-10-28): un concepto que suma o resta un valor
+    al total (p. ej. un transporte que cobra el proveedor o un descuento acordado)."""
+    SUMA, RESTA = 'suma', 'resta'
+    factura = models.ForeignKey(FacturaProveedor, on_delete=models.CASCADE, related_name='ajustes')
+    concepto = models.CharField(max_length=200)
+    tipo = models.CharField(max_length=5, choices=[(SUMA, 'Suma'), (RESTA, 'Resta')], default=SUMA)
+    valor = models.DecimalField(max_digits=12, decimal_places=2)
+    orden = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['orden', 'id']
+
+    @property
+    def importe(self):
+        return self.valor if self.tipo == self.SUMA else -self.valor
+
+
 class DetalleFactura(models.Model):
     factura = models.ForeignKey(FacturaProveedor, on_delete=models.CASCADE, related_name='productos')
     referencia = models.ForeignKey(Referencia, on_delete=models.PROTECT, null=True)

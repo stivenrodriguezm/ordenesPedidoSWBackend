@@ -4,7 +4,7 @@ from django.db.models import Q
 from rest_framework import serializers
 from .models import (
     Categoria, Subcategoria, Inventario,
-    FacturaProveedor, DetalleFactura, RemisionSuministro, RemisionItemManual, RemisionEvento,
+    FacturaProveedor, DetalleFactura, AjusteFactura, RemisionSuministro, RemisionItemManual, RemisionEvento,
     RemisionInventarioTexto, GrupoInventario, GrupoInventarioComponente,
     Sede, Zona, HistorialTraslado, CostoAdicionalInventario,
     ItemInventarioTelaCuero
@@ -701,7 +701,25 @@ class FacturaProveedorListSerializer(serializers.ModelSerializer):
             'fecha_pago_real',
         ]
 
+class AjusteFacturaSerializer(serializers.ModelSerializer):
+    """Adicional de la factura: concepto, si suma o resta y el valor en pesos enteros (2026-10-28)."""
+    concepto = serializers.CharField(max_length=200, trim_whitespace=True, allow_blank=False)
+    valor = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('1'), max_value=Decimal('9999999999'))
+
+    class Meta:
+        model = AjusteFactura
+        fields = ['id', 'concepto', 'tipo', 'valor']
+        read_only_fields = ['id']
+
+    def validate_valor(self, valor):
+        if valor != valor.to_integral_value():
+            raise serializers.ValidationError('Usa pesos enteros, sin centavos.')
+        return valor
+
+
 class FacturaProveedorSerializer(serializers.ModelSerializer):
+    # Adicionales (suman o restan al total); al editar, la lista enviada reemplaza la anterior.
+    ajustes = AjusteFacturaSerializer(many=True, required=False)
     # Write-only: lista de productos (cada uno validado con ProductoFacturaSerializer)
     productos = serializers.ListField(
         child=serializers.DictField(),
@@ -724,6 +742,7 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
             'detalles',         # read-only fallback (salida histórica)
             'comprobante_egreso', # read-only (salida) - vínculo con el comprobante de egreso, si tiene
             'fecha_pago_real',  # read-only: lo fija el flujo de egresos (D10f)
+            'ajustes',
         ]
 
     def validate_valor(self, value):
@@ -743,6 +762,10 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
             )
         proveedor = attrs.get('proveedor', getattr(self.instance, 'proveedor', None))
         crudos = attrs.get('productos')
+        ajustes = attrs.get('ajustes')
+        if ajustes is None and self.instance is not None:
+            ajustes = [{'tipo': a.tipo, 'valor': a.valor} for a in self.instance.ajustes.all()]
+        neto_ajustes = sum((a['valor'] if a['tipo'] == AjusteFactura.SUMA else -a['valor'] for a in ajustes or []), Decimal(0))
         if crudos is None:
             if self.instance is None:
                 attrs['productos'] = []
@@ -765,10 +788,11 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
         enviados = {pk for p in productos for pk in p['id_referencias']}
         if self.instance is not None:
             bloqueados = sum(i.costo_especifico for i in self.instance.items_inventario.filter(disponibilidad='entregado').exclude(pk__in=enviados))
-        total = sum(p['costo'] * p['cantidad'] for p in productos) + bloqueados
+        total = sum(p['costo'] * p['cantidad'] for p in productos) + bloqueados + neto_ajustes
         valor = attrs.get('valor', getattr(self.instance, 'valor', None))
         if productos and valor is not None and total != valor:
-            raise serializers.ValidationError({'valor': f'La suma de los productos ({total:,.0f}) no coincide con el valor de la factura ({valor:,.0f}).'})
+            detalle = ' con los adicionales' if neto_ajustes else ''
+            raise serializers.ValidationError({'valor': f'La suma de los productos{detalle} ({total:,.0f}) no coincide con el valor de la factura ({valor:,.0f}).'})
         attrs['productos'] = productos
         return attrs
 
@@ -780,12 +804,21 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
     def _lineas_de(productos):
         return [p['detalle_pedido'].pk for p in productos if p.get('detalle_pedido')]
 
+    @staticmethod
+    def _guardar_ajustes(factura, ajustes):
+        if ajustes is None:
+            return
+        factura.ajustes.all().delete()
+        AjusteFactura.objects.bulk_create([AjusteFactura(factura=factura, orden=i, **a) for i, a in enumerate(ajustes)])
+
     @transaction.atomic
     def create(self, validated_data):
         productos = validated_data.pop('productos', [])
+        ajustes = validated_data.pop('ajustes', None)
         # Líneas de pedido bloqueadas antes de crear unidades (P11-01).
         lineas = recepcion.bloquear_lineas(self._lineas_de(productos))
         factura = FacturaProveedor.objects.create(**validated_data)
+        self._guardar_ajustes(factura, ajustes)
         for prod in productos:
             if prod['id_referencias']:
                 raise serializers.ValidationError({'productos': 'Una factura nueva no puede reutilizar unidades existentes.'})
@@ -797,6 +830,7 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def update(self, instance, validated_data):
         productos = validated_data.pop('productos', None)
+        ajustes = validated_data.pop('ajustes', None)
         lineas = {}
         if productos is not None:
             lineas = recepcion.bloquear_lineas(self._lineas_de(productos) + list(recepcion.lineas_de_unidades(instance)))
@@ -804,6 +838,7 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
+        self._guardar_ajustes(instance, ajustes)
         if instance.id_manual is not None:
             instance.items_inventario.update(factura_manual=instance.id_manual or '')
 

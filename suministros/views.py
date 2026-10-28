@@ -303,6 +303,7 @@ class FacturaProveedorViewSet(viewsets.ModelViewSet):
                 'items_inventario__grupo__subcategoria',
                 'items_inventario__zona',
                 'items_inventario__telas_cueros',
+                'ajustes',
             )
         return qs.all()
         
