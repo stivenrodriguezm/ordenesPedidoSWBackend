@@ -306,6 +306,18 @@ class PagoReciboCaja(models.Model):
     confirmado_por = models.ForeignKey(CustomUser, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
     fecha_confirmacion = models.DateTimeField(null=True, blank=True)
 
+class ComprobanteReciboCaja(models.Model):
+    """Foto del comprobante de pago que envía el cliente (casi siempre un pantallazo),
+    ya comprimida y guardada en Cloudinary (2026-10-28). Opcional; un recibo puede tener varias."""
+    recibo = models.ForeignKey(ReciboCaja, on_delete=models.CASCADE, related_name='comprobantes')
+    url = models.URLField(max_length=500)
+    subido_por = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['id']
+
+
 class CuentaCaja(models.Model):
     """Caja física identificable (P03-02). Su fila se bloquea con
     select_for_update para serializar movimientos, incluso cuando todavía no

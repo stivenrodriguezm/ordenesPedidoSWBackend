@@ -125,6 +125,16 @@ class LineaEntrada(serializers.Serializer):
     conjunto_nombre = serializers.CharField(max_length=150, allow_blank=True, default='')
     conjunto_cantidad = serializers.IntegerField(min_value=1, max_value=1000, default=1)
     recalcular = serializers.BooleanField(default=False)
+    # «Agregar especial» (2026-10-28): producto fuera de la lista con su costo total por unidad (ya con
+    # cargos) y, si lleva tela, el grupo y el consumo; el precio de lista = (costo + consumo × costo del
+    # grupo) × multiplicador general. Sin cargos ni opcionales.
+    costo_especial = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=1, max_value=Decimal('999999999'), allow_null=True, default=None)
+    metraje_especial = serializers.DecimalField(max_digits=8, decimal_places=2, min_value=0, max_value=Decimal('99999'), allow_null=True, default=None)
+
+    def validate_costo_especial(self, valor):
+        if valor is not None and valor != valor.to_integral_value():
+            raise serializers.ValidationError('Usa pesos enteros, sin centavos.')
+        return valor
 
 
 class DesgloseEntrada(serializers.Serializer):
@@ -175,6 +185,10 @@ def huella_config(d):
                   grupo=d['grupo_catalogo'].pk if d['grupo_catalogo'] else None)
     if d.get('pieza'):
         config.update(juego=d['juego'].pk, pieza=d['pieza'].pk)
+    # Solo si se usan: así la huella de las líneas ya guardadas no cambia.
+    for campo in ('costo_especial', 'metraje_especial'):
+        if d.get(campo) is not None:
+            config[campo] = numero_simple(d[campo])
     return hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest()
 
 
@@ -236,6 +250,34 @@ def preparar_adicional(d, anterior):
             'conjunto_cantidad': d['conjunto_cantidad'] if juego and d['conjunto'] else 1}
 
 
+def numero_simple(n):
+    """1000.00 → '1000', 8.50 → '8.5' (sin notación científica)."""
+    return format(n.normalize(), 'f') if n is not None else None
+
+
+def precio_especial_por_costo(d):
+    """Precio de lista de un producto especial por costo: (costo + consumo × costo del grupo)
+    × multiplicador general, en pesos enteros. Devuelve (precio, costo, snapshot)."""
+    if not d['producto_nombre'].strip():
+        raise ValidationError({'producto_nombre': 'Escribe el nombre del producto especial.'})
+    if d['opcionales'] or d['adicionales'] or d['precio_lista_override'] is not None:
+        raise ValidationError('El producto especial por costo no lleva cargos, opcionales ni precio manual: incluye todo en el costo.')
+    grupo, consumo = d['grupo_catalogo'], d['metraje_especial'] or Decimal(0)
+    if grupo and not consumo:
+        unidad = 'decímetros de cuero' if grupo.tipo == 'cuero' else 'metros de tela'
+        raise ValidationError({'metraje_especial': f'Indica cuántos {unidad} lleva cada unidad.'})
+    if consumo and not grupo:
+        raise ValidationError({'grupo_catalogo': 'Elige el grupo de la tela o cuero para cobrar su consumo.'})
+    material = consumo * grupo.precio_por_metro if grupo else Decimal(0)
+    mult = obtener_multiplicador_general()
+    costo = d['costo_especial'] + material
+    precio = (costo * mult).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+    snapshot = {'especial': 'costo', 'base': numero_simple(d['costo_especial']), 'metraje': numero_simple(consumo),
+                'costo_tela': str(grupo.precio_por_metro if grupo else 0),
+                'multiplicador': str(mult), 'calculado': str(precio)}
+    return precio, dinero(costo), snapshot
+
+
 def preparar_linea(request, venta, d, anterior=None, completo=True):
     """`completo=False` solo para el cálculo de precio en vivo: no exige los datos que
     el asesor aún está llenando (textos, referencia, tela)."""
@@ -255,7 +297,10 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
         lista, costo, snapshot = anterior.precio_lista_unitario, anterior.costo_estimado, anterior.precio_snapshot
     else:
         manual = d['precio_lista_override']
-        if manual is not None or d['adicionales'] or not v:
+        por_costo = not v and d['costo_especial'] is not None
+        if v and (d['costo_especial'] is not None or d['metraje_especial'] is not None):
+            raise ValidationError('Un producto de la lista de precios toma su costo de la lista.')
+        if manual is not None or d['adicionales'] or (not v and not por_costo):
             exigir(request, 'AJUSTAR_PRECIO_LISTA_VENTA')
             # Un recargo ya dice qué es (su descripción); el motivo solo se exige
             # para un precio especial que reemplaza al del catálogo.
@@ -302,6 +347,8 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
                                   + [{'id': c.pk, 'descripcion': c.descripcion, 'pieza': comp.variante.nombre_catalogo, 'cantidad': comp.cantidad}
                                      for comp, c in opcionales_piezas(v) if c.pk in d['opcionales']],
                         'calculado': str(calculado), **({'juego': juego} if juego else {})}
+        elif por_costo:
+            calculado, costo, snapshot = precio_especial_por_costo(d)
         else:
             if not d['producto_nombre'] or manual is None:
                 raise ValidationError('Un producto especial necesita nombre y precio de lista autorizado.')
@@ -523,6 +570,8 @@ def preparar_tela(d, v, anterior, completo=True):
             proveedor = cantidad = None
         elif cantidad is None and v and metraje_total(v, material):
             cantidad = dinero(metraje_total(v, material) * d['cantidad'])
+        elif cantidad is None and not v and d.get('metraje_especial'):
+            cantidad = dinero(d['metraje_especial'] * d['cantidad'])  # especial por costo: su consumo
     else:
         proveedor = cantidad = grupo = costo = None
     pedida = bool(anterior and tela_pedida(anterior))
@@ -582,6 +631,9 @@ def representar(request, venta):
         d['proveedor'] = l.referencia.proveedor_id if l.referencia_id else None
         d['referencia_nombre'] = l.referencia.nombre if l.referencia_id else ''
         d['precio_lista_override'] = l.precio_snapshot.get('override')
+        por_costo = l.precio_snapshot.get('especial') == 'costo'
+        d['costo_especial'] = l.precio_snapshot.get('base') if por_costo else None
+        d['metraje_especial'] = l.precio_snapshot.get('metraje') if por_costo else None
         d['juego'] = l.precio_snapshot.get('juego')
         d['pieza'] = l.precio_snapshot.get('pieza')
         d['opcionales'] = [o['id'] if isinstance(o, dict) else o for o in l.opcionales if not isinstance(o, dict) or 'id' in o]

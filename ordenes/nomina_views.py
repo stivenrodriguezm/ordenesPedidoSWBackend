@@ -2,7 +2,7 @@
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -11,7 +11,7 @@ from rest_framework.response import Response
 
 from . import business_time, nomina
 from .gestion_venta import texto_tela
-from .models import AsesorCierre, AsesorNomina, CierreNomina, CustomUser, LineaNomina, PagoReciboCaja
+from .models import AsesorCierre, AsesorNomina, CierreNomina, CustomUser, LineaNomina, OrdenPedido, PagoReciboCaja, PedidoTela
 from .permissions import check_feature_permission
 from .servicios import ErrorNegocio, auditar
 
@@ -261,9 +261,11 @@ def venta_de_linea(request, pk):
         'recibo': pg.recibo_id, 'fecha': pg.recibo.fecha, 'metodo': pg.metodo_pago, 'valor': _num(pg.valor), 'estado': pg.estado,
     } for pg in PagoReciboCaja.objects.filter(recibo__venta=v).select_related('recibo').order_by('recibo__fecha', 'id')]
     compartida = [_nombre(u) for u in v.vendedores_compartidos.all()]
+    c = v.cliente if v.cliente_id else None
     return Response({
         'venta': {
-            'id': v.id, 'fecha_venta': v.fecha_venta, 'cliente': v.cliente.nombre if v.cliente_id else '', 'sede': v.sede,
+            'id': v.id, 'fecha_venta': v.fecha_venta, 'cliente': c.nombre if c else '', 'sede': v.sede,
+            'direccion': (c.direccion or '') if c else '', 'barrio': (c.barrio or '') if c else '', 'ciudad': (c.ciudad or '') if c else '',
             'vendedor': _nombre(v.vendedor), 'compartida_con': compartida, 'estado': v.estado,
             'valor_total': _num(v.valor_total), 'valor_lista': _num(v.valor_lista), 'abono': _num(v.abono), 'saldo': _num(v.saldo),
             'productos_confirmados': v.productos_confirmados, 'revision_productos': v.revision_productos,
@@ -277,4 +279,31 @@ def venta_de_linea(request, pk):
             'venta_cuadra': bool(productos) and suma_venta == Decimal(v.valor_total),
         },
         'pagos': pagos,
+        'pedidos': pedidos_de_venta(v),
+        'pedidos_tela': pedidos_tela_de_venta(v),
     })
+
+
+def pedidos_de_venta(v):
+    """(2026-10-28) Todo lo pedido al proveedor para la venta, incluso lo anulado (con su estado),
+    para validar la comisión de un vistazo."""
+    ordenes = (OrdenPedido.objects.filter(Q(venta=v) | Q(venta__isnull=True, orden_venta=str(v.pk)))
+               .select_related('proveedor').prefetch_related('detalles__referencia', 'detalles__subcategoria').order_by('id'))
+    return [{
+        'id': o.id, 'proveedor': o.proveedor.nombre_empresa, 'estado': o.estado, 'estado_nombre': o.get_estado_display(),
+        'fecha_creacion': o.fecha_creacion, 'fecha_esperada': o.fecha_esperada, 'tela': o.tela or '',
+        'detalles': [{'referencia': d.referencia.nombre if d.referencia else '', 'subcategoria': d.subcategoria.nombre if d.subcategoria else '',
+                      'cantidad': d.cantidad, 'especificaciones': d.especificaciones or ''} for d in o.detalles.all()],
+    } for o in ordenes]
+
+
+def pedidos_tela_de_venta(v):
+    """Pedidos de tela de la venta: los ligados a la venta, a uno de sus pedidos o a sus productos."""
+    pedidos = (PedidoTela.objects.filter(Q(venta=v) | Q(orden_asociada__venta=v) | Q(detalles__linea_venta__venta=v)).distinct()
+               .select_related('proveedor').prefetch_related('detalles__linea_venta').order_by('id'))
+    return [{
+        'id': p.id, 'proveedor': p.proveedor.nombre_empresa, 'estado': p.estado, 'fecha_creacion': p.fecha_creacion,
+        'orden': p.orden_asociada_id, 'direccion': p.direccion_entrega,
+        'detalles': [{'tela': d.tela, 'cantidad': _num(d.cantidad),
+                      'unidad': 'dm' if d.linea_venta and d.linea_venta.tela_material == 'cuero' else 'm'} for d in p.detalles.all()],
+    } for p in pedidos]

@@ -12,7 +12,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from .models import (
     CustomUser, Referencia, Proveedor, OrdenPedido, DetallePedido, Cliente, Venta, LineaVenta,
-    ObservacionVenta, ObservacionCliente, Remision, ReciboCaja, PagoReciboCaja, Caja, ComprobanteEgreso,
+    ObservacionVenta, ObservacionCliente, Remision, ReciboCaja, PagoReciboCaja, ComprobanteReciboCaja, Caja, ComprobanteEgreso,
     ProveedorTela, PedidoTela, DetallePedidoTela, DireccionEntrega
 )
 
@@ -504,16 +504,29 @@ class PagoReciboCajaSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'estado', 'confirmacion']
 
 
+class ComprobanteReciboCajaSerializer(serializers.ModelSerializer):
+    subido_por_nombre = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ComprobanteReciboCaja
+        fields = ['id', 'url', 'creado_en', 'subido_por_nombre']
+
+    def get_subido_por_nombre(self, obj):
+        u = obj.subido_por
+        return (u.first_name or u.username) if u else None
+
+
 class ReciboCajaSerializer(serializers.ModelSerializer):
     vendedor_nombre = serializers.SerializerMethodField()
     pagos = PagoReciboCajaSerializer(many=True, read_only=True)
+    comprobantes = ComprobanteReciboCajaSerializer(many=True, read_only=True)
     valor = serializers.SerializerMethodField()
     metodo_pago = serializers.SerializerMethodField()
     estado = serializers.SerializerMethodField()
 
     class Meta:
         model = ReciboCaja
-        fields = ['id', 'venta', 'fecha', 'nota', 'pagos', 'vendedor_nombre', 'valor', 'metodo_pago', 'estado']
+        fields = ['id', 'venta', 'fecha', 'nota', 'pagos', 'comprobantes', 'vendedor_nombre', 'valor', 'metodo_pago', 'estado']
 
     def get_vendedor_nombre(self, obj):
         venta = obj.venta

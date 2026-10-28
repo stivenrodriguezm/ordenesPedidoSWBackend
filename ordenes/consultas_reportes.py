@@ -210,7 +210,7 @@ def consultar_recibos_caja(request):
     # pendiente primero — como estado/metodo_pago/valor ahora viven en PagoReciboCaja
     # (un recibo puede tener varias líneas), "pendiente" se resuelve con un Exists.
     recibos = ReciboCaja.objects.select_related('venta__cliente', 'venta__vendedor').prefetch_related(
-        'venta__vendedores_compartidos', 'pagos'
+        'venta__vendedores_compartidos', 'pagos', 'comprobantes__subido_por'
     ).annotate(
         tiene_pendiente=Exists(PagoReciboCaja.objects.filter(recibo=OuterRef('pk'), estado='Pendiente')),
         orden_estado=Case(

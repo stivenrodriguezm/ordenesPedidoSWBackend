@@ -10,7 +10,7 @@ from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from .models import (
     Referencia, Proveedor, OrdenPedido, DetallePedido, CustomUser, Cliente,
-    Venta, LineaVenta, ObservacionVenta, Caja, ReciboCaja, PagoReciboCaja, ComprobanteEgreso,
+    Venta, LineaVenta, ObservacionVenta, Caja, ReciboCaja, PagoReciboCaja, ComprobanteReciboCaja, ComprobanteEgreso,
     ObservacionCliente, Remision, ProveedorTela, PedidoTela, DetallePedidoTela, DireccionEntrega
 )
 from .serializers import (
@@ -26,6 +26,9 @@ from .permissions import (
     ventas_visibles, ordenes_visibles, clientes_visibles, ve_todas_las_ventas,
 )
 from .consultas_reportes import consultar_ventas, consultar_recibos_caja, consultar_comprobantes_egreso
+from .recibos_comprobantes import (
+    ComprobanteInvalido, proximo_numero_automatico, siguiente_numero_automatico, subir_comprobante, urls_validas,
+)
 from .clientes_datos import filtrar_clientes
 from .servicios import (
     ErrorNegocio, a_decimal, auditar, formato_cop, idempotente, registrar_cierre_caja, registrar_movimiento_caja,
@@ -1655,13 +1658,24 @@ def crear_recibo_caja(request):
     if not isinstance(pagos_data, list) or len(pagos_data) == 0:
         return Response({"error": "Debe incluir al menos un pago (método y valor)."}, status=status.HTTP_400_BAD_REQUEST)
 
-    recibo_id = data.get('id')
+    automatico = data.get('numero_automatico') in (True, 'true', '1', 1)
+    recibo_id = None if automatico else data.get('id')
     venta_id = data.get('venta')
-    if not recibo_id or not venta_id:
+    if (not automatico and not recibo_id) or not venta_id:
         return Response({"error": "Faltan datos del recibo (No. de recibo / venta)."}, status=status.HTTP_400_BAD_REQUEST)
-
-    if ReciboCaja.objects.filter(id=recibo_id).exists():
-        return Response({"error": "Ya existe un recibo con ese número."}, status=status.HTTP_400_BAD_REQUEST)
+    if not automatico:
+        try:
+            recibo_id = int(str(recibo_id).strip())
+        except (TypeError, ValueError):
+            recibo_id = 0
+        if not 0 < recibo_id < 2 ** 31:
+            return Response({"error": "El No. de recibo debe ser un número entero positivo."}, status=status.HTTP_400_BAD_REQUEST)
+        if ReciboCaja.objects.filter(id=recibo_id).exists():
+            return Response({"error": "Ya existe un recibo con ese número."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        fotos = urls_validas(data.get('comprobantes'))
+    except ComprobanteInvalido as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     venta = ventas_visibles(request, Venta.objects.select_for_update()).filter(id=venta_id).first()
     if venta is None:
@@ -1695,9 +1709,13 @@ def crear_recibo_caja(request):
     # Format date as "20-nov-2025"
     fecha_str = fecha_creacion.strftime('%d-%b-%Y').lower()
 
+    if automatico:
+        recibo_id = siguiente_numero_automatico()
     recibo = ReciboCaja.objects.create(
         id=recibo_id, venta=venta, fecha=fecha_creacion, nota=data.get('nota') or None
     )
+    for url in fotos:
+        ComprobanteReciboCaja.objects.create(recibo=recibo, url=url, subido_por=request.user)
 
     for metodo, valor in pagos_parseados:
         pago = PagoReciboCaja.objects.create(recibo=recibo, metodo_pago=metodo, valor=valor, estado='Pendiente')
@@ -1706,6 +1724,78 @@ def crear_recibo_caja(request):
             _aplicar_confirmacion_pago(request, pago, fecha_str, usuario_nombre)
 
     return Response(ReciboCajaSerializer(recibo).data, status=status.HTTP_201_CREATED)
+
+
+class _PuedeAdjuntarComprobante(BasePermission):
+    """Crear o editar recibos permite adjuntar fotos de comprobantes."""
+    def has_permission(self, request, view):
+        return tiene_permiso_codigo(request, 'CREAR_RECIBO') or tiene_permiso_codigo(request, 'EDITAR_RECIBO')
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, check_feature_permission('CREAR_RECIBO')])
+def siguiente_numero_recibo(request):
+    """GET /api/recibos-caja/siguiente-numero/ — vista previa del próximo número automático."""
+    return Response({'numero': proximo_numero_automatico()})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, _PuedeAdjuntarComprobante])
+def subir_comprobante_recibo(request):
+    """POST /api/recibos-caja/comprobantes/subir/ — comprime la foto, la sube y devuelve su URL;
+    el recibo la guarda al crearse (o con «agregar fotos»)."""
+    from paginaweb.cloudinary_client import CloudinaryUploadError
+    archivo = request.FILES.get('imagen') or request.FILES.get('file')
+    if not archivo:
+        return Response({"error": "No se envió ninguna foto."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        url = subir_comprobante(archivo)
+    except ComprobanteInvalido as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except CloudinaryUploadError:
+        logger.exception("Error subiendo comprobante de recibo de caja a Cloudinary")
+        return Response({"error": "No se pudo subir la foto. Intenta de nuevo."}, status=status.HTTP_502_BAD_GATEWAY)
+    return Response({"ok": True, "url": url})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, _PuedeAdjuntarComprobante])
+@transaction.atomic
+def agregar_comprobantes_recibo(request, recibo_id):
+    """POST /api/recibos-caja/{id}/comprobantes/ — {comprobantes: [urls]} a un recibo existente."""
+    recibo = ReciboCaja.objects.select_for_update().filter(
+        id=recibo_id, venta_id__in=ventas_visibles(request).values('pk')).first()
+    if recibo is None:
+        return Response({"error": "Recibo no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        fotos = urls_validas(request.data.get('comprobantes'))
+    except ComprobanteInvalido as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    if not fotos:
+        return Response({"error": "Adjunta al menos una foto."}, status=status.HTTP_400_BAD_REQUEST)
+    actuales = set(recibo.comprobantes.values_list('url', flat=True))
+    nuevas = [u for u in fotos if u not in actuales]
+    if len(actuales) + len(nuevas) > 10:
+        return Response({"error": "Máximo 10 fotos por recibo."}, status=status.HTTP_400_BAD_REQUEST)
+    for url in nuevas:
+        ComprobanteReciboCaja.objects.create(recibo=recibo, url=url, subido_por=request.user)
+    auditar(request.user, 'recibo.comprobantes', recibo, {'agregadas': len(nuevas)})
+    recibo = ReciboCaja.objects.prefetch_related('pagos', 'comprobantes__subido_por').get(pk=recibo.pk)
+    return Response(ReciboCajaSerializer(recibo).data)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated, check_feature_permission('EDITAR_RECIBO')])
+@transaction.atomic
+def quitar_comprobante_recibo(request, comprobante_id):
+    """DELETE /api/recibos-caja/comprobantes/{id}/ — quita una foto (solo quien edita recibos)."""
+    foto = ComprobanteReciboCaja.objects.select_related('recibo').filter(
+        id=comprobante_id, recibo__venta_id__in=ventas_visibles(request).values('pk')).first()
+    if foto is None:
+        return Response({"error": "Foto no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+    auditar(request.user, 'recibo.comprobante.quitar', foto.recibo, {'url': foto.url})
+    foto.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 @api_view(['PUT'])
