@@ -270,12 +270,12 @@ class OrdenPedidoSerializer(SinCostoSinPermisoMixin, serializers.ModelSerializer
         prefetched = getattr(obj, '_prefetched_objects_cache', {})
         if 'pedidos_telas' in prefetched:
             detalles = sorted(
-                (d for pedido in obj.pedidos_telas.all() for d in pedido.detalles.all()),
+                (d for pedido in obj.pedidos_telas.all() if pedido.estado != PedidoTela.ANULADO for d in pedido.detalles.all()),
                 key=lambda d: d.id,
             )
         else:
             from .models import DetallePedidoTela
-            detalles = DetallePedidoTela.objects.filter(pedido__orden_asociada=obj)
+            detalles = DetallePedidoTela.objects.filter(pedido__orden_asociada=obj).exclude(pedido__estado=PedidoTela.ANULADO)
         return DetallePedidoTelaSerializer(detalles, many=True).data
 
     def validate(self, attrs):

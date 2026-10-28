@@ -1055,13 +1055,32 @@ def costo_sugerido(linea):
             'tela_descontada': str(tela.quantize(Decimal('1'))) if tela else None}
 
 
-def fila_factura(det, orden, recibidas, sugerencias=None):
-    """Una línea de pedido pendiente de recibir, lista para la factura."""
+def tela_de_pedido(dt, unidades, linea=None):
+    """Una fila de un pedido de tela («Lino - Color: Arena», «[CUERO]Napa - Color: Miel») como tela de
+    la factura, con la cantidad por unidad del mueble (cada unidad del inventario lleva sus telas)."""
+    texto = (dt.tela or '').strip()
+    cuero = '[CUERO]' in texto or bool(linea and linea.tela_material == 'cuero')
+    texto = texto.replace('[CUERO]', '').strip()
+    referencia, color = texto, ''
+    partes = re.split(r'\s*-?\s*color:\s*', texto, maxsplit=1, flags=re.IGNORECASE)
+    if len(partes) == 2:
+        referencia, color = partes[0].strip(), partes[1].strip()
+    por_unidad = (dt.cantidad / unidades).quantize(CENT) if dt.cantidad and unidades else None
+    costo = linea.tela_costo if linea and linea.tela_costo is not None else None
+    return {'tipo': 'cuero' if cuero else 'tela', 'referencia': referencia, 'color': color,
+            'cantidad': str(por_unidad) if por_unidad else '', 'costo_unidad': str(costo) if costo is not None else '',
+            'grupo': linea.tela_grupo.nombre if linea and linea.tela_grupo_id else '', 'pedido_tela': dt.pedido_id}
+
+
+def fila_factura(det, orden, recibidas, sugerencias=None, telas_pedido=None):
+    """Una línea de pedido pendiente de recibir, lista para la factura. (2026-10-28) Sus telas salen de
+    los pedidos de tela de esa OP o de su producto (sin los anulados); sin pedido de tela, de los datos
+    de tela del producto de la venta."""
     l = det.linea_venta if det.linea_venta_id else None
     nombre = (det.referencia.nombre.strip().lower() if det.referencia else '')
     categoria, subcategoria = (sugerencias or {}).get(nombre, (None, None))
-    telas = []
-    if l and gestion_venta.tela_modo(l) in (LineaVenta.TELA_INCLUIDA, LineaVenta.TELA_APARTE) and (l.tela_referencia or l.tela_color):
+    telas = [tela_de_pedido(dt, det.cantidad, l) for dt in (telas_pedido or [])]
+    if not telas and l and gestion_venta.tela_modo(l) in (LineaVenta.TELA_INCLUIDA, LineaVenta.TELA_APARTE) and (l.tela_referencia or l.tela_color):
         por_unidad = (l.tela_cantidad / l.cantidad).quantize(CENT) if l.tela_cantidad and l.cantidad else None
         telas.append({'tipo': l.tela_material or 'tela', 'referencia': l.tela_referencia, 'color': l.tela_color,
                       'cantidad': str(por_unidad) if por_unidad else '', 'costo_unidad': str(l.tela_costo) if l.tela_costo is not None else '',
@@ -1078,16 +1097,33 @@ def fila_factura(det, orden, recibidas, sugerencias=None):
 
 def _filas_pendientes(ordenes):
     from suministros.views import sugerencias_por_referencia
+    vigentes = DetallePedidoTela.objects.exclude(pedido__estado=PedidoTela.ANULADO).select_related('pedido').order_by('id')
     ordenes = list(ordenes.prefetch_related(
         Prefetch('detalles', queryset=DetallePedido.objects.select_related('referencia', 'linea_venta__variante__multiplicador', 'linea_venta__tela_grupo')
-                 .prefetch_related('unidades_recibidas', 'linea_venta__detalles_tela'))))
+                 .prefetch_related('unidades_recibidas', Prefetch('linea_venta__detalles_tela', queryset=vigentes, to_attr='telas_vigentes'))),
+        Prefetch('pedidos_telas__detalles', queryset=vigentes, to_attr='telas_vigentes')))
     sugerencias = sugerencias_por_referencia({d.referencia.nombre for o in ordenes for d in o.detalles.all() if d.referencia})
     filas = []
     for orden in ordenes:
+        lineas_op = {d.linea_venta_id for d in orden.detalles.all() if d.linea_venta_id}
+        # Telas pedidas para la OP sin producto de la venta (o de un producto que no está en ella): si hay
+        # tantas como líneas pendientes sin tela propia, una para cada línea en orden; si no, todas con la
+        # primera línea pendiente (casi siempre la OP tiene una sola). En la factura se pueden corregir.
+        sueltas = [dt for pt in orden.pedidos_telas.all() if pt.estado != PedidoTela.ANULADO for dt in pt.telas_vigentes
+                   if not dt.linea_venta_id or dt.linea_venta_id not in lineas_op]
+        pendientes = []
         for d in orden.detalles.all():
             recibidas = sum(1 for u in d.unidades_recibidas.all() if u.disponibilidad != 'devuelto_proveedor')
             if d.cantidad - recibidas > 0:
-                filas.append(fila_factura(d, orden, recibidas, sugerencias))
+                pendientes.append((d, recibidas, list(d.linea_venta.telas_vigentes) if d.linea_venta_id else []))
+        sin_tela = [i for i, (_, _, propias) in enumerate(pendientes) if not propias]
+        reparto = {}
+        if sueltas and len(sueltas) == len(sin_tela) > 1:
+            reparto = {i: [dt] for i, dt in zip(sin_tela, sueltas)}
+        elif sueltas and pendientes:
+            reparto = {(sin_tela or [0])[0]: sueltas}
+        for i, (d, recibidas, propias) in enumerate(pendientes):
+            filas.append(fila_factura(d, orden, recibidas, sugerencias, propias + reparto.get(i, [])))
     return filas
 
 

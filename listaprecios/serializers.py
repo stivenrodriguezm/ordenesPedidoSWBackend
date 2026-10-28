@@ -36,6 +36,8 @@ class DisposicionSubcategoriasSerializer(serializers.Serializer):
 
 class RenombrarSubcategoriaSerializer(serializers.Serializer):
     nombre = serializers.CharField(max_length=100, trim_whitespace=True, allow_blank=False)
+    # Desde Administrar lista: el cambio es solo de esta referencia (y su grupo), no del catálogo.
+    referencia = serializers.PrimaryKeyRelatedField(queryset=Referencia.objects.all(), required=False, allow_null=True)
 
 
 class IdentidadLineaMixin:

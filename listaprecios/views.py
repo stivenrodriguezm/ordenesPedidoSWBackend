@@ -33,7 +33,7 @@ from .serializers import (
     CargoVarianteSerializer, PrecioVarianteSerializer, LineaCatalogoSerializer, EspecialLineaSerializer,
     CotizacionSerializer, LineaCotizacionSerializer, EspecialCatalogoSerializer,
 )
-from .disposicion import guardar_disposicion, renombrar_subcategoria, retirada, disposicion
+from .disposicion import agregar_subcategoria_nueva, guardar_disposicion, renombrar_subcategoria, retirada, disposicion
 from .especiales import aplicar_configurado, archivar_historico
 from .referencias import categoria_variante, nombre_linea, sincronizar_subcategorias, productos_actuales, subcategoria_pedida
 from . import cache_catalogo
@@ -272,7 +272,20 @@ class ReferenciasPrecioViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ['nombre', 'proveedor__nombre_empresa']
 
     def get_permissions(self):
-        return [IsAuthenticated(), check_feature_permission('EDITAR_LISTA_PRECIOS' if self.action == 'disposicion' else 'VER_COSTOS_LISTA_PRECIOS')()]
+        return [IsAuthenticated(), check_feature_permission('EDITAR_LISTA_PRECIOS' if self.action in ('disposicion', 'subcategoria_nueva') else 'VER_COSTOS_LISTA_PRECIOS')()]
+
+    @action(detail=True, methods=['post'], url_path='subcategoria-nueva')
+    def subcategoria_nueva(self, request, pk=None):
+        """POST /api/listaprecios/referencias/{id}/subcategoria-nueva/ — {nombre, categoria, todas}:
+        agrega una subcategoría a esta referencia (o a todas las de su grupo) desde Administrar lista."""
+        referencia = get_object_or_404(Referencia, pk=pk)
+        valor = str(request.data.get('categoria') or '')
+        categoria = Categoria.objects.filter(pk=int(valor)).first() if valor.isdigit() else None
+        if categoria is None:
+            raise serializers.ValidationError({'categoria': 'Elige la categoría de la subcategoría.'})
+        datos = agregar_subcategoria_nueva(referencia, request.data.get('nombre'), categoria, todas=bool(request.data.get('todas')))
+        auditar(request.user, 'precios.subcategoria_nueva', referencia, datos)
+        return Response(datos, status=201)
 
     @action(detail=True, methods=['post'])
     def disposicion(self, request, pk=None):
@@ -290,8 +303,9 @@ def renombrar_tipo(request, pk):
     get_object_or_404(Subcategoria, pk=pk)
     entrada = RenombrarSubcategoriaSerializer(data=request.data)
     entrada.is_valid(raise_exception=True)
-    datos = renombrar_subcategoria(pk, entrada.validated_data['nombre'])
-    auditar(request.user, 'precios.renombrar_subcategoria', Subcategoria.objects.get(pk=pk), {'nombre': datos['nombre']})
+    referencia = entrada.validated_data.get('referencia')
+    datos = renombrar_subcategoria(pk, entrada.validated_data['nombre'], referencia)
+    auditar(request.user, 'precios.renombrar_subcategoria', Subcategoria.objects.get(pk=datos['id']), datos)
     return Response(datos)
 
 
