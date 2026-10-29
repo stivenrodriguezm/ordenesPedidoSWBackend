@@ -40,6 +40,11 @@ class RenombrarSubcategoriaSerializer(serializers.Serializer):
     referencia = serializers.PrimaryKeyRelatedField(queryset=Referencia.objects.all(), required=False, allow_null=True)
 
 
+class CategoriaSubcategoriaSerializer(serializers.Serializer):
+    categoria = serializers.PrimaryKeyRelatedField(queryset=Categoria.objects.all())
+    referencia = serializers.PrimaryKeyRelatedField(queryset=Referencia.objects.all())
+
+
 class IdentidadLineaMixin:
     def to_representation(self, obj):
         data = super().to_representation(obj)

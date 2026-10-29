@@ -5,7 +5,7 @@ from .views import (
     CategoriaListaViewSet, GrupoTelaViewSet, MultiplicadorViewSet,
     LineaProductoViewSet, VarianteProductoViewSet, CargoVarianteViewSet, EspecialLineaViewSet,
     PrecioVarianteViewSet, CotizacionViewSet, categorias_publicas, catalogo, upload_foto,
-    calcular_precio_variante, renombrar_tipo, ReferenciasPrecioViewSet, clasificacion_referencias,
+    calcular_precio_variante, renombrar_tipo, cambiar_categoria_tipo, ReferenciasPrecioViewSet, clasificacion_referencias,
 )
 
 router = DefaultRouter()
@@ -22,6 +22,7 @@ router.register(r'cotizaciones', CotizacionViewSet, basename='cotizaciones')
 
 urlpatterns = [
     path('subcategorias/<int:pk>/renombrar/', renombrar_tipo, name='listaprecios-renombrar-subcategoria'),
+    path('subcategorias/<int:pk>/categoria/', cambiar_categoria_tipo, name='listaprecios-categoria-subcategoria'),
     path('clasificacion/', clasificacion_referencias, name='listaprecios-clasificacion'),
     path('categorias-publicas/', categorias_publicas, name='listaprecios-categorias-publicas'),
     path('catalogo/', catalogo, name='listaprecios-catalogo'),

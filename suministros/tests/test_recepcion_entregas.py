@@ -49,13 +49,24 @@ class RecepcionTests(LottusTestCase):
         # Facturar no duplica: 3 unidades en total, las de las dos facturas.
         self.assertEqual(Inventario.objects.filter(referencia=self.ref).count(), 3)
 
-    def test_no_se_recibe_mas_de_lo_pedido(self):
-        self.assertEqual(self.facturar('F1', 2, self.linea.pk).status_code, 201)
-        r = self.facturar('F2', 2, self.linea.pk)
+    def test_una_factura_puede_traer_mas_que_lo_pendiente(self):
+        # «Juego de 6 sillas» pide 1 y llegan 6 sillas: todas quedan ligadas y la línea, recibida.
+        juego = DetallePedido.objects.create(orden=self.orden, referencia=self.ref, cantidad=1, especificaciones='Juego de 6 sillas')
+        r = self.facturar('F1', 6, juego.pk)
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(juego.unidades_recibidas.count(), 6)
+        self.assertEqual(self.facturar('F2', 2, self.linea.pk).status_code, 201)
+        self.assertEqual(self.facturar('F3', 2, self.linea.pk).status_code, 201)
+        self.orden.refresh_from_db()
+        self.assertEqual(self.orden.estado, 'recibido')
+
+    def test_no_se_recibe_una_linea_ya_completa(self):
+        self.assertEqual(self.facturar('F1', 3, self.linea.pk).status_code, 201)
+        r = self.facturar('F2', 1, self.linea.pk)
         self.assertEqual(r.status_code, 400)
         self.assertIn('pide 3', str(r.data))
         self.assertFalse(FacturaProveedor.objects.filter(id_manual='F2').exists())
-        self.assertEqual(Inventario.objects.filter(detalle_pedido=self.linea).count(), 2)
+        self.assertEqual(Inventario.objects.filter(detalle_pedido=self.linea).count(), 3)
 
     def test_linea_invalida(self):
         otro = self.proveedor('Proveedor ficticio B')
@@ -73,15 +84,19 @@ class RecepcionTests(LottusTestCase):
         self.assertFalse(Inventario.objects.exists())
 
     def test_edicion_respeta_el_tope_y_libera_al_quitar(self):
-        r = self.facturar('F1', 3, self.linea.pk)
+        r = self.facturar('F0', 3, self.linea.pk)
+        completa = FacturaProveedor.objects.get(pk=r.data['id'])
+        r = self.facturar('F1', 2)
         factura = FacturaProveedor.objects.get(pk=r.data['id'])
         ids = list(factura.items_inventario.values_list('pk', flat=True))
         base = {'referencia': self.ref.pk, 'costo': '10', 'detalle_pedido': self.linea.pk}
+        # Otra factura ya completó la línea: esta no le puede ligar unidades.
         r = self.c.patch(f'/api/suministros/facturas/{factura.pk}/', {
-            'valor': '40', 'productos': [{**base, 'id_referencias': ids, 'cantidad': 4}]}, format='json')
+            'valor': '20', 'productos': [{**base, 'id_referencias': ids, 'cantidad': 2}]}, format='json')
         self.assertEqual(r.status_code, 400)
-        self.assertEqual(factura.items_inventario.count(), 3)
-        r = self.c.patch(f'/api/suministros/facturas/{factura.pk}/', {
+        self.assertEqual(self.linea.unidades_recibidas.count(), 3)
+        ids = list(completa.items_inventario.values_list('pk', flat=True))
+        r = self.c.patch(f'/api/suministros/facturas/{completa.pk}/', {
             'valor': '20', 'productos': [{**base, 'id_referencias': ids[:2], 'cantidad': 2}]}, format='json')
         self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual(self.linea.unidades_recibidas.count(), 2)

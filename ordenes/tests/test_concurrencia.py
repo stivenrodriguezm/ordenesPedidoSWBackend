@@ -80,12 +80,12 @@ class CarrerasMySQLTests(TransactionTestCase):
         self.assertEqual(activas, 1)
 
     def test_facturas_simultaneas_no_reciben_de_mas_una_linea(self):
-        """P11-01: línea de 3; dos facturas de 2 a la vez: solo cabe una."""
+        """P11-01: línea de 2; dos facturas de 2 a la vez: solo cabe una (la otra ve la línea completa)."""
         from ordenes.models import DetallePedido, OrdenPedido, Referencia
         prov = Proveedor.objects.create(nombre_empresa='Proveedor ficticio recepción')
         ref = Referencia.objects.create(proveedor=prov, nombre='Ref ficticia')
         orden = OrdenPedido.objects.create(proveedor=prov, usuario=self.admin, fecha_esperada=date.today())
-        linea = DetallePedido.objects.create(orden=orden, referencia=ref, cantidad=3, especificaciones='-')
+        linea = DetallePedido.objects.create(orden=orden, referencia=ref, cantidad=2, especificaciones='-')
         codigos = en_paralelo(2, lambda i: self.cliente_api().post('/api/suministros/facturas/', {
             'id_manual': f'REC-{i}', 'proveedor': prov.id, 'valor': '20',
             'productos': [{'referencia': ref.id, 'costo': '10', 'cantidad': 2, 'detalle_pedido': linea.id}]},

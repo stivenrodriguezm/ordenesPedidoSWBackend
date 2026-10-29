@@ -6,6 +6,7 @@ from .asistente import agente_views
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from . import nomina_views
+from . import desarrollador_views as dev
 from .views import (
     caja_view,
     ReferenciaViewSet, ProveedorViewSet, OrdenPedidoViewSet, DetallePedidoViewSet,
@@ -107,6 +108,18 @@ urlpatterns = [
     path('nomina/asesores-cierre/<int:pk>/<str:accion>/', nomina_views.asesor_accion, name='nomina-asesor-accion'),
     path('nomina/lineas/<int:pk>/', nomina_views.linea, name='nomina-linea'),
     path('nomina/lineas/<int:pk>/venta/', nomina_views.venta_de_linea, name='nomina-linea-venta'),
+    # Agente Desarrollador (2026-10-28)
+    path('desarrollador/estado/', dev.estado),
+    path('desarrollador/tareas/', dev.tareas),
+    path('desarrollador/tareas/<int:pk>/', dev.detalle),
+    path('desarrollador/tareas/<int:pk>/aprobar/', dev.aprobar),
+    path('desarrollador/tareas/<int:pk>/ajustar/', dev.ajustar),
+    path('desarrollador/tareas/<int:pk>/descartar/', dev.descartar),
+    path('desarrollador/tareas/<int:pk>/reintentar/', dev.reintentar),
+    path('desarrollador/tareas/<int:pk>/deshacer/', dev.deshacer),
+    path('desarrollador/interno/latido/', dev.interno_latido),
+    path('desarrollador/interno/pendientes/', dev.interno_pendientes),
+    path('desarrollador/interno/tareas/<int:pk>/', dev.interno_tarea),
     path('reportes-operativos/<str:reporte>/exportar/', exportar_reporte, name='exportar-reporte-operativo'),
     path('', include(router.urls)),
     path('caja/', caja_view, name='caja-view'),

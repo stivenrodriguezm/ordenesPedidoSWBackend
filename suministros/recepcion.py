@@ -82,18 +82,23 @@ def lineas_de_unidades(factura):
     return set(factura.items_inventario.exclude(detalle_pedido=None).values_list('detalle_pedido_id', flat=True))
 
 
-def verificar_topes(lineas):
-    """Rechaza la operación si alguna línea quedó con más unidades que las pedidas."""
+def verificar_topes(lineas, factura):
+    """Rechaza la operación si la factura liga unidades a una línea que otras facturas ya
+    dejaron completa. Una misma factura sí puede traer más unidades que las pendientes
+    (2026-10-29: la línea «Juego de 6 sillas» pide 1 y llegan 6 sillas)."""
     if not lineas:
         return
-    conteo = dict(DetallePedido.objects.filter(pk__in=list(lineas)).annotate(
-        n=contar_recibidas()).values_list('pk', 'n'))
+    recibidas = contar_recibidas()
+    previas = Count('unidades_recibidas', filter=recibidas.filter & ~Q(unidades_recibidas__factura=factura))
+    propias = Count('unidades_recibidas', filter=recibidas.filter & Q(unidades_recibidas__factura=factura))
+    conteo = {pk: (p, n) for pk, p, n in DetallePedido.objects.filter(pk__in=list(lineas)).annotate(
+        p=previas, n=propias).values_list('pk', 'p', 'n')}
     for pk, linea in sorted(lineas.items()):
-        recibidas = conteo.get(pk, 0)
-        if recibidas > linea.cantidad:
+        anteriores, nuevas = conteo.get(pk, (0, 0))
+        if nuevas and anteriores >= linea.cantidad:
             raise serializers.ValidationError({'productos': (
-                f'La línea de la orden de pedido #{linea.orden_id} pide {linea.cantidad} '
-                f'y quedarían {recibidas} unidades recibidas. Revisa la cantidad o la línea elegida.'
+                f'La línea de la orden de pedido #{linea.orden_id} pide {linea.cantidad} y otras facturas ya '
+                f'recibieron {anteriores}. Revisa la cantidad o la línea elegida.'
             )})
 
 

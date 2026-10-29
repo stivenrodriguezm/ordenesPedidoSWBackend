@@ -54,7 +54,10 @@ def _gestor(request):
 
 
 def _ve(request, perfil, config=None):
-    """¿Puede usar este agente (None = IA Lottus general)? Quien administra perfiles, siempre."""
+    """¿Puede usar este agente (None = IA Lottus general)? Quien administra perfiles, siempre.
+    El Desarrollador (2026-10-28) solo lo ve un superusuario."""
+    if perfil is not None and perfil.clave_sistema == 'desarrollador':
+        return bool(request.user.is_superuser)
     return _gestor(request) or perfiles.visible_para(perfil, request.user, config)
 
 
@@ -430,6 +433,8 @@ def lista_perfiles(request):
         return Response(_perfil(p), status=status.HTTP_201_CREATED)
     perfiles.asegurar_agente_ejecutor()
     qs = PerfilAsistente.objects.prefetch_related('documentos')
+    if not request.user.is_superuser:
+        qs = qs.exclude(clave_sistema='desarrollador')
     if _gestor(request):
         return Response([_perfil(p) for p in qs])
     return Response([_perfil(p, gestor=False) for p in qs.filter(activo=True) if perfiles.visible_para(p, request.user)])
@@ -445,8 +450,8 @@ def detalle_perfil(request, pk):
             return Response({'error': 'Este agente no está habilitado para tu rol.'}, status=status.HTTP_404_NOT_FOUND)
         return Response(_perfil(p, gestor=_gestor(request)))
     if request.method == 'DELETE':
-        if p.clave_sistema == 'ejecutor':
-            return Response({'error':'Este es el ejecutor único. Puedes pausarlo desde Disponibilidad.'},status=409)
+        if p.clave_sistema in ('ejecutor', 'desarrollador'):
+            return Response({'error':'Este es un agente del sistema. Puedes pausarlo desde Disponibilidad.'},status=409)
         auditar(request.user, 'asistente.perfil_eliminado', p, {'nombre': p.nombre})
         p.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

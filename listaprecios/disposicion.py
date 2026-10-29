@@ -166,6 +166,53 @@ def renombrar_subcategoria(pk, nombre, referencia=None):
 
 
 @transaction.atomic
+def cambiar_categoria_subcategoria(pk, categoria, referencia):
+    """(2026-10-29) Cambia la categoría de una subcategoría solo en esta referencia (y las que la lista
+    muestra con ella). Si nadie más la usa, la subcategoría cambia de categoría tal cual; si no, la
+    referencia pasa a la del mismo nombre en la nueva categoría (o a una nueva). Lo de la referencia que
+    guarda la categoría (inventario, facturas, remisiones, grupos) la acompaña."""
+    sub = Subcategoria.objects.select_related('categoria').get(pk=pk)
+    for c in sorted({sub.categoria_id, categoria.pk}):
+        Categoria.objects.select_for_update().get(pk=c)
+    if sub.categoria_id == categoria.pk:
+        raise ValidationError({'categoria': f'«{sub.nombre}» ya está en {categoria.nombre}.'})
+    refs = [r for r in referencias_del_grupo(referencia) if r.subcategorias.filter(pk=sub.pk).exists()]
+    if not refs:
+        raise ValidationError({'categoria': 'Esta subcategoría no pertenece a la referencia.'})
+    anterior = sub.categoria
+    existente = Subcategoria.objects.filter(categoria=categoria, nombre__iexact=sub.nombre).first()
+    if existente is None and not _usos_fuera(sub, refs):
+        sub.categoria = categoria
+        sub.save(update_fields=['categoria'])
+        destino = sub
+    else:
+        if existente is not None and any(r.subcategorias.filter(pk=existente.pk).exists() for r in refs):
+            raise ValidationError({'categoria': f'Esta referencia ya tiene «{existente.nombre}» en {categoria.nombre}.'})
+        destino = existente or Subcategoria.objects.create(categoria=categoria, nombre=sub.nombre)
+        _mover_subcategoria(sub, destino, refs)
+    _seguir_categoria(destino, refs)
+    for r in refs:
+        r.categorias.add(categoria)
+        if not r.subcategorias.filter(categoria=anterior).exists():
+            r.categorias.remove(anterior)
+    from .cache_catalogo import invalidar
+    invalidar()
+    return {'id': destino.pk, 'anterior': sub.pk, 'nombre': destino.nombre, 'categoria': categoria.pk,
+            'categoria_nombre': categoria.nombre, 'separada': destino.pk != sub.pk, 'referencias': [r.pk for r in refs]}
+
+
+def _seguir_categoria(sub, refs):
+    """Los registros de estas referencias con la subcategoría quedan en su categoría."""
+    from suministros.models import DetalleFactura, GrupoInventarioComponente, Inventario, RemisionItemManual
+    from .models import VarianteProducto
+    ids = [r.pk for r in refs]
+    VarianteProducto.objects.filter(subcategoria=sub, linea__referencia_id__in=ids, categoria_referencia__isnull=False).update(categoria_referencia=sub.categoria_id)
+    for modelo in (Inventario, DetalleFactura, GrupoInventarioComponente):
+        modelo.objects.filter(subcategoria=sub, referencia_id__in=ids).update(categoria=sub.categoria_id)
+    RemisionItemManual.objects.filter(subcategoria=sub, referencia__iexact=refs[0].nombre).update(categoria=sub.categoria_id)
+
+
+@transaction.atomic
 def agregar_subcategoria_nueva(referencia, nombre, categoria, todas=False):
     """Agrega a la referencia (o a todas las de su grupo) una subcategoría con este nombre: usa la
     del catálogo si ya existe en la categoría; si no, la crea. Si estaba retirada de la lista, vuelve."""

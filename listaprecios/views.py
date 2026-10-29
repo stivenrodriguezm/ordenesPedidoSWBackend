@@ -28,12 +28,12 @@ from .models import (
     Cotizacion, LineaCotizacion, EspecialCatalogo,
 )
 from .serializers import (
-    DisposicionSubcategoriasSerializer, RenombrarSubcategoriaSerializer, CategoriaListaSerializer, CategoriaListaPublicSerializer, GrupoTelaSerializer, MultiplicadorSerializer, OrdenVariantesSerializer, AgrupacionNuevaSerializer,
+    DisposicionSubcategoriasSerializer, RenombrarSubcategoriaSerializer, CategoriaSubcategoriaSerializer, CategoriaListaSerializer, CategoriaListaPublicSerializer, GrupoTelaSerializer, MultiplicadorSerializer, OrdenVariantesSerializer, AgrupacionNuevaSerializer,
     LineaProductoSerializer, LineaProductoResumenSerializer, VarianteProductoSerializer, ReferenciaPrecioSerializer,
     CargoVarianteSerializer, PrecioVarianteSerializer, LineaCatalogoSerializer, EspecialLineaSerializer,
     CotizacionSerializer, LineaCotizacionSerializer, EspecialCatalogoSerializer,
 )
-from .disposicion import agregar_subcategoria_nueva, guardar_disposicion, renombrar_subcategoria, retirada, disposicion
+from .disposicion import agregar_subcategoria_nueva, cambiar_categoria_subcategoria, guardar_disposicion, renombrar_subcategoria, retirada, disposicion
 from .especiales import aplicar_configurado, archivar_historico
 from .referencias import categoria_variante, nombre_linea, sincronizar_subcategorias, productos_actuales, subcategoria_pedida
 from . import cache_catalogo
@@ -306,6 +306,18 @@ def renombrar_tipo(request, pk):
     referencia = entrada.validated_data.get('referencia')
     datos = renombrar_subcategoria(pk, entrada.validated_data['nombre'], referencia)
     auditar(request.user, 'precios.renombrar_subcategoria', Subcategoria.objects.get(pk=datos['id']), datos)
+    return Response(datos)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, check_feature_permission('EDITAR_LISTA_PRECIOS')])
+def cambiar_categoria_tipo(request, pk):
+    """POST /api/listaprecios/subcategorias/{id}/categoria/ — {categoria, referencia}: solo en esa referencia."""
+    get_object_or_404(Subcategoria, pk=pk)
+    entrada = CategoriaSubcategoriaSerializer(data=request.data)
+    entrada.is_valid(raise_exception=True)
+    datos = cambiar_categoria_subcategoria(pk, **entrada.validated_data)
+    auditar(request.user, 'precios.categoria_subcategoria', Subcategoria.objects.get(pk=datos['id']), datos)
     return Response(datos)
 
 

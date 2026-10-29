@@ -981,3 +981,40 @@ class InteraccionOficina(models.Model):
 
     class Meta:
         ordering = ['id']
+
+
+class TareaDesarrollo(models.Model):
+    """Mejora de la plataforma que implementa el agente Desarrollador (2026-10-28).
+
+    Flujo: el usuario pide → el agente propone plan y riesgos (plan_listo) → el usuario
+    aprueba → implementa en una rama propia, corre pruebas y lo deja en la versión de
+    pruebas (en_pruebas) con vista previa. Nunca toca producción sin otra aprobación.
+    En el Mac (2026-10-29) lo verificado se aplica de una vez (aplicada) y «Deshacer» lo
+    revierte (deshaciendo → deshecha)."""
+    ESTADOS = [('planificando', 'Preparando el plan'), ('plan_listo', 'Plan listo para aprobar'),
+               ('aprobada', 'Aprobada, en cola'), ('implementando', 'Implementando'),
+               ('en_pruebas', 'Lista en pruebas'), ('aplicada', 'Aplicada en la plataforma'),
+               ('deshaciendo', 'Deshaciendo'), ('deshecha', 'Deshecha'), ('fallida', 'No se pudo completar'),
+               ('descartada', 'Descartada')]
+    ACTIVOS = ('planificando', 'aprobada', 'implementando', 'deshaciendo')
+    usuario = models.ForeignKey(CustomUser, on_delete=models.PROTECT, related_name='+')
+    pedido = models.TextField()
+    ajustes = models.JSONField(default=list, blank=True)  # comentarios del usuario sobre el plan
+    estado = models.CharField(max_length=16, choices=ESTADOS, default='planificando', db_index=True)
+    plan = models.JSONField(default=dict, blank=True)
+    resultado = models.JSONField(default=dict, blank=True)
+    diff = models.TextField(blank=True, default='')
+    vista_previa = models.CharField(max_length=300, blank=True, default='')
+    error = models.TextField(blank=True, default='')
+    eventos = models.JSONField(default=list, blank=True)
+    modelo = models.CharField(max_length=60, blank=True, default='')
+    tokens = models.PositiveIntegerField(default=0)
+    aprobado_en = models.DateTimeField(null=True, blank=True)
+    creado = models.DateTimeField(auto_now_add=True)
+    actualizado = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-creado', '-id']
+
+    def __str__(self):
+        return f'Tarea de desarrollo #{self.pk}'

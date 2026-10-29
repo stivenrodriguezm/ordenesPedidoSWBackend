@@ -98,6 +98,10 @@ AUTH_USER_MODEL = 'ordenes.CustomUser'
 # preferencia; si uno está saturado (503/429) se usa el siguiente.
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 GEMINI_MODELOS = [m.strip() for m in os.environ.get('GEMINI_MODELOS', 'gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.5-flash').split(',') if m.strip()]
+# Agente Desarrollador (2026-10-28): el servicio aparte que implementa las mejoras habla con la
+# plataforma por un canal interno con este token (vacío = apagado) y se le avisa en esta URL local.
+DESARROLLADOR_TOKEN = os.environ.get('DESARROLLADOR_TOKEN', '')
+DESARROLLADOR_WORKER_URL = os.environ.get('DESARROLLADOR_WORKER_URL', 'http://127.0.0.1:8020')
 # La respuesta se genera en un hilo aparte para no chocar con el timeout de gunicorn (30 s).
 ASISTENTE_EN_SEGUNDO_PLANO = True
 

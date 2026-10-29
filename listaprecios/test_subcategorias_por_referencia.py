@@ -11,7 +11,7 @@ from .models import DisposicionReferenciaPrecio, Multiplicador, VarianteProducto
 from .referencias import crear_configuracion
 
 
-class SubcategoriasPorReferenciaTests(LottusTestCase):
+class BaseSubcategorias(LottusTestCase):
     def setUp(self):
         cache.clear()
         Multiplicador.objects.all().delete()
@@ -37,6 +37,9 @@ class SubcategoriasPorReferenciaTests(LottusTestCase):
 
     def subs_de(self, ref):
         return sorted(ref.subcategorias.values_list('nombre', flat=True))
+
+
+class SubcategoriasPorReferenciaTests(BaseSubcategorias):
 
     def test_renombrar_en_una_referencia_no_cambia_las_demas(self):
         r = self.renombrar(self.silla, 'Silla de comedor', self.valencia[0])
@@ -92,3 +95,50 @@ class SubcategoriasPorReferenciaTests(LottusTestCase):
         # Requiere poder editar la lista.
         vendedor = self.crear_usuario('vend_subref')
         self.assertEqual(self.api(vendedor).post(url, {'nombre': 'Z', 'categoria': self.cat.pk}, format='json').status_code, 403)
+
+
+class CategoriaPorReferenciaTests(BaseSubcategorias):
+    """(2026-10-29) La categoría de una subcategoría también se cambia solo en esa referencia."""
+
+    def setUp(self):
+        super().setUp()
+        self.sala = Categoria.objects.create(nombre='Sala por referencia')
+
+    def cambiar(self, sub, categoria, ref):
+        return self.c.post(f'/api/listaprecios/subcategorias/{sub.pk}/categoria/', {'categoria': categoria.pk, 'referencia': ref.pk}, format='json')
+
+    def test_cambia_solo_en_esta_referencia(self):
+        from suministros.models import Inventario
+        item = Inventario.objects.create(id_referencia='CO-PRUEBA-1', referencia=self.valencia[0], categoria=self.cat, subcategoria=self.silla, costo_especifico=10)
+        r = self.cambiar(self.silla, self.sala, self.valencia[0])
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertTrue(r.data['separada'])
+        nueva = Subcategoria.objects.get(pk=r.data['id'])
+        self.assertEqual((nueva.nombre, nueva.categoria_id), ('Silla', self.sala.pk))
+        self.silla.refresh_from_db()
+        self.assertEqual(self.silla.categoria_id, self.cat.pk)
+        for ref in self.valencia:
+            self.assertTrue(ref.subcategorias.filter(pk=nueva.pk).exists())
+            self.assertEqual(set(ref.categorias.values_list('pk', flat=True)), {self.cat.pk, self.sala.pk})
+        self.assertTrue(self.cairo.subcategorias.filter(pk=self.silla.pk).exists())
+        item.refresh_from_db()
+        self.det.refresh_from_db()
+        self.assertEqual((item.categoria_id, item.subcategoria_id, self.det.subcategoria_id), (self.sala.pk, nueva.pk, nueva.pk))
+        # Sus precios (y la consulta) la muestran en la nueva categoría.
+        from .referencias import categoria_variante
+        v = VarianteProducto.objects.get(linea__referencia=self.valencia[0], subcategoria=nueva)
+        self.assertEqual(categoria_variante(v), self.sala)
+
+    def test_si_solo_la_usa_esta_referencia_cambia_tal_cual(self):
+        propia = Subcategoria.objects.create(categoria=self.cat, nombre='Butaco')
+        self.cairo.subcategorias.add(propia)
+        r = self.cambiar(propia, self.sala, self.cairo)
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertFalse(r.data['separada'])
+        propia.refresh_from_db()
+        self.assertEqual(propia.categoria_id, self.sala.pk)
+
+    def test_misma_categoria_o_ajena(self):
+        self.assertEqual(self.cambiar(self.silla, self.cat, self.cairo).status_code, 400)
+        otra = Subcategoria.objects.create(categoria=self.cat, nombre='Ajena')
+        self.assertEqual(self.cambiar(otra, self.sala, self.cairo).status_code, 400)

@@ -130,7 +130,8 @@ def resumen_perfil(perfil):
     if not perfil:
         return None
     return {'id': perfil.pk, 'nombre': perfil.nombre, 'rol': perfil.rol, 'icono': perfil.icono, 'color': perfil.color,
-            'zona': perfil.zona_id, 'activo': perfil.activo,'ejecutor':perfil.clave_sistema=='ejecutor'}
+            'zona': perfil.zona_id, 'activo': perfil.activo,'ejecutor':perfil.clave_sistema=='ejecutor',
+            'desarrollador': perfil.clave_sistema == 'desarrollador'}
 
 
 # --- Quién ve cada agente y cómo le responde (2026-10-09) ---------------------------
@@ -143,6 +144,8 @@ def configuracion():
 def visible_para(perfil, usuario, config=None):
     """¿El rol del usuario ve este agente? perfil=None es la IA Lottus general. Quien
     administra perfiles los ve todos (esa regla la aplica la vista, que conoce el permiso)."""
+    if perfil is not None and perfil.clave_sistema == 'desarrollador':
+        return bool(getattr(usuario, 'is_superuser', False))
     if perfil is None:
         config = config or configuracion()
         todos, roles = config.general_visible_todos, config.general_roles_visibles

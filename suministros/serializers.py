@@ -823,7 +823,7 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
             if prod['id_referencias']:
                 raise serializers.ValidationError({'productos': 'Una factura nueva no puede reutilizar unidades existentes.'})
             _crear_unidades(prod, factura, prod['cantidad'], self._usuario())
-        recepcion.verificar_topes(lineas)
+        recepcion.verificar_topes(lineas, factura)
         recepcion.actualizar_ordenes(lineas, self._usuario())
         return factura
 
@@ -844,7 +844,7 @@ class FacturaProveedorSerializer(serializers.ModelSerializer):
 
         if productos is not None:
             self._sincronizar_productos(instance, productos)
-            recepcion.verificar_topes(lineas)
+            recepcion.verificar_topes(lineas, instance)
             recepcion.actualizar_ordenes(lineas, self._usuario())
         return instance
 
