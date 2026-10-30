@@ -126,6 +126,13 @@ class CrearEgresoTests(LottusTestCase):
         self.assertEqual(r.status_code, 201, r.data)
         self.assertEqual(ComprobanteEgreso.objects.get().otros_conceptos[0]['tipo'], 'suma')
 
+    def test_transferencia_se_crea_sin_cuenta_destino(self):
+        """La cuenta destino se asigna después (Editar o Preparar pagos), no al crear."""
+        r = self.crear(proveedor=self.p1.id, valor='100', medio_pago='Transferencia')
+        self.assertEqual(r.status_code, 201, r.data)
+        ce = ComprobanteEgreso.objects.get()
+        self.assertEqual((ce.estado, ce.cuenta_destino_id), ('Por Confirmar Pago', None))
+
     def test_valor_no_positivo_rechazado(self):
         self.assertEqual(self.crear(proveedor=self.p1.id, valor='0', medio_pago='Transferencia').status_code, 400)
         self.assertEqual(self.crear(proveedor=self.p1.id, valor='-5', medio_pago='Transferencia').status_code, 400)
