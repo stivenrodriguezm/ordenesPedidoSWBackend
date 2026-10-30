@@ -100,6 +100,32 @@ class CrearEgresoTests(LottusTestCase):
         )
         self.assertEqual(r2.status_code, 400)
 
+    def test_conceptos_que_restan(self):
+        """Un concepto «resta» descuenta su valor del total; el valor se guarda positivo con su tipo."""
+        f = FacturaProveedor.objects.create(id_manual='f10', proveedor=self.p1, valor='900')
+        conceptos = [{'descripcion': 'Envío', 'valor': 50, 'tipo': 'suma'},
+                     {'descripcion': 'Abono anterior', 'valor': 200, 'tipo': 'resta'}]
+        r = self.crear(proveedor=self.p1.id, valor='750', medio_pago='Transferencia', facturas_ids=[f.id], otros_conceptos=conceptos)
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(ComprobanteEgreso.objects.get().otros_conceptos, [
+            {'descripcion': 'Envío', 'valor': 50, 'tipo': 'suma'}, {'descripcion': 'Abono anterior', 'valor': 200, 'tipo': 'resta'}])
+        # Sumar el concepto que resta ya no corresponde.
+        f2 = FacturaProveedor.objects.create(id_manual='f11', proveedor=self.p1, valor='900')
+        r = self.crear(proveedor=self.p1.id, valor='1150', medio_pago='Transferencia', facturas_ids=[f2.id], otros_conceptos=conceptos)
+        self.assertEqual(r.status_code, 400)
+        # Tipo inválido y valor negativo se rechazan (el signo lo da el tipo).
+        r = self.crear(proveedor=self.p1.id, valor='100', medio_pago='Transferencia',
+                       otros_conceptos=[{'descripcion': 'X', 'valor': 100, 'tipo': 'otro'}])
+        self.assertEqual(r.status_code, 400)
+        r = self.crear(proveedor=self.p1.id, valor='100', medio_pago='Transferencia',
+                       otros_conceptos=[{'descripcion': 'X', 'valor': -100}])
+        self.assertEqual(r.status_code, 400)
+
+    def test_conceptos_antiguos_sin_tipo_suman(self):
+        r = self.crear(proveedor=self.p1.id, valor='50', medio_pago='Transferencia', otros_conceptos=[{'descripcion': 'Envío', 'valor': 50}])
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(ComprobanteEgreso.objects.get().otros_conceptos[0]['tipo'], 'suma')
+
     def test_valor_no_positivo_rechazado(self):
         self.assertEqual(self.crear(proveedor=self.p1.id, valor='0', medio_pago='Transferencia').status_code, 400)
         self.assertEqual(self.crear(proveedor=self.p1.id, valor='-5', medio_pago='Transferencia').status_code, 400)

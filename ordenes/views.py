@@ -1313,8 +1313,15 @@ def listar_comprobantes_egreso(request):
 TOLERANCIA_REDONDEO_EFECTIVO = Decimal('50')
 
 
+def _valor_con_signo(concepto):
+    """Un concepto «resta» descuenta su valor; los guardados antes de 2026-10-30 no traen tipo y suman."""
+    valor = Decimal(str(concepto.get('valor') or 0))
+    return -valor if concepto.get('tipo') == 'resta' else valor
+
+
 def _otros_conceptos_validos(raw):
-    """[{descripcion, valor}] con valores positivos; error de fila si no."""
+    """[{descripcion, valor, tipo}] con valores positivos y tipo «suma» o «resta»; error de fila si no.
+    Devuelve también el total con signo."""
     if raw in (None, ''):
         return [], Decimal('0')
     if not isinstance(raw, list):
@@ -1323,9 +1330,13 @@ def _otros_conceptos_validos(raw):
     for i, c in enumerate(raw, start=1):
         if not isinstance(c, dict) or not str(c.get('descripcion') or '').strip():
             raise ErrorNegocio(f'El concepto #{i} necesita descripción.', campo='otros_conceptos')
+        tipo = c.get('tipo') or 'suma'
+        if tipo not in ('suma', 'resta'):
+            raise ErrorNegocio(f'El concepto #{i} debe sumar o restar.', campo='otros_conceptos')
         valor = a_decimal(c.get('valor'), campo=f'otros_conceptos #{i}')
-        limpios.append({'descripcion': str(c['descripcion']).strip(), 'valor': int(valor) if valor == valor.to_integral() else str(valor)})
-        total += valor
+        limpio = {'descripcion': str(c['descripcion']).strip(), 'valor': int(valor) if valor == valor.to_integral() else str(valor), 'tipo': tipo}
+        limpios.append(limpio)
+        total += _valor_con_signo(limpio)
     return limpios, total
 
 
@@ -1567,7 +1578,7 @@ def _editar_egreso(request, id):
 
     otros_cambian = 'otros_conceptos' in data
     otros, otros_total = _otros_conceptos_validos(data.get('otros_conceptos')) if otros_cambian else (
-        egreso.otros_conceptos, sum((Decimal(str(c.get('valor') or 0)) for c in (egreso.otros_conceptos or []) if isinstance(c, dict)), Decimal('0'))
+        egreso.otros_conceptos, sum((_valor_con_signo(c) for c in (egreso.otros_conceptos or []) if isinstance(c, dict)), Decimal('0'))
     )
 
     facturas_deseadas = set(_ids_enteros(data.get('facturas_ids') if proveedor_id else []))
