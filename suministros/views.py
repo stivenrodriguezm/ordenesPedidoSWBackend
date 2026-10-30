@@ -732,7 +732,7 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
         ordenes = list(
             OrdenPedido.objects.filter(venta_id__in=ids).exclude(estado='anulado')
             .select_related('proveedor').prefetch_related(Prefetch(
-                'detalles', queryset=DetallePedido.objects.select_related('referencia', 'linea_venta__grupo_catalogo').annotate(
+                'detalles', queryset=DetallePedido.objects.select_related('referencia', 'subcategoria', 'linea_venta__grupo_catalogo').annotate(
                     n_recibidas=recepcion.contar_recibidas()))).order_by('id')
         )
         detalle_ids = [d.id for o in ordenes for d in o.detalles.all()]
@@ -759,6 +759,13 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
                         llegadas[key] = disponibles - det.cantidad
                 faltante = det.cantidad - det.n_recibidas
                 remisionada, ultima = remisionados.get(det.id, (0, None))
+                # Los pedidos nuevos traen su subcategoría; en los anteriores se sugiere por referencia.
+                if det.subcategoria_id:
+                    categoria, subcategoria = det.subcategoria.categoria_id, det.subcategoria_id
+                elif det.referencia:
+                    categoria, subcategoria = sugerencias.get(det.referencia.nombre.strip().lower(), (None, None))
+                else:
+                    categoria = subcategoria = None
                 pedidos_por_venta[orden.venta_id].append({
                     'detalle_id': det.id,
                     'orden_id': orden.id,
@@ -766,8 +773,9 @@ class RemisionSuministroViewSet(viewsets.ModelViewSet):
                     'orden_estado_label': orden.get_estado_display(),
                     'proveedor_nombre': orden.proveedor.nombre_empresa if orden.proveedor else '',
                     'referencia_nombre': det.referencia.nombre if det.referencia else '',
-                    'categoria': sugerencias.get(det.referencia.nombre.strip().lower(), (None, None))[0] if det.referencia else None,
-                    'subcategoria': sugerencias.get(det.referencia.nombre.strip().lower(), (None, None))[1] if det.referencia else None,
+                    'categoria': categoria,
+                    'subcategoria': subcategoria,
+                    'subcategoria_nombre': det.subcategoria.nombre if det.subcategoria_id else '',
                     'cantidad': det.cantidad,
                     'especificaciones': texto_remision(det.linea_venta) if det.linea_venta_id else (det.especificaciones or ''),
                     'tela': texto_tela(det.linea_venta) if det.linea_venta_id else '',

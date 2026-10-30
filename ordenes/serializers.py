@@ -722,6 +722,8 @@ class DetallePedidoTelaSerializer(serializers.ModelSerializer):
 class PedidoTelaSerializer(serializers.ModelSerializer):
     proveedor_nombre = serializers.SerializerMethodField()
     usuario_nombre = serializers.SerializerMethodField()
+    # Nombre y apellido, como sale en la imagen del pedido (para volver a descargarla).
+    usuario_nombre_completo = serializers.SerializerMethodField()
     detalles = DetallePedidoTelaSerializer(many=True, required=False) # Nested serializer for details
     orden_asociada_id = serializers.PrimaryKeyRelatedField(
         queryset=OrdenPedido.objects.all(), source='orden_asociada', write_only=True, required=False, allow_null=True
@@ -736,7 +738,7 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
     class Meta:
         model = PedidoTela
         fields = [
-            'id', 'usuario', 'usuario_nombre', 'proveedor', 'proveedor_nombre',
+            'id', 'usuario', 'usuario_nombre', 'usuario_nombre_completo', 'proveedor', 'proveedor_nombre',
             'direccion_entrega', 'fecha_creacion', 'estado', 'observacion',
             'orden_asociada_id', 'detalles', 'orden_id', 'orden_proveedor_nombre', 'venta_id',
             'venta_vendedor_nombre', 'venta', 'motivo_anulacion', 'anulado_por_nombre', 'anulado_en'
@@ -764,6 +766,9 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
 
     def get_usuario_nombre(self, obj):
         return obj.usuario.first_name if obj.usuario else None
+
+    def get_usuario_nombre_completo(self, obj):
+        return f'{obj.usuario.first_name or ""} {obj.usuario.last_name or ""}'.strip() if obj.usuario else None
         
     def get_orden_id(self, obj):
         return obj.orden_asociada.id if obj.orden_asociada else None

@@ -152,6 +152,17 @@ class RecepcionTests(LottusTestCase):
         self.assertFalse(linea['en_inventario'])
         self.assertEqual((linea['recibidas'], linea['cantidad_por_remisionar']), (1, 2))
 
+    def test_remision_usa_la_subcategoria_de_la_linea_del_pedido(self):
+        from suministros.models import Categoria, Subcategoria
+        comedores = Categoria.objects.create(nombre='Comedores')
+        silla = Subcategoria.objects.create(nombre='Silla', categoria=comedores)
+        nueva = DetallePedido.objects.create(orden=self.orden, referencia=self.ref, subcategoria=silla, cantidad=2, especificaciones='-')
+        lineas = {l['detalle_id']: l for l in self.c.get(f'/api/suministros/remisiones/datos-ventas/?ids={self.venta_a.pk}').data[0]['pedidos']}
+        self.assertEqual((lineas[nueva.pk]['categoria'], lineas[nueva.pk]['subcategoria'], lineas[nueva.pk]['subcategoria_nombre']),
+                         (comedores.pk, silla.pk, 'Silla'))
+        # La línea antigua (sin subcategoría) sigue como antes: sugerida por referencia, sin nombre.
+        self.assertEqual(lineas[self.linea.pk]['subcategoria_nombre'], '')
+
 
 class EntregaParcialTests(LottusTestCase):
     def setUp(self):
