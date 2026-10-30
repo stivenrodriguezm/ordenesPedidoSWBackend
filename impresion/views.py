@@ -23,7 +23,9 @@ def _fecha(ts):
 
 def _impresora(imp):
     return {'id': imp.pk, 'nombre': imp.nombre, 'ubicacion': imp.ubicacion,
-            'en_linea': s.en_linea(imp.pk), 'ultima_conexion': _fecha(s.ultima_conexion(imp.pk))}
+            'en_linea': s.en_linea(imp.pk), 'ultima_conexion': _fecha(s.ultima_conexion(imp.pk)),
+            # En línea es la computadora; esto dice si ella ve la impresora.
+            'impresora_encontrada': s.impresora_encontrada(imp.pk)}
 
 
 def _trabajo(t):
@@ -100,6 +102,8 @@ def agente_siguiente(request):
     imp, error = _agente(request)
     if error:
         return error
+    if 'impresora_ok' in request.data:
+        s.registrar_impresora_encontrada(imp, request.data['impresora_ok'])
     t = s.siguiente_trabajo(imp)
     if t is None:
         return Response(status=204)

@@ -61,6 +61,17 @@ class ImpresionRemotaTests(LottusTestCase):
         self.enviar()
         self.assertEqual(self.siguiente().status_code, 200)
 
+    def test_la_web_sabe_si_la_computadora_encuentra_la_impresora(self):
+        lista = lambda: self.c.get('/api/impresion/impresoras/').data[0]['impresora_encontrada']
+        self.assertIsNone(lista())  # sin noticias del agente
+        self.siguiente()
+        with self.assertNumQueries(0):  # el aviso no toca la base
+            r = self.agente.post('/api/impresion/agente/siguiente/', {'impresora_ok': False}, format='json')
+        self.assertEqual(r.status_code, 204)
+        self.assertIs(lista(), False)
+        self.agente.post('/api/impresion/agente/siguiente/', {'impresora_ok': True}, format='json')
+        self.assertIs(lista(), True)
+
     def test_tokens_invalidos_o_de_impresora_inactiva(self):
         self.assertEqual(self.siguiente(APIClient()).status_code, 401)
         otro = APIClient()

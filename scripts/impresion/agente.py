@@ -20,12 +20,14 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -38,6 +40,10 @@ CSP = ('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'
        'style-src \'unsafe-inline\' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; '
        'img-src https: data:">')
 SEGUIMIENTO_MIN = 15
+REVISAR_IMPRESORA_SEG = 30   # cada cuánto se busca la impresora en la red
+CANCELAR_SEG = 90            # sin impresora, lo que lleva este tiempo en la cola se cancela y se avisa
+NO_ENCONTRADA = ('La computadora de la oficina no encuentra la impresora: revisa que esté encendida '
+                 'y en la misma red que esa computadora.')
 # macOS responde en el idioma del sistema aunque se pida otro: nada depende del texto de lp/lpstat.
 
 log = logging.getLogger('impresion')
@@ -93,6 +99,34 @@ def imprimir(pdf, cola, copias, titulo):
     return m.group(0) if m else None
 
 
+def impresora_encontrada(cola):
+    """True o False si la impresora de la cola responde en la red; None si no se puede saber
+    (USB, cola desconocida). Solo mira códigos de salida y la URI, no textos traducidos."""
+    try:
+        salida = subprocess.run(['lpstat', '-v', cola], capture_output=True, text=True, timeout=10).stdout
+        m = re.search(r'(\w+)://(\S+)', salida)
+        if not m:
+            return None
+        if m.group(1) == 'dnssd':
+            servicio = urllib.parse.unquote(m.group(2).split('/')[0])
+            return subprocess.run(['ippfind', servicio, '-T', '3'], capture_output=True, timeout=15).returncode == 0
+        if m.group(1) in ('ipp', 'ipps', 'http', 'https', 'socket', 'lpd'):
+            url = urllib.parse.urlsplit(m.group(0))
+            puerto = url.port or {'socket': 9100, 'lpd': 515, 'http': 80, 'https': 443}.get(m.group(1), 631)
+            try:
+                socket.create_connection((url.hostname, puerto), timeout=3).close()
+                return True
+            except OSError:
+                return False
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def cancelar_en_cups(cups):
+    subprocess.run(['cancel', cups], capture_output=True, timeout=20)
+
+
 def cola_detenida(cola):
     r = subprocess.run(['lpoptions', '-p', cola], capture_output=True, text=True)
     return 'printer-state=5' in r.stdout.split()  # 3 libre, 4 imprimiendo, 5 en pausa
@@ -112,6 +146,9 @@ class Agente:
         self.fallos = {}     # nombre del servidor -> intentos fallidos seguidos (para espaciar los avisos)
         self.espera = {}     # nombre del servidor -> no consultar antes de este instante
         self.turno = threading.Lock()  # un documento a la vez (Chrome y lp), venga del servidor que venga
+        self.impresora_ok = None       # última búsqueda de la impresora (None = no se sabe)
+        self.revisada = 0
+        self.avisados = set()          # trabajos de CUPS a los que ya se les avisó que no hay impresora
 
     def procesar(self, servidor, t):
         with self.turno:
@@ -133,6 +170,10 @@ class Agente:
                     return
                 cups = imprimir(pdf, self.config['cola'], t['copias'], t['titulo'])
             detalle = 'La impresora está en pausa en la computadora de la oficina.' if cola_detenida(self.config['cola']) else ''
+            if self.impresora_ok is False:
+                detalle = NO_ENCONTRADA
+                if cups:
+                    self.avisados.add(cups)
             if not cups:  # CUPS lo aceptó pero no se pudo leer su número: no hay cómo seguirlo
                 pedir(servidor, ruta, {'estado': 'impreso', 'detalle': detalle or 'Enviado a la impresora.'})
                 log.info('  enviado a la impresora (sin número de CUPS)')
@@ -145,6 +186,15 @@ class Agente:
             mensaje = str(e) if not isinstance(e, subprocess.CalledProcessError) else 'Chrome no pudo convertir el documento.'
             pedir(servidor, ruta, {'estado': 'error', 'detalle': f'No se pudo imprimir: {mensaje}'[:255]})
 
+    def revisar_impresora(self):
+        if self.simular or time.time() - self.revisada < REVISAR_IMPRESORA_SEG:
+            return
+        self.revisada = time.time()
+        ok = impresora_encontrada(self.config['cola'])
+        if ok != self.impresora_ok:
+            log.info('Impresora %s', {True: 'encontrada en la red', False: 'NO encontrada en la red', None: 'sin revisar'}[ok])
+        self.impresora_ok = ok
+
     def revisar_en_vuelo(self):
         with self.turno:
             vuelo = list(self.en_vuelo.items())
@@ -152,10 +202,20 @@ class Agente:
             return
         siguen = pendientes_cups(self.config['cola'])
         for cups, (servidor, pk, desde) in vuelo:
+            ruta = f'/impresion/agente/trabajos/{pk}/'
             if cups not in siguen:
-                pedir(servidor, f'/impresion/agente/trabajos/{pk}/', {'estado': 'impreso'})
+                pedir(servidor, ruta, {'estado': 'impreso'})
                 log.info('  %s impreso', cups)
                 self.en_vuelo.pop(cups, None)
+            elif self.impresora_ok is False and time.time() - desde > CANCELAR_SEG and impresora_encontrada(self.config['cola']) is False:
+                # Se cancela: que no salga una hoja sorpresa cuando la impresora vuelva.
+                cancelar_en_cups(cups)
+                pedir(servidor, ruta, {'estado': 'error', 'detalle': f'{NO_ENCONTRADA} No se imprimió: vuelve a enviarlo.'[:255]})
+                log.warning('  %s cancelado: la impresora no aparece', cups)
+                self.en_vuelo.pop(cups, None)
+            elif self.impresora_ok is False and cups not in self.avisados:
+                pedir(servidor, ruta, {'estado': 'enviado', 'detalle': NO_ENCONTRADA})
+                self.avisados.add(cups)
             elif time.time() - desde > SEGUIMIENTO_MIN * 60:
                 log.warning('  %s sigue en la cola de la impresora; se deja de seguir', cups)
                 self.en_vuelo.pop(cups, None)
@@ -165,7 +225,8 @@ class Agente:
         if time.time() < self.espera.get(nombre, 0):
             return
         try:
-            estado, t = pedir(servidor, '/impresion/agente/siguiente/')
+            estado, t = pedir(servidor, '/impresion/agente/siguiente/',
+                              None if self.impresora_ok is None else {'impresora_ok': self.impresora_ok})
         except (urllib.error.URLError, OSError, ValueError) as e:
             estado, t = None, e
         if estado in (200, 204):
@@ -198,6 +259,7 @@ class Agente:
             threading.Thread(target=sondear, args=(servidor,), daemon=True, name=servidor['nombre']).start()
         while True:
             try:
+                self.revisar_impresora()
                 self.revisar_en_vuelo()
             except Exception:  # noqa: BLE001
                 log.exception('No se pudo revisar la cola de CUPS')

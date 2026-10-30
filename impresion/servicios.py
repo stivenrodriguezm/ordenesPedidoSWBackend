@@ -63,6 +63,16 @@ def en_linea(imp_id):
     return bool(ts) and time.time() - ts < EN_LINEA_SEG
 
 
+def registrar_impresora_encontrada(imp_id, encontrada):
+    """Lo que informa el agente en cada consulta (solo caché: esa consulta no toca la base)."""
+    cache.set(_k('encontrada', imp_id), bool(encontrada), EN_LINEA_SEG)
+
+
+def impresora_encontrada(imp_id):
+    """True o False según el agente; None si no ha informado (agente viejo o desconectado)."""
+    return cache.get(_k('encontrada', imp_id))
+
+
 def avisar(imp_id):
     cache.set(_k('pendiente', imp_id), 1, None)
 
