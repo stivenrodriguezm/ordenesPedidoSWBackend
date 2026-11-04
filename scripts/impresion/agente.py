@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""Agente de impresión de la oficina principal (2026-10-24).
+"""Agente de impresión de la oficina principal (2026-10-24; Windows desde 2026-10-30).
 
 Corre en la computadora que tiene instalada la impresora. Cada pocos segundos le pregunta
 a cada servidor configurado si hay documentos en cola; si hay, lo convierte a PDF con
-Google Chrome (sin JavaScript) y lo manda a la cola CUPS con `lp`. La oficina no abre
-puertos: solo hace peticiones HTTPS de salida. Solo usa la biblioteca estándar.
+Google Chrome o Edge (sin JavaScript) y lo manda a la impresora: en Mac a la cola CUPS con
+`lp`; en Windows con SumatraPDF (va junto al agente, ver windows/empaquetar.sh). La oficina
+no abre puertos: solo hace peticiones HTTPS de salida. Solo usa la biblioteca estándar.
 
 Configuración (la crea `manage.py crear_impresora`, permisos 600):
-    ~/Library/Application Support/LottusImpresion/config.json
+    Mac: ~/Library/Application Support/LottusImpresion/config.json
+    Windows: %LOCALAPPDATA%\\LottusImpresion\\config.json
     {"cola": "RICOH_…", "servidores": [{"nombre": "…", "api": "https://…/api", "token": "…"}]}
 Opcionales: "intervalo" (segundos, 3), "chrome" (ruta), "simular" (true = guarda el PDF
 en la carpeta «simulados» en vez de imprimir).
 
-Uso:  python3 agente.py            (lo deja corriendo el LaunchAgent com.lottus.impresion)
+Uso:  python3 agente.py            (lo deja corriendo el LaunchAgent com.lottus.impresion
+                                    o, en Windows, el acceso directo de Inicio)
       python3 agente.py --simular  (no imprime; deja los PDF en la carpeta «simulados»)
+      python3 agente.py --probar   (imprime una página de prueba y termina)
 """
 import json
 import logging
@@ -31,9 +35,14 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-CARPETA = Path.home() / 'Library' / 'Application Support' / 'LottusImpresion'
+ES_WINDOWS = os.name == 'nt'
+CARPETA = (Path(os.environ.get('LOCALAPPDATA') or Path.home()) / 'LottusImpresion' if ES_WINDOWS
+           else Path.home() / 'Library' / 'Application Support' / 'LottusImpresion')
 CONFIG = CARPETA / 'config.json'
 CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+NAVEGADORES_WINDOWS = (r'Microsoft\Edge\Application\msedge.exe', r'Google\Chrome\Application\chrome.exe')
+# En Windows, sin esto cada subproceso abriría una ventana de consola.
+SIN_VENTANA = {'creationflags': 0x08000000} if ES_WINDOWS else {}
 # El documento llega de la plataforma: sin scripts y sin pedir nada a la red local (solo
 # las fuentes de Google y las imágenes https/data que pueda traer).
 CSP = ('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; '
@@ -50,7 +59,7 @@ log = logging.getLogger('impresion')
 
 
 def cargar_config():
-    config = json.loads(CONFIG.read_text())
+    config = json.loads(CONFIG.read_text(encoding='utf-8-sig'))  # PowerShell lo guarda con BOM
     if not config.get('cola') or not config.get('servidores'):
         raise SystemExit(f'{CONFIG}: falta "cola" o "servidores".')
     return config
@@ -71,6 +80,16 @@ def pedir(servidor, ruta, datos=None):
         return e.code, None
 
 
+def buscar_navegador():
+    if not ES_WINDOWS:
+        return CHROME
+    for base in (os.environ.get('ProgramFiles(x86)'), os.environ.get('ProgramFiles'), os.environ.get('LOCALAPPDATA')):
+        for relativa in NAVEGADORES_WINDOWS:
+            if base and (Path(base) / relativa).exists():
+                return str(Path(base) / relativa)
+    raise RuntimeError('No se encontró Edge ni Chrome en esta computadora.')
+
+
 def a_pdf(html, destino, chrome):
     """Convierte el documento a PDF con Chrome sin interfaz. Respeta su @page (carta, márgenes)."""
     html = re.sub(r'<head[^>]*>', lambda m: m.group(0) + CSP, html, count=1, flags=re.I) \
@@ -83,7 +102,7 @@ def a_pdf(html, destino, chrome):
             '--disable-extensions', '--hide-scrollbars', f'--user-data-dir={Path(tmp) / "perfil"}',
             '--no-pdf-header-footer', '--print-to-pdf-no-header', '--virtual-time-budget=5000',
             f'--print-to-pdf={destino}', fuente.as_uri(),
-        ], check=True, capture_output=True, timeout=90)
+        ], check=True, capture_output=True, timeout=90, **SIN_VENTANA)
     if not destino.exists() or destino.stat().st_size == 0:
         raise RuntimeError('Chrome no generó el PDF')
 
@@ -137,11 +156,84 @@ def pendientes_cups(cola):
     return {linea.split()[0] for linea in r.stdout.splitlines() if linea.strip()}
 
 
+# ---------------------------------------------------------------------------
+# Windows: la impresora se maneja con los comandos de impresión de PowerShell
+# (Windows 8 en adelante) y el PDF se imprime con SumatraPDF, que va junto al agente.
+# ---------------------------------------------------------------------------
+
+def _powershell(script, timeout=30):
+    r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
+                       capture_output=True, text=True, timeout=timeout, **SIN_VENTANA)
+    return r.returncode, r.stdout.strip()
+
+
+def _ps_texto(valor):
+    return "'" + str(valor).replace("'", "''") + "'"
+
+
+def pendientes_windows(cola):
+    _, salida = _powershell(f'Get-PrintJob -PrinterName {_ps_texto(cola)} | ForEach-Object {{ $_.Id }}')
+    return {linea.strip() for linea in salida.splitlines() if linea.strip()}
+
+
+def imprimir_windows(pdf, cola, copias, titulo):
+    """Devuelve el id del trabajo en la cola de Windows, o None si ya salió de la cola."""
+    antes = pendientes_windows(cola)
+    sumatra = Path(__file__).resolve().parent / 'SumatraPDF.exe'
+    r = subprocess.run([str(sumatra), '-print-to', cola, '-silent', '-print-settings', f'{copias}x,noscale,paper=letter', str(pdf)],
+                       capture_output=True, text=True, timeout=120, **SIN_VENTANA)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip() or 'SumatraPDF no pudo imprimir')
+    nuevos = pendientes_windows(cola) - antes
+    return min(nuevos, key=int) if nuevos else None
+
+
+def _estado_windows(cola):
+    codigo, salida = _powershell(
+        f'$p = Get-Printer -Name {_ps_texto(cola)} -ErrorAction Stop; '
+        '$o = Get-PrinterPort -Name $p.PortName -ErrorAction SilentlyContinue; '
+        '@{estado=[string]$p.PrinterStatus; host=[string]$o.PrinterHostAddress; puerto=[string]$o.PortNumber} | ConvertTo-Json -Compress')
+    return json.loads(salida) if codigo == 0 and salida else None
+
+
+def cola_detenida_windows(cola):
+    estado = _estado_windows(cola)
+    return bool(estado) and estado.get('estado') == 'Paused'
+
+
+def impresora_encontrada_windows(cola):
+    """False si Windows no la tiene o la ve desconectada, o si su dirección no responde;
+    None si no se puede comprobar (USB o WSD, sin dirección fija)."""
+    try:
+        estado = _estado_windows(cola)
+        if not estado or estado.get('estado') == 'Offline':
+            return False
+        if not estado.get('host'):
+            return None
+        try:
+            socket.create_connection((estado['host'], int(estado.get('puerto') or 9100)), timeout=3).close()
+            return True
+        except OSError:
+            return False
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def cancelar_windows(trabajo):
+    cola = cargar_config()['cola']
+    _powershell(f'Remove-PrintJob -PrinterName {_ps_texto(cola)} -ID {int(trabajo)}')
+
+
+if ES_WINDOWS:
+    imprimir, cola_detenida, pendientes_cups = imprimir_windows, cola_detenida_windows, pendientes_windows
+    impresora_encontrada, cancelar_en_cups = impresora_encontrada_windows, cancelar_windows
+
+
 class Agente:
     def __init__(self, simular=False):
         self.config = cargar_config()
         self.simular = simular or bool(self.config.get('simular'))
-        self.chrome = self.config.get('chrome') or CHROME
+        self.chrome = self.config.get('chrome') or buscar_navegador()
         self.en_vuelo = {}   # id CUPS -> (servidor, id del trabajo, desde)
         self.fallos = {}     # nombre del servidor -> intentos fallidos seguidos (para espaciar los avisos)
         self.espera = {}     # nombre del servidor -> no consultar antes de este instante
@@ -266,6 +358,27 @@ class Agente:
             time.sleep(intervalo)
 
 
+def pagina_de_prueba(agente):
+    html = ('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Prueba</title><style>@page { size: letter; margin: 12mm; }'
+            'body { font-family: Arial, sans-serif; }</style></head><body><h1>Lottus · página de prueba</h1>'
+            f'<p>Si ves esta hoja, el agente de impresión funciona. {time.strftime("%Y-%m-%d %H:%M")}</p></body></html>')
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf = Path(tmp) / 'prueba.pdf'
+        a_pdf(html, pdf, agente.chrome)
+        imprimir(pdf, agente.config['cola'], 1, 'Prueba Lottus')
+    print('Página de prueba enviada a', agente.config['cola'])
+
+
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', stream=sys.stdout)
-    Agente(simular='--simular' in sys.argv).correr()
+    salida = {'stream': sys.stdout}
+    if ES_WINDOWS:  # sin consola (pythonw) ni launchd que guarde la salida; y que el equipo no se duerma
+        from logging.handlers import RotatingFileHandler
+        import ctypes
+        CARPETA.mkdir(parents=True, exist_ok=True)
+        salida = {'handlers': [RotatingFileHandler(CARPETA / 'agente.log', maxBytes=1_000_000, backupCount=2, encoding='utf-8')]}
+        ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', **salida)
+    if '--probar' in sys.argv:
+        pagina_de_prueba(Agente())
+    else:
+        Agente(simular='--simular' in sys.argv).correr()

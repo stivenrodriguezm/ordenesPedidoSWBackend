@@ -93,3 +93,48 @@ class TrabajoAtascadoTests(TestCase):
         self.en_cola(5)
         self.a.revisar_en_vuelo()
         self.pedir.assert_called_once_with(SERVIDOR, '/impresion/agente/trabajos/7/', {'estado': 'impreso'})
+
+
+class WindowsTests(TestCase):
+    """Se prueba la lógica con PowerShell y SumatraPDF simulados; lo real se comprueba con --probar."""
+
+    def test_imprime_con_sumatra_y_sigue_el_trabajo_nuevo(self):
+        with mock.patch.object(agente, '_powershell', side_effect=[(0, '4'), (0, '4\n9')]), \
+                mock.patch.object(agente.subprocess, 'run', return_value=respuesta()) as run:
+            self.assertEqual(agente.imprimir_windows(Path('C:/t/d.pdf'), 'RICOH SP', 2, 'CE-1'), '9')
+        orden = run.call_args.args[0]
+        self.assertEqual(orden[1:6], ['-print-to', 'RICOH SP', '-silent', '-print-settings', '2x,noscale,paper=letter'])
+
+    def test_si_sumatra_falla_se_reporta(self):
+        with mock.patch.object(agente, '_powershell', return_value=(0, '')), \
+                mock.patch.object(agente.subprocess, 'run', return_value=respuesta(codigo=1)):
+            with self.assertRaises(RuntimeError):
+                agente.imprimir_windows(Path('C:/t/d.pdf'), 'RICOH', 1, 'CE-1')
+
+    def test_si_ya_salio_de_la_cola_no_hay_trabajo_que_seguir(self):
+        with mock.patch.object(agente, '_powershell', return_value=(0, '')), \
+                mock.patch.object(agente.subprocess, 'run', return_value=respuesta()):
+            self.assertIsNone(agente.imprimir_windows(Path('C:/t/d.pdf'), 'RICOH', 1, 'CE-1'))
+
+    def test_el_nombre_de_la_impresora_no_rompe_el_comando(self):
+        with mock.patch.object(agente, '_powershell', return_value=(0, '')) as ps:
+            agente.pendientes_windows("RICOH d'oficina")
+        self.assertIn("'RICOH d''oficina'", ps.call_args.args[0])
+
+    def encontrada(self, estado, conecta=True):
+        efecto = None if conecta else OSError
+        with mock.patch.object(agente, '_powershell', return_value=(0, estado)), \
+                mock.patch.object(agente.socket, 'create_connection', side_effect=efecto):
+            return agente.impresora_encontrada_windows('RICOH')
+
+    def test_busca_la_impresora(self):
+        self.assertIs(self.encontrada('{"estado":"Normal","host":"192.168.1.20","puerto":"9100"}'), True)
+        self.assertIs(self.encontrada('{"estado":"Normal","host":"192.168.1.20","puerto":"9100"}', conecta=False), False)
+        self.assertIs(self.encontrada('{"estado":"Offline","host":"","puerto":""}'), False)
+        self.assertIsNone(self.encontrada('{"estado":"Normal","host":"","puerto":""}'))  # USB o WSD
+        with mock.patch.object(agente, '_powershell', return_value=(1, '')):
+            self.assertIs(agente.impresora_encontrada_windows('NO INSTALADA'), False)
+
+    def test_en_pausa(self):
+        with mock.patch.object(agente, '_powershell', return_value=(0, '{"estado":"Paused","host":"","puerto":""}')):
+            self.assertTrue(agente.cola_detenida_windows('RICOH'))
