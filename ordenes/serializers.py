@@ -377,7 +377,7 @@ class LineaVentaSerializer(SinMargenSinPermisoMixin, serializers.ModelSerializer
             'precio_lista_unitario', 'grupo_catalogo', 'texto_cliente', 'texto_proveedor', 'sin_texto_proveedor',
             'adicionales', 'motivo_precio', 'inventario_origen',
             'tipo', 'tela_modo', 'tela_material', 'tela_referencia', 'tela_color', 'tela_proveedor', 'tela_cantidad',
-            'tela_grupo', 'tela_costo', 'conjunto', 'conjunto_nombre', 'conjunto_cantidad',
+            'tela_grupo', 'tela_costo', 'tela_sin_pedir', 'conjunto', 'conjunto_nombre', 'conjunto_cantidad',
         ]
         read_only_fields = ['id', 'created_at', 'margen']
 
@@ -823,7 +823,8 @@ class PedidoTelaSerializer(serializers.ModelSerializer):
             linea.tela_modo, linea.tela_material = LineaVenta.TELA_APARTE, 'cuero' if cuero else 'tela'
             linea.tela_referencia, linea.tela_color = referencia.strip()[:255], color.strip()[:255]
             linea.tela_proveedor, linea.tela_cantidad = pedido.proveedor, d['cantidad']
-            linea.save(update_fields=['tela_modo', 'tela_material', 'tela_referencia', 'tela_color', 'tela_proveedor', 'tela_cantidad'])
+            linea.tela_sin_pedir = False  # si se marcó «No pedir» y aun así se pide, ya quedó pedida
+            linea.save(update_fields=['tela_modo', 'tela_material', 'tela_referencia', 'tela_color', 'tela_proveedor', 'tela_cantidad', 'tela_sin_pedir'])
         Venta.objects.filter(pk=pedido.venta_id).update(revision_productos=models.F('revision_productos') + 1)
         # En /ordenes la tela de la orden pasa a "Pedida" cuando ya se pidió la de todos sus productos.
         from .productos_venta import estado_tela_de

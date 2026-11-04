@@ -186,6 +186,9 @@ class LineaVenta(models.Model):
     # no sea de catálogo) y su costo del proveedor por metro (tela) o decímetro (cuero).
     tela_grupo = models.ForeignKey('listaprecios.GrupoTela', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     tela_costo = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    # (2026-11-04) Se compra aparte pero no se pide desde la venta (p. ej. ya está en bodega):
+    # queda guardada con qué tela se vendió, sin quedar «por pedir» ni bloquear la gestión.
+    tela_sin_pedir = models.BooleanField(default=False)
     # Conjunto (comedor = mesa + sillas; cama = base + cabecero…): piezas que se venden y se
     # ven juntas, pero cada una se pide y se factura con su propia referencia.
     conjunto = models.CharField(max_length=36, blank=True, default='', db_index=True)

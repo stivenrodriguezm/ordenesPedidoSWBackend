@@ -75,3 +75,26 @@ class ConjuntoPorPiezasTests(LottusTestCase):
         r = self.api_asesor.post(self.url, {'revision': 0, 'lineas': filas, 'confirmar': True, 'distribuir_total': True}, format='json')
         self.assertEqual(r.status_code, 400)
         self.assertIn('no corresponde', str(r.data))
+
+    def test_transporte_opcional_del_conjunto_se_puede_quitar(self):
+        # Obligatorio: no se ofrece quitarlo.
+        p = self.api_asesor.get('/api/productos-venta/catalogo/', {'id': self.juego.pk}).data['results'][0]
+        self.assertFalse(p['costos_conjunto_opcional'])
+        # «Opcional habilitado» (2026-11-04): el vendedor puede quitarlo y la venta se guarda sin él.
+        CargoVariante.objects.filter(variante=self.juego).update(opcional=True, preseleccionado=True)
+        p = self.api_asesor.get('/api/productos-venta/catalogo/', {'id': self.juego.pk}).data['results'][0]
+        self.assertEqual((p['costos_conjunto'], p['costos_conjunto_opcional']), ('120.00', True))
+        d = self.guardar(self.piezas()[:3])
+        self.assertFalse(LineaVenta.objects.filter(tipo='transporte').exists())
+        self.assertEqual(Decimal(d['valor_lista']), calcular_precio(self.juego, self.grupo, []))
+
+    def test_la_pieza_marca_sus_opcionales_que_no_van_en_la_agrupacion(self):
+        oculto = CargoVariante.objects.create(variante=self.mesa, descripcion='Transporte', valor=80, opcional=True, preseleccionado=True,
+                                              tipo=CargoVariante.TIPO_TRANSPORTE, en_agrupacion=False)
+        visible = CargoVariante.objects.create(variante=self.mesa, descripcion='Luz', valor=10, opcional=True, preseleccionado=True)
+        p = self.api_asesor.get('/api/productos-venta/catalogo/', {'id': self.mesa.pk}).data['results'][0]
+        self.assertEqual({o['id']: o['en_agrupacion'] for o in p['opcionales']}, {oculto.pk: False, visible.pk: True})
+        # En el conjunto, la pieza solo acepta los que sí van en la agrupación.
+        filas = self.piezas()
+        filas[0]['opcionales'] = [visible.pk]
+        self.guardar(filas)

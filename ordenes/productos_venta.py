@@ -121,6 +121,7 @@ class LineaEntrada(serializers.Serializer):
     tela_cantidad = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=CENT, allow_null=True, default=None)
     tela_grupo = serializers.PrimaryKeyRelatedField(queryset=GrupoTela.objects.all(), allow_null=True, default=None)
     tela_costo = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0, allow_null=True, default=None)
+    tela_sin_pedir = serializers.BooleanField(default=False)
     conjunto = serializers.RegexField(r'^[A-Za-z0-9-]{0,36}$', allow_blank=True, default='')
     conjunto_nombre = serializers.CharField(max_length=150, allow_blank=True, default='')
     conjunto_cantidad = serializers.IntegerField(min_value=1, max_value=1000, default=1)
@@ -245,7 +246,7 @@ def preparar_adicional(d, anterior):
             'texto_cliente': d['texto_cliente'].strip() or (descripcion if tipo == LineaVenta.TIPO_ARTICULO else ''),
             'texto_proveedor': '', 'sin_texto_proveedor': True, 'especificaciones': '', 'fecha_compromiso': None,
             'inventario_origen_id': None, 'tela_modo': LineaVenta.TELA_NO_APLICA, 'tela_material': '', 'tela_referencia': '',
-            'tela_color': '', 'tela_proveedor': None, 'tela_cantidad': None, 'tela_grupo': None, 'tela_costo': None,
+            'tela_color': '', 'tela_proveedor': None, 'tela_cantidad': None, 'tela_grupo': None, 'tela_costo': None, 'tela_sin_pedir': False,
             'conjunto': d['conjunto'] if juego else '', 'conjunto_nombre': d['conjunto_nombre'].strip()[:150] if juego and d['conjunto'] else '',
             'conjunto_cantidad': d['conjunto_cantidad'] if juego and d['conjunto'] else 1}
 
@@ -565,7 +566,7 @@ def preparar_tela(d, v, anterior, completo=True):
         if modo == LineaVenta.TELA_INCLUIDA:
             costo = None  # la pone el proveedor del mueble: va dentro de su precio, sin costo aparte
         elif costo is None and grupo and grupo.precio_por_metro:
-            costo = grupo.precio_por_metro  # costo de la lista de precios; se puede corregir
+            costo = grupo.precio_por_metro  # costo de la lista de precios
         if modo == LineaVenta.TELA_INCLUIDA:
             proveedor = cantidad = None
         elif cantidad is None and v and metraje_total(v, material):
@@ -575,6 +576,8 @@ def preparar_tela(d, v, anterior, completo=True):
     else:
         proveedor = cantidad = grupo = costo = None
     pedida = bool(anterior and tela_pedida(anterior))
+    # «No pedir» (2026-11-04): se compra aparte, pero no desde la venta; queda guardada con qué tela fue.
+    sin_pedir = modo == LineaVenta.TELA_APARTE and d['tela_sin_pedir'] and not pedida
     if completo:
         faltan = {}
         if not modo:
@@ -585,15 +588,13 @@ def preparar_tela(d, v, anterior, completo=True):
                 faltan['tela_referencia'] = f'Escribe la referencia {nombre}.'
             if not color:
                 faltan['tela_color'] = f'Escribe el color {nombre}.'
-            if modo == LineaVenta.TELA_APARTE and not proveedor:
+            if modo == LineaVenta.TELA_APARTE and not proveedor and not sin_pedir:
                 faltan['tela_proveedor'] = f'Elige el proveedor {nombre}.'
-            if modo == LineaVenta.TELA_APARTE and not cantidad:
+            if modo == LineaVenta.TELA_APARTE and not cantidad and not sin_pedir:
                 faltan['tela_cantidad'] = f'Indica la cantidad {nombre}.'
+            # El costo no se pide (2026-11-04): es el del grupo en la lista de precios, si lo tiene.
             if not grupo and not pedida:
                 faltan['tela_grupo'] = f'Elige el grupo {nombre}.'
-            if modo == LineaVenta.TELA_APARTE and costo is None and not pedida:
-                unidad = 'decímetro' if material == 'cuero' else 'metro'
-                faltan['tela_costo'] = f'Indica el costo del proveedor por {unidad}.'
         if faltan:
             raise ValidationError(faltan)
     tela = dict(zip(CAMPOS_TELA, (modo, material, referencia, color, proveedor, cantidad)))
@@ -603,13 +604,13 @@ def preparar_tela(d, v, anterior, completo=True):
         if antes != ahora:
             raise ValidationError({'tela_referencia': 'La tela de este producto ya se pidió. Para cambiarla, elimina primero ese pedido en Telas.'})
     # El grupo y el costo no cambian el pedido de tela: se pueden completar después.
-    tela.update(tela_grupo=grupo, tela_costo=dinero(costo) if costo is not None else None)
+    tela.update(tela_grupo=grupo, tela_costo=dinero(costo) if costo is not None else None, tela_sin_pedir=sin_pedir)
     return tela
 
 
 def auditoria_lineas(lineas):
     campos = ('tela_modo', 'tela_material', 'tela_referencia', 'tela_color', 'tela_proveedor_id', 'tela_cantidad', 'tela_grupo_id',
-              'tela_costo', 'conjunto', 'conjunto_nombre', 'conjunto_cantidad', 'id', 'variante_id', 'referencia_id', 'grupo_catalogo_id', 'cantidad', 'producto_nombre',
+              'tela_costo', 'tela_sin_pedir', 'conjunto', 'conjunto_nombre', 'conjunto_cantidad', 'id', 'variante_id', 'referencia_id', 'grupo_catalogo_id', 'cantidad', 'producto_nombre',
               'precio_lista_unitario', 'precio_unitario', 'descuento', 'subtotal', 'precio_snapshot',
               'adicionales', 'opcionales', 'motivo_precio', 'texto_cliente', 'texto_proveedor',
               'sin_texto_proveedor', 'especificaciones', 'inventario_origen_id', 'fecha_compromiso')
@@ -758,7 +759,7 @@ class PedidosEntrada(serializers.Serializer):
 
 def estado_tela_de(lineas):
     """Estado de tela de una orden según sus productos (mismos valores que /ordenes)."""
-    aparte = [l for l in lineas if gestion_venta.tela_modo(l) == LineaVenta.TELA_APARTE]
+    aparte = [l for l in lineas if gestion_venta.tela_modo(l) == LineaVenta.TELA_APARTE and not l.tela_sin_pedir]
     if not aparte:
         return 'Sin tela'
     return 'Pedida' if all(tela_pedida(l) for l in aparte) else 'Por pedir'
@@ -865,6 +866,12 @@ def catalogo_productos(request):
     return Response(buscar_catalogo(request, qs, q, pag))
 
 
+def costos_opcionales(juego):
+    """Los costos propios del conjunto salen solo de opcionales habilitados (ningún obligatorio)."""
+    cargos = [c for c in juego.cargos.all() if not c.opcional or c.preseleccionado]
+    return bool(cargos) and all(c.opcional for c in cargos)
+
+
 def grupos_tela():
     return list(GrupoTela.objects.order_by('orden').values('id', 'nombre', 'tipo', 'precio_por_metro'))
 
@@ -916,10 +923,13 @@ def buscar_catalogo(request, qs, q, pag):
                            'metraje': str(metraje) if metraje else None, 'decimetraje_cuero': str(metraje_total(v, 'cuero') or '') or None, 'juego': juego, 'piezas': piezas,
                            'costos_conjunto': str(dinero(costos)) if costos else None, 'costos_conjunto_nombre': nombre_costos,
                            'costos_conjunto_tipo': LineaVenta.TIPO_TRANSPORTE if solo_transporte and costos > 0 else LineaVenta.TIPO_AJUSTE,
+                           # Si todos sus cargos propios son opcionales (p. ej. «Transporte» habilitado), se pueden quitar.
+                           'costos_conjunto_opcional': bool(piezas) and costos > 0 and costos_opcionales(v),
                            'decorativos_incluidos': 2 if da_decorativos(v, []) else 0, 'es_decorativo': es_decorativo(v),
                            'grupos': [g['id'] for g in grupos if grupo_aplicable(v, GrupoTela(**g))] if usa_tela(v) else [],
+                           # en_agrupacion: una pieza dentro de un conjunto no ofrece los marcados «Mostrar en agrupación: No».
                            'opcionales': [{'id': c.pk, 'descripcion': c.descripcion, 'especial': c.especial_id is not None, 'preseleccionado': c.preseleccionado,
-                                           'decorativos': c.tipo == 'decorativos'}
+                                           'decorativos': c.tipo == 'decorativos', 'en_agrupacion': c.en_agrupacion}
                                           for c in v.cargos.all() if c.opcional]
                                          + [{'id': c.pk, 'descripcion': f'{c.descripcion} · {comp.variante.nombre_catalogo}', 'especial': c.especial_id is not None,
                                              'preseleccionado': c.preseleccionado} for comp, c in opcionales_piezas(v)],

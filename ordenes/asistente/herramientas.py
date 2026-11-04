@@ -242,7 +242,7 @@ def pedidos_tela(args):
               .values('id', 'proveedor__nombre_empresa', 'fecha_creacion', 'orden_asociada_id', 'venta_id', 'orden_asociada__venta_id')[:top]]
     por_proveedor = [{'proveedor_tela': f['proveedor__nombre_empresa'], 'pendientes': f['n']}
                      for f in pendientes.values('proveedor__nombre_empresa').annotate(n=Count('id')).order_by('-n')[:top]]
-    sin_pedir = LineaVenta.objects.filter(tela_modo=LineaVenta.TELA_APARTE, detalles_tela__isnull=True).exclude(venta__estado__in=ANULADAS).count()
+    sin_pedir = LineaVenta.objects.filter(tela_modo=LineaVenta.TELA_APARTE, tela_sin_pedir=False, detalles_tela__isnull=True).exclude(venta__estado__in=ANULADAS).count()
     return {'por_estado': por_estado, 'pendientes_mas_de_7_dias': viejos, 'pendientes_por_proveedor': por_proveedor,
             'productos_con_tela_aparte_sin_pedir': sin_pedir}
 

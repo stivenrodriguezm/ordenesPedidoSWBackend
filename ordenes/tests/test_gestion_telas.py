@@ -5,7 +5,7 @@ from decimal import Decimal
 from listaprecios.models import CategoriaLista, GrupoTela, LineaProducto, VarianteProducto
 from ordenes import business_time
 from ordenes.gestion_venta import DIAS_LIMITE, estado_gestion
-from ordenes.models import DetallePedidoTela, DireccionEntrega, OrdenPedido, PedidoTela, ProveedorTela, Venta
+from ordenes.models import DetallePedidoTela, DireccionEntrega, LineaVenta, OrdenPedido, PedidoTela, ProveedorTela, Venta
 from ordenes.tests import test_productos_venta as base
 from ordenes.tests.utils import LottusTestCase
 
@@ -60,18 +60,38 @@ class GestionYTelasTests(LottusTestCase):
         d = self.guardar([self.fila(variante=mesa.pk, grupo_catalogo=None, opcionales=[], tela_modo='', tela_referencia='ignorada')], revision=d['revision'])
         self.assertEqual((d['lineas'][0]['tela_modo'], d['lineas'][0]['tela_referencia']), ('no_aplica', ''))
 
+    def test_tela_registrada_que_no_se_pide(self):
+        # «No pedir» (2026-11-04): queda con qué tela se vendió, sin proveedor obligatorio ni «falta pedir».
+        d = self.guardar([self.tela_aparte(tela_proveedor=None, tela_sin_pedir=True)])
+        linea = d['lineas'][0]
+        self.assertEqual((linea['tela_sin_pedir'], linea['tela_referencia'], linea['tela_color']), (True, 'Lino', 'Arena 03'))
+        self.assertFalse(any('tela' in p for p in d['gestion']['pendientes']), d['gestion']['pendientes'])
+        # Otro modo de tela no la marca.
+        d = self.guardar([self.fila(id=linea['id'], tela_sin_pedir=True)], revision=d['revision'])
+        self.assertFalse(d['lineas'][0]['tela_sin_pedir'])
+        # Si se marca «No pedir» y después se pide desde /telas, ya quedó pedida.
+        d = self.guardar([self.tela_aparte(id=linea['id'], tela_sin_pedir=True)], revision=d['revision'])
+        self.assertEqual(self.pedir_telas(d).status_code, 201)
+        self.assertFalse(LineaVenta.objects.get(pk=linea['id']).tela_sin_pedir)
+
     def test_cuero_en_decimetros_sin_cantidad_sugerida(self):
         cuero = dict(tela_material='cuero', tela_referencia='Nappa', tela_color='Miel')
-        # Sin grupo de cuero: falta el grupo y su costo por decímetro, además de la cantidad.
-        self.assertEqual(self.rechazo([self.tela_aparte(**cuero)]), {'tela_cantidad', 'tela_grupo', 'tela_costo'})
+        # Sin grupo de cuero: falta el grupo y la cantidad; el costo no se pide.
+        self.assertEqual(self.rechazo([self.tela_aparte(**cuero)]), {'tela_cantidad', 'tela_grupo'})
         grupo = GrupoTela.objects.create(nombre='Cuero importado', tipo='cuero', precio_por_metro=3500)
         self.assertEqual(self.rechazo([self.tela_aparte(tela_grupo=grupo.pk, **cuero)]), {'tela_cantidad'})
-        linea = self.guardar([self.tela_aparte(tela_cantidad='1200', tela_grupo=grupo.pk, **cuero)])['lineas'][0]
+        d = self.guardar([self.tela_aparte(tela_cantidad='1200', tela_grupo=grupo.pk, **cuero)])
+        linea = d['lineas'][0]
         self.assertEqual((linea['tela_material'], linea['tela_unidad'], Decimal(linea['tela_cantidad'])), ('cuero', 'dm', Decimal(1200)))
-        # El costo por decímetro sale del grupo de la lista de precios y se puede corregir.
+        # El costo por decímetro sale del grupo de la lista de precios.
         self.assertEqual((linea['tela_grupo'], Decimal(linea['tela_costo']), linea['tela_grupo_nombre']), (grupo.pk, Decimal(3500), 'Cuero importado'))
         # Un grupo de tela no sirve para cuero.
         self.assertEqual(self.rechazo([self.tela_aparte(tela_cantidad='1200', tela_grupo=self.grupo.pk, **cuero)]), {'tela_grupo'})
+        # Un grupo sin precio en la lista guarda la tela sin costo (2026-11-04).
+        sin_precio = GrupoTela.objects.create(nombre='Cuero sin precio', tipo='cuero', precio_por_metro=0)
+        linea = self.guardar([self.tela_aparte(id=d['lineas'][0]['id'], tela_cantidad='1200', tela_grupo=sin_precio.pk, **cuero)],
+                             revision=d['revision'])['lineas'][0]
+        self.assertEqual((linea['tela_grupo'], linea['tela_costo']), (sin_precio.pk, None))
 
     def test_tela_incluida_no_guarda_proveedor_ni_cantidad(self):
         d = self.guardar([self.fila(tela_modo='incluida', tela_proveedor=self.ariatex.pk, tela_cantidad='9')])

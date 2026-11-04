@@ -2235,8 +2235,12 @@ def vendedor_recent_activity(request):
 @permission_classes([IsAuthenticated])
 def listar_ventas_pendientes_ids(request):
     user = request.user
-    # Se filtran solo las ventas en estado pendiente que no hayan finalizado pedidos
-    ventas = Venta.objects.filter(estado__iexact='pendiente', estado_pedidos=False)
+    # Se filtran solo las ventas en estado pendiente que no hayan finalizado pedidos. Los recibos
+    # de caja (`para=recibos`, 2026-11-04) no dependen de la gestión: una venta con la gestión
+    # finalizada sigue recibiendo pagos.
+    ventas = Venta.objects.filter(estado__iexact='pendiente')
+    if request.query_params.get('para') != 'recibos':
+        ventas = ventas.filter(estado_pedidos=False)
     
     can_see_all = any(tiene_permiso_codigo(request, c) for c in ('CREAR_ORDENES_OTROS', 'VER_TODAS_VENTAS', 'VER_TODAS_ORDENES'))
 

@@ -65,7 +65,7 @@ def pendientes(lineas):
             faltan.append(f'{nombre}: indica si lleva tela (no lleva, la incluye el proveedor o se compra aparte).')
         elif modo != LineaVenta.TELA_NO_APLICA and not l['tela_referencia'].strip():
             faltan.append(f'{nombre}: indica la referencia y el color de {material} con que se vendió.')
-        if modo == LineaVenta.TELA_APARTE:
+        if modo == LineaVenta.TELA_APARTE and not l.get('tela_sin_pedir'):  # «No pedir»: solo queda registrada
             if not l['tela_proveedor']:
                 faltan.append(f'{nombre}: elige el proveedor de {material}.')
             elif not l['tela_pedidos']:
