@@ -5,10 +5,11 @@ from unittest import mock
 from django.core import mail
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
+from django.test import override_settings
 from PIL import Image
 
 from ordenes.tests.utils import LottusTestCase
-from paginaweb.models import CorreoSaliente, PqrsTicket
+from paginaweb.models import AsesorPerfil, CorreoSaliente, PqrsTicket
 
 
 def png(lado=10):
@@ -101,3 +102,37 @@ class FichaWebTests(LottusTestCase):
         migracion.copiar_a_caracteristicas(apps, type('Editor', (), {'connection': connection})())
         p.refresh_from_db()
         self.assertEqual(p.characteristics, 'Edición nueva')
+
+
+@override_settings(CLOUDINARY_CLOUD_NAME='cuenta-prueba')
+class FotoAsesorTests(LottusTestCase):
+    """La foto que devuelve el cargador (Cloudinary) debe poder guardarse en el perfil."""
+    url_cloudinary = 'https://res.cloudinary.com/cuenta-prueba/image/upload/f_auto,q_auto/v1/asesores/x.png'
+
+    def setUp(self):
+        self.admin = self.crear_usuario('admin', role='administrador')
+        self.asesor = AsesorPerfil.objects.create(id='a1', nombre='Asesor Ficticio', slug='asesor-ficticio')
+
+    def guardar_foto(self, foto):
+        return self.api(self.admin).patch(f'/api/paginaweb/admin/asesores/{self.asesor.id}/', {'foto': foto}, format='json')
+
+    def test_subir_y_guardar_foto(self):
+        with mock.patch('paginaweb.views.upload_to_cloudinary', return_value=self.url_cloudinary):
+            r = self.api(self.admin).post('/api/paginaweb/admin/asesores/upload-foto/',
+                                          {'foto': SimpleUploadedFile('ok.png', png(), content_type='image/png')},
+                                          format='multipart')
+        self.assertEqual(r.status_code, 200, r.data)
+        r = self.guardar_foto(r.data['url'])
+        self.assertEqual(r.status_code, 200, r.data)
+        self.asesor.refresh_from_db()
+        self.assertEqual(self.asesor.foto, self.url_cloudinary)
+
+    def test_fotos_antiguas_y_vacia_se_aceptan(self):
+        self.assertEqual(self.guardar_foto('/media/asesores/vieja.jpg').status_code, 200)
+        self.assertEqual(self.guardar_foto('').status_code, 200)
+
+    def test_url_ajena_se_rechaza(self):
+        for foto in ('https://ejemplo.invalid/asesores/x.png',
+                     'https://res.cloudinary.com/otra-cuenta/image/upload/v1/asesores/x.png',
+                     'https://res.cloudinary.com/cuenta-prueba/image/upload/v1/paginaweb/x.png'):
+            self.assertEqual(self.guardar_foto(foto).status_code, 400, foto)
