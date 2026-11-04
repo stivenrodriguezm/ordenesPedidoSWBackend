@@ -12,4 +12,9 @@ class Migration(migrations.Migration):
             name='tiene_anexo',
             field=models.BooleanField(default=False, editable=False),
         ),
+        # Permite volver al código anterior sin impedirle crear nuevas ventas.
+        migrations.RunSQL(
+            'ALTER TABLE ordenes_venta ALTER COLUMN tiene_anexo SET DEFAULT 0',
+            'ALTER TABLE ordenes_venta ALTER COLUMN tiene_anexo DROP DEFAULT',
+        ),
     ]
