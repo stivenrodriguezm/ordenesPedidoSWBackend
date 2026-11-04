@@ -3,6 +3,7 @@ from rest_framework import serializers
 from suministros.models import Subcategoria
 from suministros.recepcion import recibidas_de
 import logging
+import re
 from decimal import Decimal
 from django.db import models, transaction
 from django.db.models import Q
@@ -16,10 +17,45 @@ from .models import (
     ProveedorTela, PedidoTela, DetallePedidoTela, DireccionEntrega
 )
 
-class UserManageSerializer(serializers.ModelSerializer):
+TELEFONO_USUARIO_RE = re.compile(r'^\+?[\d ()-]{7,20}$')
+
+
+class DatosCotizacionMixin:
+    """Teléfono y enlace del QR que salen en el imprimible de las cotizaciones."""
+
+    def validate_telefono(self, value):
+        value = (value or '').strip()
+        if value and not TELEFONO_USUARIO_RE.match(value):
+            raise serializers.ValidationError('Escribe un teléfono válido, por ejemplo 300 123 4567.')
+        return value
+
+    def validate_enlace_qr(self, value):
+        value = (value or '').strip()
+        if value and not value.lower().startswith(('https://', 'http://')):
+            raise serializers.ValidationError('El enlace debe empezar por https://')
+        return value
+
+
+class PerfilPropioSerializer(DatosCotizacionMixin, serializers.ModelSerializer):
+    """Lo que cada usuario puede cambiar de sí mismo desde «Mi perfil»."""
+
     class Meta:
         model = CustomUser
-        fields = ['id', 'username', 'first_name', 'last_name', 'role', 'is_active', 'password', 'acceso_rapido_ia']
+        fields = ['telefono', 'enlace_qr']
+
+    def update(self, instance, validated_data):
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        # Solo estas columnas: cuentas antiguas sin date_joined fallarían con un save completo.
+        instance.save(update_fields=list(validated_data))
+        return instance
+
+
+class UserManageSerializer(DatosCotizacionMixin, serializers.ModelSerializer):
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'username', 'first_name', 'last_name', 'role', 'is_active', 'password', 'acceso_rapido_ia',
+                  'telefono', 'enlace_qr']
         extra_kwargs = {
             'password': {'write_only': True, 'required': False}
         }

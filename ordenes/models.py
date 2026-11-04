@@ -16,6 +16,10 @@ class CustomUser(AbstractUser):
     )
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='vendedor')
     acceso_rapido_ia = models.BooleanField(default=False)
+    # Cotizaciones (2026-11-04): el imprimible muestra el teléfono del asesor y un QR a su
+    # enlace; sin enlace, el QR lleva a la landing.
+    telefono = models.CharField(max_length=20, blank=True, default='')
+    enlace_qr = models.URLField(max_length=500, blank=True, default='')
 
 class RolePermission(models.Model):
     role = models.CharField(max_length=20, choices=CustomUser.ROLE_CHOICES, unique=True)
