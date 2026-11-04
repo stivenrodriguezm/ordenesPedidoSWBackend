@@ -77,7 +77,15 @@ def avisar(imp_id):
     cache.set(_k('pendiente', imp_id), 1, None)
 
 
-def siguiente_trabajo(imp_id):
+def registrar_capacidades(imp_id, admite_pdf=False, doble_cara=False):
+    cache.set(_k('anexos', imp_id), admite_pdf is True and doble_cara is True, EN_LINEA_SEG)
+
+
+def admite_anexos(imp_id):
+    return cache.get(_k('anexos', imp_id), False)
+
+
+def siguiente_trabajo(imp_id, admite_pdf=False):
     """Registra el latido y entrega (marcándolo «procesando») el próximo trabajo en cola."""
     ahora = time.time()
     cache.set(_k('latido', imp_id), ahora, 86400)
@@ -88,6 +96,8 @@ def siguiente_trabajo(imp_id):
     cache.set(_k('revisado', imp_id), ahora, None)
     momento = timezone.now()
     trabajos = T.objects.filter(impresora_id=imp_id)
+    if not admite_pdf:
+        trabajos = trabajos.filter(pdf='')
     trabajos.filter(estado=T.PENDIENTE, creado__lt=momento - timedelta(hours=VENCE_HORAS)).update(
         estado=T.ERROR, actualizado=momento,
         detalle='Venció sin imprimirse: la computadora de la oficina no estuvo conectada.')

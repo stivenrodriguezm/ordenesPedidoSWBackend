@@ -25,13 +25,13 @@ def _impresora(imp):
     return {'id': imp.pk, 'nombre': imp.nombre, 'ubicacion': imp.ubicacion,
             'en_linea': s.en_linea(imp.pk), 'ultima_conexion': _fecha(s.ultima_conexion(imp.pk)),
             # En línea es la computadora; esto dice si ella ve la impresora.
-            'impresora_encontrada': s.impresora_encontrada(imp.pk)}
+            'impresora_encontrada': s.impresora_encontrada(imp.pk), 'admite_anexos': s.admite_anexos(imp.pk)}
 
 
 def _trabajo(t):
     return {'id': t.pk, 'titulo': t.titulo, 'copias': t.copias, 'estado': t.estado,
             'estado_nombre': t.get_estado_display(), 'detalle': t.detalle, 'creado': t.creado,
-            'impresora': t.impresora_id}
+            'impresora': t.impresora_id, 'doble_cara': t.doble_cara}
 
 
 @api_view(['GET'])
@@ -104,10 +104,11 @@ def agente_siguiente(request):
         return error
     if 'impresora_ok' in request.data:
         s.registrar_impresora_encontrada(imp, request.data['impresora_ok'])
-    t = s.siguiente_trabajo(imp)
+    s.registrar_capacidades(imp, request.data.get('admite_pdf'), request.data.get('admite_doble_cara'))
+    t = s.siguiente_trabajo(imp, admite_pdf=s.admite_anexos(imp))
     if t is None:
         return Response(status=204)
-    return Response({'id': t.pk, 'titulo': t.titulo, 'copias': t.copias, 'html': t.html})
+    return Response({'id': t.pk, 'titulo': t.titulo, 'copias': t.copias, 'html': t.html, 'pdf': t.pdf, 'doble_cara': t.doble_cara})
 
 
 @api_view(['POST'])
