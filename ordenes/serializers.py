@@ -103,17 +103,22 @@ class DireccionEntregaSerializer(serializers.ModelSerializer):
 class ReferenciaSerializer(serializers.ModelSerializer):
     categorias_nombres = serializers.SerializerMethodField()
     subcategorias_nombres = serializers.SerializerMethodField()
+    subcategorias_pedido = serializers.SerializerMethodField()
 
     class Meta:
         model = Referencia
         fields = [
             'id', 'nombre', 'proveedor', 
             'categorias', 'categorias_nombres', 
-            'subcategorias', 'subcategorias_nombres'
+            'subcategorias', 'subcategorias_nombres', 'subcategorias_pedido'
         ]
 
     def get_categorias_nombres(self, obj):
         return [c.nombre for c in obj.categorias.all()]
+
+    def get_subcategorias_pedido(self, obj):
+        from .subcategorias_pedido import opciones_pedido
+        return opciones_pedido(obj, self.context)
 
     def get_subcategorias_nombres(self, obj):
         return [s.nombre for s in obj.subcategorias.all()]
@@ -222,7 +227,8 @@ def subcategoria_del_detalle(datos):
     ref, linea = datos['referencia'], datos.get('linea_venta')
     sub = datos.get('subcategoria')
     validas = set(ref.subcategorias.values_list('pk', flat=True))
-    if sub is not None and sub.pk not in validas:
+    from .subcategorias_pedido import admite_por_modulos
+    if sub is not None and sub.pk not in validas and not admite_por_modulos(ref, sub):
         return f'«{sub.nombre}» no es una subcategoría de {ref.nombre}.'
     if sub is None and linea is not None:
         # Producto de una venta: la subcategoría del producto vendido, si sigue en la referencia.

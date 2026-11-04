@@ -37,3 +37,21 @@ class PedidoConSubcategoriaTests(LottusTestCase):
                                                      'detalles': [{'referencia': otra.pk, 'cantidad': 1}]}, format='json')
         self.assertEqual(r.status_code, 201, r.data)
         self.assertIsNone(DetallePedido.objects.get(orden_id=r.data['id']).subcategoria_id)
+
+    def test_por_modulos_para_salas_sin_agregar_fichas_de_precios(self):
+        from listaprecios.models import VarianteProducto
+        from ordenes.serializers import ReferenciaSerializer
+        cat, _ = Categoria.objects.get_or_create(nombre='Salas')
+        modulos, _ = Subcategoria.objects.get_or_create(categoria=cat, nombre='Por módulos')
+        self.ref.categorias.add(cat)
+        antes = VarianteProducto.objects.count()
+        datos = ReferenciaSerializer(self.ref).data
+        self.assertIn({'id': modulos.pk, 'nombre': 'Por módulos'}, datos['subcategorias_pedido'])
+        self.assertNotIn(modulos.pk, datos['subcategorias'])
+        r = self.crear(subcategoria=modulos.pk)
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(DetallePedido.objects.get(orden_id=r.data['id']).subcategoria_id, modulos.pk)
+        self.assertEqual(VarianteProducto.objects.count(), antes)
+        self.ref.categorias.clear()
+        self.assertEqual(self.crear(subcategoria=modulos.pk).status_code, 400)
+        self.assertNotIn({'id': modulos.pk, 'nombre': 'Por módulos'}, ReferenciaSerializer(self.ref).data['subcategorias_pedido'])

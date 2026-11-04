@@ -744,9 +744,9 @@ def detalles_pedido(request, orden_id):
         # Obtener la observación de la orden
         try:
             orden = OrdenPedido.objects.get(id=orden_id)
-            observacion = orden.observacion
+            observacion, tela = orden.observacion, orden.tela
         except OrdenPedido.DoesNotExist:
-            observacion = None
+            observacion = tela = None
 
         detalles_data = [{
             "cantidad": d.cantidad,
@@ -788,6 +788,7 @@ def detalles_pedido(request, orden_id):
         return Response({
             "detalles": detalles_data,
             "observacion": observacion,
+            "tela": tela,
             "pedidos_telas": pedidos_telas_data,
         })
     except Exception as e:

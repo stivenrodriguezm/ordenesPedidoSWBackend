@@ -85,7 +85,16 @@ def bloquear(pk, revision):
 
 class AdicionalEntrada(serializers.Serializer):
     descripcion = serializers.CharField(max_length=255)
-    importe_lista = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0)
+    # importe_lista conserva el contrato histórico; los nuevos recargos se capturan por costo.
+    importe_lista = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0, required=False)
+    costo = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=1, required=False)
+
+    def validate(self, data):
+        if ('costo' in data) == ('importe_lista' in data):
+            raise ValidationError('Indica el costo del recargo o su valor histórico, sin mezclarlos.')
+        if 'costo' in data and data['costo'] != data['costo'].to_integral_value():
+            raise ValidationError({'costo': 'Usa pesos enteros, sin centavos.'})
+        return data
 
 
 class LineaEntrada(serializers.Serializer):
@@ -131,11 +140,23 @@ class LineaEntrada(serializers.Serializer):
     # grupo) × multiplicador general. Sin cargos ni opcionales.
     costo_especial = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=1, max_value=Decimal('999999999'), allow_null=True, default=None)
     metraje_especial = serializers.DecimalField(max_digits=8, decimal_places=2, min_value=0, max_value=Decimal('99999'), allow_null=True, default=None)
+    # Bold: lo cobrado por datáfono; el valor de la línea es BOLD_PORCENTAJE de esto.
+    bold_cobrado = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=1, max_value=Decimal('9999999999'), allow_null=True, default=None)
 
     def validate_costo_especial(self, valor):
         if valor is not None and valor != valor.to_integral_value():
             raise serializers.ValidationError('Usa pesos enteros, sin centavos.')
         return valor
+
+    # Campos nuevos separados del precio histórico: nunca reinterpretar venta como costo.
+    costo_precio_especial = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=1, allow_null=True, default=None)
+    costo_servicio = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=1, allow_null=True, default=None)
+    variante_multiplicador = serializers.PrimaryKeyRelatedField(queryset=VarianteProducto.objects.all(), allow_null=True, default=None)
+    pieza_multiplicador = serializers.PrimaryKeyRelatedField(queryset=ComponenteJuego.objects.select_related('variante'), allow_null=True, default=None)
+
+    validate_bold_cobrado = validate_costo_especial
+    validate_costo_precio_especial = validate_costo_especial
+    validate_costo_servicio = validate_costo_especial
 
 
 class DesgloseEntrada(serializers.Serializer):
@@ -187,7 +208,7 @@ def huella_config(d):
     if d.get('pieza'):
         config.update(juego=d['juego'].pk, pieza=d['pieza'].pk)
     # Solo si se usan: así la huella de las líneas ya guardadas no cambia.
-    for campo in ('costo_especial', 'metraje_especial'):
+    for campo in ('costo_especial', 'metraje_especial', 'costo_precio_especial'):
         if d.get(campo) is not None:
             config[campo] = numero_simple(d[campo])
     return hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest()
@@ -198,12 +219,46 @@ def publicado_en_lista(v):
     return (v.publicado and v.costo_confirmado if v.linea.referencia_id else v.linea.activo) and not retirada(v)
 
 
+BOLD_PORCENTAJE = Decimal('5')
+
+
+def recargo_bold(cobrado):
+    """Lo que Bold suma al precio de lista: el 5 % de lo cobrado por datáfono, en pesos enteros
+    y sin multiplicador (1.000.000 cobrados → 50.000)."""
+    return (cobrado * BOLD_PORCENTAJE / 100).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+
+
 def preparar_adicional(d, anterior):
     """Servicio o ajuste de la venta: descripción y valor; no se pide ni lleva tela.
     Con `juego`, son los costos propios de un conjunto de la lista (su Transporte…): el
     valor sale de la lista de precios y va dentro del conjunto."""
     tipo, descripcion, valor = d['tipo'], d['producto_nombre'].strip(), d['precio_lista_override']
     juego, por_conjunto = d.get('juego'), None
+    cobrado = d.get('bold_cobrado')
+    costo_servicio, mult, config_costo = d.get('costo_servicio'), None, None
+    if costo_servicio is not None:
+        if tipo != LineaVenta.TIPO_TRANSPORTE or juego or d['precio_lista_override'] is not None:
+            raise ValidationError({'costo_servicio': 'El costo de transporte no se mezcla con un precio final ni con costos de conjunto.'})
+        variante, pieza = d['variante_multiplicador'], d['pieza_multiplicador']
+        if pieza and (not variante or pieza.variante_id != variante.pk):
+            raise ValidationError({'pieza_multiplicador': 'La pieza no corresponde al producto elegido.'})
+        config_costo = {'costo': numero_simple(costo_servicio), 'variante': variante.pk if variante else None,
+                        'pieza': pieza.pk if pieza else None}
+        previo = anterior.precio_snapshot if anterior else {}
+        if anterior and anterior.tipo == tipo and previo.get('transporte_costo') == config_costo and not d['recalcular']:
+            valor, mult = anterior.precio_lista_unitario, Decimal(previo['multiplicador'])
+        else:
+            mult = pieza.multiplicador if pieza and pieza.multiplicador is not None else (
+                multiplicador_efectivo(variante) if variante else obtener_multiplicador_general())
+            valor = costo_servicio * mult
+    elif d['variante_multiplicador'] or d['pieza_multiplicador']:
+        raise ValidationError('El producto para el múltiplo solo se elige en un transporte por costo.')
+    if tipo == LineaVenta.TIPO_BOLD:
+        if d.get('juego') or d.get('pieza'):
+            raise ValidationError('Bold no va dentro de un conjunto.')
+        if not cobrado:
+            raise ValidationError({'bold_cobrado': 'Indica el valor cobrado por datáfono.'})
+        valor, descripcion = recargo_bold(cobrado), descripcion or 'Bold'
     if juego is not None:
         if d.get('pieza') or tipo not in (LineaVenta.TIPO_TRANSPORTE, LineaVenta.TIPO_AJUSTE):
             raise ValidationError('Los costos de un conjunto van como transporte o ajuste.')
@@ -240,9 +295,11 @@ def preparar_adicional(d, anterior):
     return {'tipo': tipo, 'producto_nombre': descripcion[:255], 'variante': None, 'variante_nombre': '', 'categoria_nombre': '',
             'referencia': None, 'grupo_catalogo': None, 'grupo_tela': '', 'cantidad': cantidad, 'opcionales': [], 'adicionales': [],
             'precio_lista_unitario': valor, 'precio_unitario': valor, 'descuento': Decimal(0), 'subtotal': dinero(valor * cantidad),
-            'costo_estimado': None, 'motivo_precio': '',
-            'precio_snapshot': {'tipo': tipo, 'override': str(valor),
-                                **({'juego': juego.pk, 'grupo': grupo, 'por_conjunto': str(por_conjunto)} if juego else {})},
+            'costo_estimado': dinero(costo_servicio) if costo_servicio is not None else None, 'motivo_precio': '',
+            'precio_snapshot': {'tipo': tipo, 'override': None if config_costo else str(valor),
+                                **({'transporte_costo': config_costo, 'multiplicador': str(mult)} if config_costo else {}),
+                                **({'juego': juego.pk, 'grupo': grupo, 'por_conjunto': str(por_conjunto)} if juego else {}),
+                                **({'cobrado': str(dinero(cobrado)), 'porcentaje': str(BOLD_PORCENTAJE)} if tipo == LineaVenta.TIPO_BOLD else {})},
             'texto_cliente': d['texto_cliente'].strip() or (descripcion if tipo == LineaVenta.TIPO_ARTICULO else ''),
             'texto_proveedor': '', 'sin_texto_proveedor': True, 'especificaciones': '', 'fecha_compromiso': None,
             'inventario_origen_id': None, 'tela_modo': LineaVenta.TELA_NO_APLICA, 'tela_material': '', 'tela_referencia': '',
@@ -284,6 +341,8 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
     el asesor aún está llenando (textos, referencia, tela)."""
     if d['tipo'] != LineaVenta.TIPO_PRODUCTO:
         return preparar_adicional(d, anterior)
+    if d['costo_servicio'] is not None or d['variante_multiplicador'] or d['pieza_multiplicador']:
+        raise ValidationError('Los datos de transporte por costo no corresponden a un producto.')
     if anterior and anterior.tipo != LineaVenta.TIPO_PRODUCTO:
         raise ValidationError('Un servicio o ajuste no se convierte en producto: quítalo y agrega el producto.')
     v, grupo = d['variante'], d['grupo_catalogo']
@@ -298,14 +357,17 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
         lista, costo, snapshot = anterior.precio_lista_unitario, anterior.costo_estimado, anterior.precio_snapshot
     else:
         manual = d['precio_lista_override']
+        especial_costo = d['costo_precio_especial']
+        if especial_costo is not None and manual is not None:
+            raise ValidationError('El costo especial no se mezcla con un precio final histórico.')
         por_costo = not v and d['costo_especial'] is not None
         if v and (d['costo_especial'] is not None or d['metraje_especial'] is not None):
             raise ValidationError('Un producto de la lista de precios toma su costo de la lista.')
-        if manual is not None or d['adicionales'] or (not v and not por_costo):
+        if manual is not None or especial_costo is not None or d['adicionales'] or (not v and not por_costo):
             exigir(request, 'AJUSTAR_PRECIO_LISTA_VENTA')
             # Un recargo ya dice qué es (su descripción); el motivo solo se exige
             # para un precio especial que reemplaza al del catálogo.
-            if manual is not None and not d['motivo_precio'].strip():
+            if (manual is not None or especial_costo is not None) and not d['motivo_precio'].strip():
                 raise ValidationError({'motivo_precio': 'Explica por qué este producto lleva precio especial.'})
         if v:
             # Una pieza se vende con el conjunto: lo que debe estar publicado es el conjunto.
@@ -351,15 +413,23 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
         elif por_costo:
             calculado, costo, snapshot = precio_especial_por_costo(d)
         else:
-            if not d['producto_nombre'] or manual is None:
+            if not d['producto_nombre'] or (manual is None and especial_costo is None):
                 raise ValidationError('Un producto especial necesita nombre y precio de lista autorizado.')
             if grupo or d['opcionales']:
                 raise ValidationError('El producto especial no tiene opciones de catálogo.')
-            calculado, costo, snapshot = manual, None, {}
-        lista = dinero(manual if manual is not None else calculado + sum((a['importe_lista'] for a in d['adicionales']), Decimal(0)))
-        if d['adicionales']:
-            # Un recargo de venta no informa su costo: nunca inventar el margen.
-            costo = None
+            calculado, costo, snapshot = manual or Decimal(0), None, {}
+        mult = Decimal(snapshot['multiplicador']) if snapshot.get('multiplicador') else obtener_multiplicador_general()
+        if especial_costo is not None:
+            calculado, costo = especial_costo * mult, especial_costo
+        recargos_costo = sum((a.get('costo', Decimal(0)) for a in d['adicionales']), Decimal(0))
+        recargos_venta = sum((a.get('importe_lista', Decimal(0)) for a in d['adicionales']), Decimal(0))
+        lista = dinero((manual if manual is not None else calculado + recargos_venta) + recargos_costo * mult)
+        if manual is not None or any('importe_lista' in a for a in d['adicionales']):
+            costo = None  # El contrato anterior no informa costo.
+        elif costo is not None:
+            costo = dinero(costo + recargos_costo)
+        if especial_costo is not None or recargos_costo:
+            snapshot.update(multiplicador=str(mult), costo_precio_especial=numero_simple(especial_costo), captura_costos=True)
         if lista <= 0 or lista > Decimal('9999999999.99'):
             raise ValidationError('El precio de lista debe ser positivo y estar dentro del límite permitido.')
         snapshot.update(config=huella, override=str(manual) if manual is not None else None,
@@ -396,7 +466,7 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
     categoria = categoria_variante(v) if v else None
     campos.update(producto_nombre=nombre_linea(v.linea) if v else d['producto_nombre'], variante_nombre=v.nombre_catalogo if v else '',
                   categoria_nombre=categoria.nombre if categoria else '', grupo_tela=grupo.nombre if grupo else '',
-                  opcionales=d['opcionales'], adicionales=[{'descripcion': a['descripcion'], 'importe_lista': str(a['importe_lista'])} for a in d['adicionales']],
+                  opcionales=d['opcionales'], adicionales=[{k: str(val) for k, val in a.items()} for a in d['adicionales']],
                   precio_lista_unitario=lista, precio_unitario=precio, subtotal=subtotal,
                   costo_estimado=costo, precio_snapshot=snapshot, inventario_origen_id=d['inventario_origen'] or None)
     if anterior and (anterior.detalles.exists() or anterior.inventario_origen_id):
@@ -632,10 +702,16 @@ def representar(request, venta):
         d['proveedor'] = l.referencia.proveedor_id if l.referencia_id else None
         d['referencia_nombre'] = l.referencia.nombre if l.referencia_id else ''
         d['precio_lista_override'] = l.precio_snapshot.get('override')
+        d['costo_precio_especial'] = l.precio_snapshot.get('costo_precio_especial')
+        transporte_costo = l.precio_snapshot.get('transporte_costo') or {}
+        d['costo_servicio'] = transporte_costo.get('costo')
+        d['variante_multiplicador'] = transporte_costo.get('variante')
+        d['pieza_multiplicador'] = transporte_costo.get('pieza')
         por_costo = l.precio_snapshot.get('especial') == 'costo'
         d['costo_especial'] = l.precio_snapshot.get('base') if por_costo else None
         d['metraje_especial'] = l.precio_snapshot.get('metraje') if por_costo else None
         d['juego'] = l.precio_snapshot.get('juego')
+        d['bold_cobrado'] = l.precio_snapshot.get('cobrado')
         d['pieza'] = l.precio_snapshot.get('pieza')
         d['opcionales'] = [o['id'] if isinstance(o, dict) else o for o in l.opcionales if not isinstance(o, dict) or 'id' in o]
         d['pedidos'] = [{'id': x.orden_id, 'detalle': x.pk, 'cantidad': x.cantidad,

@@ -151,3 +151,42 @@ class CorreoSaliente(models.Model):
 
     class Meta:
         ordering = ['-creado']
+
+
+class VisitaWeb(models.Model):
+    """Contador de visitas de la página web (muebleslottus.com) y de la landing de
+    enlaces (landing.muebleslottus.com), 2026-11-04. Cada fila es una página vista
+    o un clic medido (WhatsApp, Instagram, showroom…). Sin IP ni cookies: el
+    navegador manda un identificador anónimo (localStorage) y uno de sesión
+    (sessionStorage). `fecha` y `hora` van en hora de Bogotá para agrupar en la
+    base sin depender de las tablas de zonas horarias de MySQL."""
+    SITIOS = [('landing', 'Landing de enlaces'), ('web', 'Página web')]
+    TIPOS = [('pagina', 'Página vista'), ('clic', 'Clic')]
+    DISPOSITIVOS = [('celular', 'Celular'), ('tablet', 'Tablet'), ('computador', 'Computador')]
+
+    sitio = models.CharField(max_length=10, choices=SITIOS)
+    tipo = models.CharField(max_length=10, choices=TIPOS, default='pagina')
+    ruta = models.CharField(max_length=120, blank=True, default='')
+    # Clic: qué se tocó ('whatsapp', 'instagram', 'showroom-cra50'…). Página de
+    # producto o de asesor: su slug.
+    etiqueta = models.CharField(max_length=120, blank=True, default='')
+    visitante = models.CharField(max_length=40)
+    sesion = models.CharField(max_length=40)
+    # Primera página de la sesión: de ella salen la fuente y el dispositivo.
+    entrada = models.BooleanField(default=False)
+    visitante_nuevo = models.BooleanField(default=False)
+    fuente = models.CharField(max_length=20, blank=True, default='')
+    referente = models.CharField(max_length=120, blank=True, default='')
+    dispositivo = models.CharField(max_length=12, choices=DISPOSITIVOS, default='computador')
+    fecha = models.DateField()
+    hora = models.PositiveSmallIntegerField(default=0)
+    creado = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'paginaweb_visita'
+        indexes = [
+            models.Index(fields=['fecha', 'sitio'], name='pw_visita_fecha_sitio'),
+            models.Index(fields=['sitio', 'tipo', 'fecha'], name='pw_visita_sitio_tipo'),
+        ]
+        verbose_name = 'Visita web'
+        verbose_name_plural = 'Visitas web'
