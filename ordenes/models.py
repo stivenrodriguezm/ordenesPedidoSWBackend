@@ -242,6 +242,13 @@ class OrdenPedido(models.Model):
     # subida que las imágenes de paginaweb (ver paginaweb/cloudinary_client.py).
     imagen_feria_hogar = models.URLField(max_length=500, blank=True, null=True)
 
+    def save(self, *args, **kwargs):
+        # «Pendiente» es el nombre antiguo de «Por pedir» (2026-11-04): guardada así, la orden no
+        # aparecía al pedir tela. Se corrige en cualquier guardado, venga de donde venga.
+        if self.tela == 'Pendiente':
+            self.tela = 'Por pedir'
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"Orden {self.id} para {self.proveedor.nombre_empresa}"
 

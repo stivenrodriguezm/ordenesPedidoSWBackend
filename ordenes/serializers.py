@@ -278,6 +278,11 @@ class OrdenPedidoSerializer(SinCostoSinPermisoMixin, serializers.ModelSerializer
             detalles = DetallePedidoTela.objects.filter(pedido__orden_asociada=obj).exclude(pedido__estado=PedidoTela.ANULADO)
         return DetallePedidoTelaSerializer(detalles, many=True).data
 
+    def validate_tela(self, value):
+        # «Pendiente» era el nombre antiguo de «Por pedir» en /ordenes; guardado así, la orden
+        # no aparecía al crear un pedido de tela (2026-11-04).
+        return 'Por pedir' if value == 'Pendiente' else value
+
     def validate(self, attrs):
         if not self.instance:
             detalles_raw = self.initial_data.get('detalles', [])

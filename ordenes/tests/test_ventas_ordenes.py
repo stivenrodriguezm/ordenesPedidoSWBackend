@@ -141,3 +141,28 @@ class DetallesOrdenTests(LottusTestCase):
         r = c.post('/api/detalles-pedido/', {'orden': orden.pk, 'referencia': otra.pk, 'cantidad': 1, 'especificaciones': 'x'}, format='json')
         self.assertEqual(r.status_code, 400)
         self.assertEqual(DetallePedido.objects.count(), 0)
+
+
+class TelaPorPedirTests(LottusTestCase):
+    """«Pendiente» (nombre antiguo en /ordenes) habilita pedir tela igual que «Por pedir» (2026-11-04)."""
+    def setUp(self):
+        self.admin = self.crear_usuario('admin_tela', role='administrador')
+        self.orden = OrdenPedido.objects.create(proveedor=self.proveedor(), usuario=self.admin,
+                                                fecha_esperada=date.today(), tela='Sin tela')
+
+    def ids_para_pedir_tela(self):
+        r = self.api(self.admin).get('/api/listar-pedidos/', {'estado': 'en_proceso', 'tela': 'Por pedir'})
+        self.assertEqual(r.status_code, 200)
+        return [fila['id'] for fila in r.data]
+
+    def test_sin_tela_cambiado_a_pendiente_queda_por_pedir(self):
+        self.assertNotIn(self.orden.pk, self.ids_para_pedir_tela())
+        r = self.api(self.admin).patch(f'/api/ordenes-pedido/{self.orden.pk}/', {'tela': 'Pendiente'}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.orden.refresh_from_db()
+        self.assertEqual(self.orden.tela, 'Por pedir')
+        self.assertIn(self.orden.pk, self.ids_para_pedir_tela())
+
+    def test_ordenes_antiguas_en_pendiente_aparecen_para_pedir_tela(self):
+        OrdenPedido.objects.filter(pk=self.orden.pk).update(tela='Pendiente')
+        self.assertIn(self.orden.pk, self.ids_para_pedir_tela())

@@ -625,7 +625,10 @@ def listar_pedidos(request):
             # Las órdenes de Feria del Hogar deben poder recibir pedidos de material aunque
             # no se haya marcado "requiere tela" al crearlas (no siempre se sabe de antemano) —
             # por eso siempre se incluyen aquí, sin importar su campo `tela`.
-            pedidos = pedidos.filter(Q(tela=tela) | Q(es_feria_hogar=True))
+            # «Pendiente» es el nombre antiguo de «Por pedir» (el modal de /ordenes lo guardaba
+            # así y esas órdenes no aparecían para pedir tela, 2026-11-04).
+            telas = [tela, 'Pendiente'] if tela == 'Por pedir' else [tela]
+            pedidos = pedidos.filter(Q(tela__in=telas) | Q(es_feria_hogar=True))
 
         pedidos = pedidos.order_by('-id')
 
