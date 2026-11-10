@@ -44,18 +44,6 @@ class ProductosVentaTests(LottusTestCase):
         return self.api_asesor.post(self.url + 'pedidos/', {'revision': datos['revision'] if revision is None else revision,
             'fecha_esperada': '2026-10-20', 'lineas': [{'linea': datos['lineas'][0]['id'], 'cantidad': cantidad}]}, format='json')
 
-    def test_bold_suma_a_la_lista_el_5_por_ciento_de_lo_recibido(self):
-        # Bold (2026-11-10): el asesor escribe lo recibido por Bold; la línea vale su costo (5 %).
-        bold = dict(tipo='bold', producto_nombre='', bold_recibido='100', cantidad=1, precio_lista_override='999',
-                    texto_proveedor='', sin_texto_proveedor=True, tela_modo='no_aplica')
-        d = self.guardar([self.fila(), bold])
-        linea = next(l for l in d['lineas'] if l['tipo'] == 'bold')
-        self.assertEqual((Decimal(linea['precio_lista_unitario']), Decimal(linea['bold_recibido']), linea['producto_nombre']), (Decimal(5), Decimal(100), 'Bold'))
-        self.assertEqual(Decimal(d['valor_lista']), Decimal(465))  # 460 de productos + 5 de Bold (no el valor enviado)
-        r = self.api_asesor.post(self.url, dict(revision=d['revision'], lineas=[self.fila(), {**bold, 'bold_recibido': None}]), format='json')
-        self.assertEqual(r.status_code, 400, r.data)
-        self.assertIn('Bold', str(r.data))
-
     def test_opcional_con_varias_unidades_hasta_su_maximo(self):
         # Reclinos (2026-11-10): como en la consulta de la lista, un id repetido es otra unidad.
         reclino = CargoVariante.objects.create(variante=self.variante, descripcion='Reclino', valor=20, opcional=True, cantidad_maxima=3)

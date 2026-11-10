@@ -126,8 +126,6 @@ class LineaEntrada(serializers.Serializer):
     conjunto_nombre = serializers.CharField(max_length=150, allow_blank=True, default='')
     conjunto_cantidad = serializers.IntegerField(min_value=1, max_value=1000, default=1)
     recalcular = serializers.BooleanField(default=False)
-    # Bold (2026-11-10): lo que se recibió por Bold; la línea vale su costo (5 %).
-    bold_recibido = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0, allow_null=True, default=None)
     # «Agregar especial» (2026-10-28): producto fuera de la lista con su costo total por unidad (ya con
     # cargos) y, si lleva tela, el grupo y el consumo; el precio de lista = (costo + consumo × costo del
     # grupo) × multiplicador general. Sin cargos ni opcionales.
@@ -206,14 +204,6 @@ def preparar_adicional(d, anterior):
     valor sale de la lista de precios y va dentro del conjunto."""
     tipo, descripcion, valor = d['tipo'], d['producto_nombre'].strip(), d['precio_lista_override']
     juego, por_conjunto = d.get('juego'), None
-    bold = None
-    if tipo == LineaVenta.TIPO_BOLD:
-        # Pago por Bold: el asesor escribe cuánto se recibió; a la lista se suma su costo (5 %).
-        bold = d.get('bold_recibido')
-        if not bold or bold <= 0:
-            raise ValidationError({'bold_recibido': 'Indica cuánto se recibió por Bold.'})
-        descripcion = descripcion or 'Bold'
-        valor = bold * LineaVenta.PORCENTAJE_BOLD / 100
     if juego is not None:
         if d.get('pieza') or tipo not in (LineaVenta.TIPO_TRANSPORTE, LineaVenta.TIPO_AJUSTE):
             raise ValidationError('Los costos de un conjunto van como transporte o ajuste.')
@@ -252,8 +242,7 @@ def preparar_adicional(d, anterior):
             'precio_lista_unitario': valor, 'precio_unitario': valor, 'descuento': Decimal(0), 'subtotal': dinero(valor * cantidad),
             'costo_estimado': None, 'motivo_precio': '',
             'precio_snapshot': {'tipo': tipo, 'override': str(valor),
-                                **({'juego': juego.pk, 'grupo': grupo, 'por_conjunto': str(por_conjunto)} if juego else {}),
-                                **({'bold_recibido': str(dinero(bold)), 'porcentaje_bold': str(LineaVenta.PORCENTAJE_BOLD)} if bold else {})},
+                                **({'juego': juego.pk, 'grupo': grupo, 'por_conjunto': str(por_conjunto)} if juego else {})},
             'texto_cliente': d['texto_cliente'].strip() or (descripcion if tipo == LineaVenta.TIPO_ARTICULO else ''),
             'texto_proveedor': '', 'sin_texto_proveedor': True, 'especificaciones': '', 'fecha_compromiso': None,
             'inventario_origen_id': None, 'tela_modo': LineaVenta.TELA_NO_APLICA, 'tela_material': '', 'tela_referencia': '',
@@ -653,7 +642,6 @@ def representar(request, venta):
         d['costo_especial'] = l.precio_snapshot.get('base') if por_costo else None
         d['metraje_especial'] = l.precio_snapshot.get('metraje') if por_costo else None
         d['juego'] = l.precio_snapshot.get('juego')
-        d['bold_recibido'] = l.precio_snapshot.get('bold_recibido')
         d['pieza'] = l.precio_snapshot.get('pieza')
         # Repetidos = unidades (2 reclinos); las cotizaciones los guardan como {'id', 'cantidad'}.
         d['opcionales'] = list(conteo_opcionales(l.opcionales).elements())
