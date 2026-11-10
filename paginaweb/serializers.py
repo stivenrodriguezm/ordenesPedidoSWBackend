@@ -63,11 +63,22 @@ def validate_whatsapp_number(value):
     return value
 
 
+def _es_foto_cloudinary_de_asesor(value):
+    # El cargador de asesores sube a Cloudinary (carpeta «asesores») y devuelve
+    # https://res.cloudinary.com/<cuenta>/image/upload/f_auto,q_auto/v…/asesores/…
+    cuenta = settings.CLOUDINARY_CLOUD_NAME
+    if not cuenta:
+        return False
+    prefijo = f"https://res.cloudinary.com/{cuenta}/image/upload/"
+    return value.startswith(prefijo) and '/asesores/' in value[len(prefijo):]
+
+
 def validate_foto_path(value):
     value = (value or '').strip()
     if not value:
         return value
-    if not value.startswith('/media/asesores/'):
+    # '/media/asesores/' = fotos antiguas guardadas en el servidor, antes de Cloudinary.
+    if not (value.startswith('/media/asesores/') or _es_foto_cloudinary_de_asesor(value)):
         raise serializers.ValidationError("La foto debe subirse mediante el cargador de asesores.")
     return value
 

@@ -25,7 +25,8 @@ def quitar_permiso(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('ordenes', '0086_linea_venta_tela_sin_pedir'),
+        ('ordenes', '0088_usuario_telefono_enlace_qr'),
+        ('ordenes', '0089_venta_tiene_anexo'),
     ]
 
     operations = [

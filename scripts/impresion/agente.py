@@ -19,6 +19,7 @@ Uso:  python3 agente.py            (lo deja corriendo el LaunchAgent com.lottus.
       python3 agente.py --simular  (no imprime; deja los PDF en la carpeta «simulados»)
       python3 agente.py --probar   (imprime una página de prueba y termina)
 """
+import base64
 import json
 import logging
 import os
@@ -107,9 +108,10 @@ def a_pdf(html, destino, chrome):
         raise RuntimeError('Chrome no generó el PDF')
 
 
-def imprimir(pdf, cola, copias, titulo):
+def imprimir(pdf, cola, copias, titulo, doble_cara=False):
     """Manda el PDF a CUPS. Devuelve el id del trabajo de CUPS (p. ej. RICOH_…-123)."""
-    r = subprocess.run(['lp', '-d', cola, '-n', str(copias), '-t', titulo[:100], '-o', 'media=Letter', str(pdf)],
+    opciones = ['-o', 'sides=two-sided-long-edge', '-o', 'Collate=True'] if doble_cara else []
+    r = subprocess.run(['lp', '-d', cola, '-n', str(copias), '-t', titulo[:100], '-o', 'media=Letter', *opciones, str(pdf)],
                        capture_output=True, text=True, timeout=60)
     if r.returncode != 0:
         raise RuntimeError((r.stderr or r.stdout).strip() or 'lp falló')
@@ -176,11 +178,12 @@ def pendientes_windows(cola):
     return {linea.strip() for linea in salida.splitlines() if linea.strip()}
 
 
-def imprimir_windows(pdf, cola, copias, titulo):
+def imprimir_windows(pdf, cola, copias, titulo, doble_cara=False):
     """Devuelve el id del trabajo en la cola de Windows, o None si ya salió de la cola."""
     antes = pendientes_windows(cola)
     sumatra = Path(__file__).resolve().parent / 'SumatraPDF.exe'
-    r = subprocess.run([str(sumatra), '-print-to', cola, '-silent', '-print-settings', f'{copias}x,noscale,paper=letter', str(pdf)],
+    opciones = ',duplexlong,collate' if doble_cara else ''
+    r = subprocess.run([str(sumatra), '-print-to', cola, '-silent', '-print-settings', f'{copias}x,noscale,paper=letter{opciones}', str(pdf)],
                        capture_output=True, text=True, timeout=120, **SIN_VENTANA)
     if r.returncode != 0:
         raise RuntimeError((r.stderr or r.stdout).strip() or 'SumatraPDF no pudo imprimir')
@@ -252,7 +255,13 @@ class Agente:
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 pdf = Path(tmp) / 'documento.pdf'
-                a_pdf(t['html'], pdf, self.chrome)
+                if t.get('pdf'):
+                    contenido = base64.b64decode(t['pdf'], validate=True)
+                    if not contenido.startswith(b'%PDF-'):
+                        raise ValueError('El documento recibido no es un PDF válido.')
+                    pdf.write_bytes(contenido)
+                else:
+                    a_pdf(t['html'], pdf, self.chrome)
                 if self.simular:
                     salida = CARPETA / 'simulados' / f'{time.strftime("%Y%m%d-%H%M%S")}-{t["id"]}.pdf'
                     salida.parent.mkdir(parents=True, exist_ok=True)
@@ -260,7 +269,10 @@ class Agente:
                     log.info('  simulado: %s', salida)
                     pedir(servidor, ruta, {'estado': 'impreso', 'detalle': 'Simulación: no se imprimió en papel.'})
                     return
-                cups = imprimir(pdf, self.config['cola'], t['copias'], t['titulo'])
+                if t.get('doble_cara'):
+                    cups = imprimir(pdf, self.config['cola'], t['copias'], t['titulo'], doble_cara=True)
+                else:
+                    cups = imprimir(pdf, self.config['cola'], t['copias'], t['titulo'])
             detalle = 'La impresora está en pausa en la computadora de la oficina.' if cola_detenida(self.config['cola']) else ''
             if self.impresora_ok is False:
                 detalle = NO_ENCONTRADA
@@ -317,8 +329,10 @@ class Agente:
         if time.time() < self.espera.get(nombre, 0):
             return
         try:
-            estado, t = pedir(servidor, '/impresion/agente/siguiente/',
-                              None if self.impresora_ok is None else {'impresora_ok': self.impresora_ok})
+            capacidades = {'admite_pdf': True, 'admite_doble_cara': True}
+            if self.impresora_ok is not None:
+                capacidades['impresora_ok'] = self.impresora_ok
+            estado, t = pedir(servidor, '/impresion/agente/siguiente/', capacidades)
         except (urllib.error.URLError, OSError, ValueError) as e:
             estado, t = None, e
         if estado in (200, 204):

@@ -19,7 +19,8 @@ from .serializers import (
     ObservacionVentaSerializer, CajaSerializer, ReciboCajaSerializer,
     ComprobanteEgresoSerializer, VentaDetalleSerializer,
     ObservacionClienteSerializer, RemisionSerializer,
-    ProveedorTelaSerializer, PedidoTelaSerializer, DetallePedidoTelaSerializer, DireccionEntregaSerializer, UserManageSerializer
+    ProveedorTelaSerializer, PedidoTelaSerializer, DetallePedidoTelaSerializer, DireccionEntregaSerializer, UserManageSerializer,
+    PerfilPropioSerializer,
 )
 from .permissions import (
     IsAdministradorRole, check_feature_permission, tiene_permiso_codigo, permisos_efectivos, ADMIN_SIEMPRE,
@@ -244,9 +245,18 @@ class UserDetailView(APIView):
             "last_name": user.last_name,
             "role": user.role,
             "acceso_rapido_ia": user.acceso_rapido_ia,
+            "telefono": user.telefono,
+            "enlace_qr": user.enlace_qr,
             "permissions": perms,
             "acceso_oficina": acceso_oficina(user)
         })
+
+    def patch(self, request):
+        # Datos propios de «Mi perfil» (teléfono y enlace del QR de las cotizaciones).
+        serializer = PerfilPropioSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return self.get(request)
 
 class RolePermissionViewSet(viewsets.ModelViewSet):
     from .models import RolePermission
@@ -734,9 +744,9 @@ def detalles_pedido(request, orden_id):
         # Obtener la observación de la orden
         try:
             orden = OrdenPedido.objects.get(id=orden_id)
-            observacion = orden.observacion
+            observacion, tela = orden.observacion, orden.tela
         except OrdenPedido.DoesNotExist:
-            observacion = None
+            observacion = tela = None
 
         detalles_data = [{
             "cantidad": d.cantidad,
@@ -778,6 +788,7 @@ def detalles_pedido(request, orden_id):
         return Response({
             "detalles": detalles_data,
             "observacion": observacion,
+            "tela": tela,
             "pedidos_telas": pedidos_telas_data,
         })
     except Exception as e:

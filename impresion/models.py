@@ -35,6 +35,8 @@ class TrabajoImpresion(models.Model):
     titulo = models.CharField(max_length=150)
     html = models.TextField()  # documento completo e independiente, como el que se imprime en el navegador
     copias = models.PositiveSmallIntegerField(default=1)
+    pdf = models.TextField(blank=True, default='')  # PDF original en base64, sin conversión a HTML.
+    doble_cara = models.BooleanField(default=False)
     estado = models.CharField(max_length=12, choices=ESTADOS, default=PENDIENTE, db_index=True)
     detalle = models.CharField(max_length=255, blank=True)
     creado = models.DateTimeField(auto_now_add=True, db_index=True)

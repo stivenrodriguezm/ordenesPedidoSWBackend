@@ -18,6 +18,10 @@ class CustomUser(AbstractUser):
     )
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='vendedor')
     acceso_rapido_ia = models.BooleanField(default=False)
+    # Cotizaciones (2026-11-04): el imprimible muestra el teléfono del asesor y un QR a su
+    # enlace; sin enlace, el QR lleva a la landing.
+    telefono = models.CharField(max_length=20, blank=True, default='')
+    enlace_qr = models.URLField(max_length=500, blank=True, default='')
 
 class RolePermission(models.Model):
     role = models.CharField(max_length=20, choices=CustomUser.ROLE_CHOICES, unique=True)
@@ -103,6 +107,8 @@ class Venta(models.Model):
     valor_lista = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     revision_productos = models.PositiveIntegerField(default=0)
     productos_confirmados = models.BooleanField(default=False)
+    # Anexo en papel: solo registra su existencia; no modifica importes ni productos.
+    tiene_anexo = models.BooleanField(default=False, editable=False)
     abono = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     saldo = models.DecimalField(max_digits=10, decimal_places=2)
     fecha_venta = models.DateField(default=timezone.localdate, db_index=True)
@@ -144,8 +150,10 @@ class LineaVenta(models.Model):
     # llevar transporte, artículos adicionales sin referencia (jarrones, decoración) y
     # ajustes de negociación que suman o restan. Suman al precio de lista; no se piden
     # al proveedor ni llevan tela.
-    TIPO_PRODUCTO, TIPO_TRANSPORTE, TIPO_ARTICULO, TIPO_AJUSTE = 'producto', 'transporte', 'articulo', 'ajuste'
-    TIPO_CHOICES = [('producto', 'Producto'), ('transporte', 'Transporte'), ('articulo', 'Artículo adicional'), ('ajuste', 'Ajuste')]
+    # Bold (2026-11-04): cobro por datáfono; suma al precio de lista el 5 % de lo cobrado.
+    TIPO_PRODUCTO, TIPO_TRANSPORTE, TIPO_ARTICULO, TIPO_AJUSTE, TIPO_BOLD = 'producto', 'transporte', 'articulo', 'ajuste', 'bold'
+    TIPO_CHOICES = [('producto', 'Producto'), ('transporte', 'Transporte'), ('articulo', 'Artículo adicional'), ('ajuste', 'Ajuste'),
+                    ('bold', 'Bold (datáfono)')]
     tipo = models.CharField(max_length=12, choices=TIPO_CHOICES, default='producto')
     variante = models.ForeignKey(
         'listaprecios.VarianteProducto', on_delete=models.SET_NULL, null=True, blank=True, related_name='lineas_venta'

@@ -1,4 +1,5 @@
 from . import gestion_venta, productos_venta, oficina, coordinacion
+from . import anexos
 from .asistente import views as asistente_views
 from .asistente import automatizaciones_views as automatizaciones_ia
 from .asistente import academia_views
@@ -65,6 +66,8 @@ urlpatterns = [
     path('ventas/<int:venta_id>/productos/', productos_venta.productos),
     path('ventas/<int:venta_id>/productos/pedidos/', productos_venta.pedidos),
     path('ventas/<int:venta_id>/gestion/', gestion_venta.gestion),
+    path('ventas/<int:venta_id>/anexo/', anexos.agregar_anexo, name='venta-agregar-anexo'),
+    path('ventas/<int:venta_id>/anexo/imprimir/', anexos.imprimir_anexo, name='venta-imprimir-anexo'),
     # Chat: asesor gerencial con IA (USAR_ASISTENTE_IA)
     path('asistente/estado/', asistente_views.estado),
     path('asistente/agente/trabajos/', agente_views.trabajos),

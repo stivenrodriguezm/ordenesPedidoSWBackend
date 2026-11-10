@@ -47,7 +47,7 @@ class Migration(migrations.Migration):
     dependencies = [
         ('listaprecios', '0028_cargos_porcentaje_tela_y_cuero'),
         ('suministros', '0041_ajustes_factura'),
-        ('ordenes', '0087_permiso_reabrir_gestion_venta'),
+        ('ordenes', '0090_permiso_reabrir_gestion_venta'),
     ]
 
     operations = [

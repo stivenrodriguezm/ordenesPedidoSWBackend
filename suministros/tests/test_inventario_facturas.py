@@ -146,7 +146,7 @@ class EdicionFacturaTests(LottusTestCase):
         self.assertFalse(FacturaProveedor.objects.exists())
 
     def test_subcategoria_de_otra_categoria(self):
-        cat_a = Categoria.objects.create(nombre='Salas')
+        cat_a = Categoria.objects.get_or_create(nombre='Salas')[0]  # la migración 0042 ya la crea
         cat_b = Categoria.objects.create(nombre='Comedores')
         sub_b = Subcategoria.objects.create(categoria=cat_b, nombre='Mesa')
         r = self.c.post('/api/suministros/facturas/', {
@@ -156,7 +156,7 @@ class EdicionFacturaTests(LottusTestCase):
         self.assertEqual(r.status_code, 400)
 
     def test_factura_valida_crea_unidades(self):
-        cat = Categoria.objects.create(nombre='Salas')
+        cat = Categoria.objects.get_or_create(nombre='Salas')[0]  # la migración 0042 ya la crea
         r = self.c.post('/api/suministros/facturas/', {
             'id_manual': 'ok', 'proveedor': self.p1.pk, 'valor': '30',
             'productos': [{'referencia': self.ref.pk, 'costo': '10', 'cantidad': 3, 'categoria': cat.pk}],
