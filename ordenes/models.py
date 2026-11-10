@@ -144,8 +144,10 @@ class LineaVenta(models.Model):
     # llevar transporte, artículos adicionales sin referencia (jarrones, decoración) y
     # ajustes de negociación que suman o restan. Suman al precio de lista; no se piden
     # al proveedor ni llevan tela.
-    TIPO_PRODUCTO, TIPO_TRANSPORTE, TIPO_ARTICULO, TIPO_AJUSTE = 'producto', 'transporte', 'articulo', 'ajuste'
-    TIPO_CHOICES = [('producto', 'Producto'), ('transporte', 'Transporte'), ('articulo', 'Artículo adicional'), ('ajuste', 'Ajuste')]
+    TIPO_PRODUCTO, TIPO_TRANSPORTE, TIPO_ARTICULO, TIPO_AJUSTE, TIPO_BOLD = 'producto', 'transporte', 'articulo', 'ajuste', 'bold'
+    # Bold (2026-11-10): pago recibido por Bold; a la lista se suma su costo (PORCENTAJE_BOLD del valor recibido).
+    TIPO_CHOICES = [('producto', 'Producto'), ('transporte', 'Transporte'), ('articulo', 'Artículo adicional'), ('ajuste', 'Ajuste'), ('bold', 'Bold')]
+    PORCENTAJE_BOLD = Decimal('5')
     tipo = models.CharField(max_length=12, choices=TIPO_CHOICES, default='producto')
     variante = models.ForeignKey(
         'listaprecios.VarianteProducto', on_delete=models.SET_NULL, null=True, blank=True, related_name='lineas_venta'
