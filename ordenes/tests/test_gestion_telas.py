@@ -183,9 +183,18 @@ class GestionYTelasTests(LottusTestCase):
         d = self.api_asesor.get(self.url).data
         self.assertEqual(self.gestion('finalizar', d['revision'], cliente=self.api(self.otro)).status_code, 404)
         self.assertEqual(self.gestion('finalizar', d['revision']).status_code, 200)
+        # Reabrir a mano (2026-11-10) exige REABRIR_GESTION_VENTA: el asesor que la finalizó no puede.
         r = self.gestion('reabrir', d['revision'])
+        self.assertEqual(r.status_code, 403, r.data)
+        self.v.refresh_from_db()
+        self.assertTrue(self.v.estado_pedidos)
+        r = self.gestion('reabrir', d['revision'], cliente=self.api_admin)
         self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual(r.data['gestion']['estado'], 'pendiente')
+        # Con el permiso en su rol, otro rol también puede.
+        self.assertEqual(self.gestion('finalizar', d['revision']).status_code, 200)
+        self.permisos('vendedor', ['VER_PROPIAS_VENTAS', 'VER_PRECIOS_VENTA', 'EDITAR_PRODUCTOS_VENTA', 'CREAR_PROPIAS_ORDENES', 'REABRIR_GESTION_VENTA'])
+        self.assertEqual(self.gestion('reabrir', d['revision'], cliente=self.api(self.asesor)).status_code, 200)
 
     def test_estados_de_gestion(self):
         hoy = date(2026, 10, 20)

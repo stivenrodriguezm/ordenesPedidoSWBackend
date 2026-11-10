@@ -44,6 +44,22 @@ class ProductosVentaTests(LottusTestCase):
         return self.api_asesor.post(self.url + 'pedidos/', {'revision': datos['revision'] if revision is None else revision,
             'fecha_esperada': '2026-10-20', 'lineas': [{'linea': datos['lineas'][0]['id'], 'cantidad': cantidad}]}, format='json')
 
+    def test_opcional_con_varias_unidades_hasta_su_maximo(self):
+        # Reclinos (2026-11-10): como en la consulta de la lista, un id repetido es otra unidad.
+        reclino = CargoVariante.objects.create(variante=self.variante, descripcion='Reclino', valor=20, opcional=True, cantidad_maxima=3)
+        item = self.api_asesor.get('/api/productos-venta/catalogo/', {'id': self.variante.pk}).data['results'][0]
+        ofrecidos = {o['descripcion']: (o['multiple'], o['maximo']) for o in item['opcionales']}
+        self.assertEqual(ofrecidos['Reclino'], (True, 3))
+        d = self.guardar([self.fila(opcionales=[self.opcional.pk, reclino.pk, reclino.pk])])
+        # (100 + 2 m × 10 + 5 − 10 + 2 × 20) × 2 = 310 por unidad; 2 unidades.
+        self.assertEqual(Decimal(d['valor_lista']), Decimal(620))
+        self.assertEqual(sorted(d['lineas'][0]['opcionales']), sorted([self.opcional.pk, reclino.pk, reclino.pk]))
+        cargo = next(c for c in self.v.lineas.get().precio_snapshot['cargos'] if c['id'] == reclino.pk)
+        self.assertEqual(cargo['unidades'], 2)
+        r = self.api_asesor.post(self.url, dict(revision=d['revision'], lineas=[self.fila(opcionales=[reclino.pk] * 4)]), format='json')
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertIn('hasta 3', str(r.data))
+
     def test_tela_cargos_negativos_y_total_para_nomina(self):
         d = self.guardar()
         self.assertEqual(Decimal(d['valor_lista']), Decimal(460))  # (100+2*10+5-10)*2 *2 unidades

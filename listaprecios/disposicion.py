@@ -5,7 +5,7 @@ from django.db import transaction
 from rest_framework.exceptions import APIException, ValidationError
 
 from ordenes.models import Referencia
-from suministros.models import Categoria, Subcategoria
+from suministros.models import Subcategoria
 from .models import DisposicionReferenciaPrecio
 
 
@@ -81,124 +81,83 @@ def referencias_del_grupo(referencia):
     return [r for r in Referencia.objects.all() if clave_referencia(r.nombre) == clave]
 
 
-def _usos_fuera(sub, refs):
-    """¿La subcategoría se usa fuera de estas referencias? (otra referencia, sus precios, pedidos,
-    inventario, facturas, remisiones o grupos de inventario)."""
-    from ordenes.models import DetallePedido
-    from suministros.models import DetalleFactura, GrupoInventario, GrupoInventarioComponente, Inventario, RemisionItemManual
-    from .models import VarianteProducto
-    ids = [r.pk for r in refs]
-    if sub.referencias.exclude(pk__in=ids).exists():  # related_name del M2M de Referencia
-        return True
-    if VarianteProducto.objects.filter(subcategoria=sub).exclude(linea__referencia_id__in=ids).exists():
-        return True
-    if GrupoInventario.objects.filter(subcategoria=sub).exists():
-        return True
-    for modelo in (DetallePedido, Inventario, DetalleFactura, GrupoInventarioComponente):
-        if modelo.objects.filter(subcategoria=sub).exclude(referencia_id__in=ids).exists():
-            return True
-    # En las remisiones manuales la referencia es texto.
-    return RemisionItemManual.objects.filter(subcategoria=sub).exclude(referencia__iexact=refs[0].nombre).exists()
+def _de_la_referencia(sub, referencia, campo):
+    if referencia is None or not referencia.subcategorias.filter(pk=sub.pk).exists():
+        raise ValidationError({campo: 'Esta subcategoría no pertenece a la referencia.'})
 
 
-def _mover_subcategoria(anterior, nueva, refs):
-    """Pasa estas referencias (y lo suyo: precios, pedidos, inventario, facturas, remisiones y la
-    disposición de la lista) de una subcategoría a otra. Lo de las demás referencias no cambia."""
-    from ordenes.models import DetallePedido
-    from suministros.models import DetalleFactura, GrupoInventarioComponente, Inventario, RemisionItemManual
+def _repetida(referencia, categoria_id, nombre, excluir):
+    """¿La referencia ya tiene otra subcategoría con ese nombre en esa categoría?"""
+    from suministros.subcategorias import clave_subcategoria
+    clave = clave_subcategoria(categoria_id, nombre)
+    return next((s for s in referencia.subcategorias.exclude(pk=excluir) if clave_subcategoria(s.categoria_id, s.nombre) == clave), None)
+
+
+def _invalidar():
     from .cache_catalogo import invalidar
-    from .models import VarianteProducto
-    ids = [r.pk for r in refs]
-    for r in refs:
-        r.subcategorias.remove(anterior)
-        r.subcategorias.add(nueva)
-        r.categorias.add(nueva.categoria_id)
-    VarianteProducto.objects.filter(subcategoria=anterior, linea__referencia_id__in=ids).update(subcategoria=nueva, nombre=nueva.nombre)
-    for modelo in (DetallePedido, Inventario, DetalleFactura, GrupoInventarioComponente):
-        modelo.objects.filter(subcategoria=anterior, referencia_id__in=ids).update(subcategoria=nueva)
-    RemisionItemManual.objects.filter(subcategoria=anterior, referencia__iexact=refs[0].nombre).update(subcategoria=nueva)
-    clave = clave_referencia(refs[0].nombre)
-    d = DisposicionReferenciaPrecio.objects.select_for_update().filter(clave=clave).first()
-    if d:
-        cambiar = lambda lista: list(dict.fromkeys(nueva.pk if x == anterior.pk else x for x in lista))
-        d.orden, d.retiradas = cambiar(d.orden), cambiar(d.retiradas)
-        d.revision += 1
-        d.save(update_fields=['orden', 'retiradas', 'revision'])
     invalidar()
 
 
 @transaction.atomic
 def renombrar_subcategoria(pk, nombre, referencia=None):
-    """(2026-10-28) Las subcategorías van asociadas a la referencia: renombrar desde una referencia
-    solo cambia esa referencia (y las que la lista muestra con ella). Si otra referencia usa la misma
-    subcategoría, esta pasa a una propia con el nombre nuevo (o a la que ya exista con ese nombre en
-    la categoría); si nadie más la usa, se renombra tal cual."""
-    sub = Subcategoria.objects.get(pk=pk)
-    Categoria.objects.select_for_update().get(pk=sub.categoria_id)
-    nombre = nombre.strip()
+    """(2026-11-10) Las subcategorías son propias de cada referencia (de un proveedor): renombrar
+    solo cambia esa referencia, sin restricciones por otras referencias ni fusiones con otras
+    subcategorías del mismo nombre. Si aún la compartía con otra, primero se le separa una propia."""
+    from suministros.subcategorias import es_compartida, separar
+    sub = Subcategoria.objects.select_for_update().get(pk=pk)
+    nombre = (nombre or '').strip()
     if not nombre or len(nombre) > 100:
         raise ValidationError({'nombre': 'Escribe un nombre de 1 a 100 caracteres.'})
     if referencia is None:
-        refs = list(Referencia.objects.filter(subcategorias=sub))
+        # Sin referencia (API anterior): solo si la subcategoría es de una sola referencia.
+        duenas = list(sub.referencias.all()[:2])
+        if len(duenas) > 1:
+            raise ValidationError({'nombre': 'Indica la referencia: esta subcategoría la usan varias.'})
+        referencia = duenas[0] if duenas else None
+    if referencia is not None:
+        _de_la_referencia(sub, referencia, 'nombre')
+    otra = referencia and _repetida(referencia, sub.categoria_id, nombre, sub.pk)
+    if otra is not None:
+        raise ValidationError({'nombre': f'Esta referencia ya tiene la subcategoría «{otra.nombre}».'})
+    if referencia is not None and es_compartida(sub, referencia):
+        destino = separar(sub, referencia, nombre=nombre)
     else:
-        refs = [r for r in referencias_del_grupo(referencia) if r.subcategorias.filter(pk=sub.pk).exists()]
-        if not refs:
-            raise ValidationError({'nombre': 'Esta subcategoría no pertenece a la referencia.'})
-    existente = Subcategoria.objects.filter(categoria_id=sub.categoria_id, nombre__iexact=nombre).exclude(pk=pk).first()
-    if existente is None and (referencia is None or not _usos_fuera(sub, refs)):
         sub.nombre = nombre
         sub.save(update_fields=['nombre'])
-        from .models import VarianteProducto
-        VarianteProducto.objects.filter(subcategoria=sub, linea__referencia__isnull=False).update(nombre=nombre)
-        from .cache_catalogo import invalidar
-        invalidar()
         destino = sub
-    else:
-        if referencia is None:
-            raise ValidationError({'nombre': 'Ya existe otra subcategoría con ese nombre en la misma categoría.'})
-        if existente is not None and any(r.subcategorias.filter(pk=existente.pk).exists() for r in refs):
-            raise ValidationError({'nombre': f'Esta referencia ya tiene la subcategoría «{existente.nombre}».'})
-        destino = existente or Subcategoria.objects.create(categoria_id=sub.categoria_id, nombre=nombre)
-        _mover_subcategoria(sub, destino, refs)
+    from .models import VarianteProducto
+    VarianteProducto.objects.filter(subcategoria=destino, linea__referencia__isnull=False).update(nombre=nombre)
+    _invalidar()
     return {'id': destino.pk, 'anterior': sub.pk, 'nombre': destino.nombre, 'categoria': destino.categoria_id,
-            'separada': destino.pk != sub.pk, 'referencias': [r.pk for r in refs],
-            'referencias_uso': Referencia.objects.filter(subcategorias=destino).count()}
+            'separada': destino.pk != sub.pk, 'referencias': [referencia.pk] if referencia else []}
 
 
 @transaction.atomic
 def cambiar_categoria_subcategoria(pk, categoria, referencia):
-    """(2026-10-29) Cambia la categoría de una subcategoría solo en esta referencia (y las que la lista
-    muestra con ella). Si nadie más la usa, la subcategoría cambia de categoría tal cual; si no, la
-    referencia pasa a la del mismo nombre en la nueva categoría (o a una nueva). Lo de la referencia que
-    guarda la categoría (inventario, facturas, remisiones, grupos) la acompaña."""
-    sub = Subcategoria.objects.select_related('categoria').get(pk=pk)
-    for c in sorted({sub.categoria_id, categoria.pk}):
-        Categoria.objects.select_for_update().get(pk=c)
+    """(2026-11-10) Cambia la categoría solo en esta referencia. Lo suyo que guarda la categoría
+    (inventario, facturas, remisiones, grupos y la ficha de precios) la acompaña."""
+    from suministros.subcategorias import es_compartida, separar
+    sub = Subcategoria.objects.select_for_update().select_related('categoria').get(pk=pk)
     if sub.categoria_id == categoria.pk:
         raise ValidationError({'categoria': f'«{sub.nombre}» ya está en {categoria.nombre}.'})
-    refs = [r for r in referencias_del_grupo(referencia) if r.subcategorias.filter(pk=sub.pk).exists()]
-    if not refs:
-        raise ValidationError({'categoria': 'Esta subcategoría no pertenece a la referencia.'})
+    _de_la_referencia(sub, referencia, 'categoria')
+    otra = _repetida(referencia, categoria.pk, sub.nombre, sub.pk)
+    if otra is not None:
+        raise ValidationError({'categoria': f'Esta referencia ya tiene «{otra.nombre}» en {categoria.nombre}.'})
     anterior = sub.categoria
-    existente = Subcategoria.objects.filter(categoria=categoria, nombre__iexact=sub.nombre).first()
-    if existente is None and not _usos_fuera(sub, refs):
+    if es_compartida(sub, referencia):
+        destino = separar(sub, referencia, categoria_id=categoria.pk)
+    else:
         sub.categoria = categoria
         sub.save(update_fields=['categoria'])
         destino = sub
-    else:
-        if existente is not None and any(r.subcategorias.filter(pk=existente.pk).exists() for r in refs):
-            raise ValidationError({'categoria': f'Esta referencia ya tiene «{existente.nombre}» en {categoria.nombre}.'})
-        destino = existente or Subcategoria.objects.create(categoria=categoria, nombre=sub.nombre)
-        _mover_subcategoria(sub, destino, refs)
-    _seguir_categoria(destino, refs)
-    for r in refs:
-        r.categorias.add(categoria)
-        if not r.subcategorias.filter(categoria=anterior).exists():
-            r.categorias.remove(anterior)
-    from .cache_catalogo import invalidar
-    invalidar()
+    _seguir_categoria(destino, [referencia])
+    referencia.categorias.add(categoria)
+    if not referencia.subcategorias.filter(categoria=anterior).exists():
+        referencia.categorias.remove(anterior)
+    _invalidar()
     return {'id': destino.pk, 'anterior': sub.pk, 'nombre': destino.nombre, 'categoria': categoria.pk,
-            'categoria_nombre': categoria.nombre, 'separada': destino.pk != sub.pk, 'referencias': [r.pk for r in refs]}
+            'categoria_nombre': categoria.nombre, 'separada': destino.pk != sub.pk, 'referencias': [referencia.pk]}
 
 
 def _seguir_categoria(sub, refs):
@@ -214,28 +173,23 @@ def _seguir_categoria(sub, refs):
 
 @transaction.atomic
 def agregar_subcategoria_nueva(referencia, nombre, categoria, todas=False):
-    """Agrega a la referencia (o a todas las de su grupo) una subcategoría con este nombre: usa la
-    del catálogo si ya existe en la categoría; si no, la crea. Si estaba retirada de la lista, vuelve."""
+    """(2026-11-10) Crea una subcategoría propia de la referencia (o una para cada proveedor de su
+    grupo con `todas`). Nunca reutiliza la de otra referencia. Si estaba retirada de la lista, vuelve."""
     nombre = (nombre or '').strip()
     if not nombre or len(nombre) > 100:
         raise ValidationError({'nombre': 'Escribe un nombre de 1 a 100 caracteres.'})
-    Categoria.objects.select_for_update().get(pk=categoria.pk)
-    sub = Subcategoria.objects.filter(categoria=categoria, nombre__iexact=nombre).first()
     refs = referencias_del_grupo(referencia) if todas else [referencia]
-    if sub and all(r.subcategorias.filter(pk=sub.pk).exists() for r in refs):
-        raise ValidationError({'nombre': f'La referencia ya tiene la subcategoría «{sub.nombre}».'})
-    sub = sub or Subcategoria.objects.create(categoria=categoria, nombre=nombre)
-    for r in refs:
+    faltan = [r for r in refs if _repetida(r, categoria.pk, nombre, None) is None]
+    if not faltan:
+        raise ValidationError({'nombre': f'La referencia ya tiene la subcategoría «{nombre}».'})
+    creadas = []
+    for r in faltan:
+        sub = Subcategoria.objects.create(categoria=categoria, nombre=nombre)
         r.subcategorias.add(sub)
         r.categorias.add(categoria)
-    d = DisposicionReferenciaPrecio.objects.select_for_update().filter(clave=clave_referencia(referencia.nombre)).first()
-    if d and sub.pk in d.retiradas:
-        d.retiradas = [x for x in d.retiradas if x != sub.pk]
-        d.revision += 1
-        d.save(update_fields=['retiradas', 'revision'])
-    from .cache_catalogo import invalidar
-    invalidar()
-    return {'id': sub.pk, 'nombre': sub.nombre, 'categoria': categoria.pk, 'referencias': [r.pk for r in refs]}
+        creadas.append(sub)
+    _invalidar()
+    return {'id': creadas[0].pk, 'ids': [s.pk for s in creadas], 'nombre': nombre, 'categoria': categoria.pk, 'referencias': [r.pk for r in faltan]}
 
 
 def excluir_retiradas(queryset):

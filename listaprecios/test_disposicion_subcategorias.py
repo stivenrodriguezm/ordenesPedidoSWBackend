@@ -102,12 +102,15 @@ class DisposicionSubcategoriasTests(LottusTestCase):
         cot = Cotizacion.objects.create(numero='EDICION-HISTORICA', asesor=self.admin)
         historica = LineaCotizacion.objects.create(cotizacion=cot, variante=variante, linea_nombre='Valencia', variante_nombre='Mesa original', precio_unitario=200, subtotal=200)
         refs_antes = list(Referencia.objects.values('pk', 'nombre', 'proveedor_id'))
-        r = self.c.post(f'/api/listaprecios/subcategorias/{self.subs[0].pk}/renombrar/', {'nombre': 'Mesa de seis puestos'}, format='json')
+        # (2026-11-10) Compartida por dos referencias: sin indicar cuál no se renombra; con la
+        # referencia, solo cambia la de esa referencia.
+        url = f'/api/listaprecios/subcategorias/{self.subs[0].pk}/renombrar/'
+        self.assertEqual(self.c.post(url, {'nombre': 'Mesa de seis puestos'}, format='json').status_code, 400)
+        r = self.c.post(url, {'nombre': 'Mesa de seis puestos', 'referencia': self.lineas[0].referencia_id}, format='json')
         self.assertEqual(r.status_code, 200, r.data)
-        self.assertEqual(r.data['referencias_uso'], 2)
         self.assertEqual(list(Referencia.objects.values('pk', 'nombre', 'proveedor_id')), refs_antes)
-        for linea in self.catalogo():
-            self.assertIn('Mesa de seis puestos', [v['nombre'] for v in linea['variantes']])
+        nombres = [[v['nombre'] for v in linea['variantes']] for linea in self.catalogo()]
+        self.assertEqual(sum('Mesa de seis puestos' in n for n in nombres), 1)
         self.guardar(retiradas=[self.subs[0].pk])
         historica.refresh_from_db()
         self.assertEqual(historica.variante_nombre, 'Mesa original')

@@ -821,9 +821,8 @@ def crear_agrupacion(linea, nombre, categoria, componentes, subcategoria=None):
         anteriores = list(Subcategoria.objects.filter(referencias__pk__in=ids).distinct().order_by('categoria__nombre', 'nombre', 'pk').values_list('pk', flat=True))
         orden_subs = [pk for pk in config['orden'] if pk in anteriores]
         orden_subs += [pk for pk in anteriores if pk not in orden_subs]
-        subcategoria = Subcategoria.objects.filter(categoria=categoria, nombre__iexact=nombre).order_by('pk').first()
-        if subcategoria is None:
-            subcategoria = Subcategoria.objects.create(categoria=categoria, nombre=nombre)
+        # Propia de la referencia que la aloja (2026-11-10): nunca la de otra referencia con ese nombre.
+        subcategoria = Subcategoria.objects.create(categoria=categoria, nombre=nombre)
         linea.referencia.categorias.add(categoria)
         linea.referencia.subcategorias.add(subcategoria)
         guardar_disposicion(linea.referencia, config['revision'], orden=[pk for pk in orden_subs if pk not in config['retiradas']] + [subcategoria.pk])

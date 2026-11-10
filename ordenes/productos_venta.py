@@ -50,8 +50,8 @@ from listaprecios.decorativos import calcular_incluidos, da_decorativos, es_deco
 from listaprecios.transportes import calcular_compartidos
 from listaprecios.services import (PREFETCH_JUEGOS, calcular_precio, componentes_de, costo_lista, metraje_total,
                                    multiplicador_efectivo, obtener_multiplicador_general, resumen_componentes, usa_tela, grupo_aplicable,
-                                   ids_opcionales, opcionales_piezas, precio_pieza, costos_propios, nombre_costos_propios,
-                                   valor_cargo, vista_en_conjunto)
+                                   conteo_opcionales, ids_opcionales, maximo_unidades, opcionales_piezas, precio_pieza, costos_propios,
+                                   nombre_costos_propios, validar_unidades_opcionales, valor_cargo, vista_en_conjunto)
 from . import gestion_venta
 from .models import DetallePedido, DetallePedidoTela, DireccionEntrega, LineaVenta, OrdenPedido, PedidoTela, ProveedorTela, Referencia, Venta
 from .permissions import tiene_permiso_codigo, ventas_visibles
@@ -323,8 +323,12 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
             if grupo and not grupo_aplicable(v, grupo):
                 raise ValidationError('Este material no tiene consumo o precio manual configurado para el producto.')
             permitidos = ids_opcionales(v)  # un conjunto incluye los opcionales de sus piezas
-            if len(d['opcionales']) != len(set(d['opcionales'])) or not set(d['opcionales']) <= permitidos:
-                raise ValidationError('Hay opcionales repetidos o de otro producto.')
+            if not set(d['opcionales']) <= permitidos:
+                raise ValidationError('Hay opcionales de otro producto.')
+            # Un id repetido es otra unidad del mismo opcional (p. ej. 2 reclinos en un sofá de 3),
+            # hasta el máximo del cargo en la lista de precios, igual que en la consulta.
+            validar_unidades_opcionales(v, d['opcionales'])
+            unidades = conteo_opcionales(d['opcionales'])
             if pieza:
                 calculado = precio_pieza(pieza, grupo, d['opcionales'])
                 costo = costo_lista(v, grupo, d['opcionales'], costo_base_override=pieza.costo_unitario)
@@ -343,10 +347,12 @@ def preparar_linea(request, venta, d, anterior=None, completo=True):
                         'cargos': [{'id': c.pk, 'descripcion': c.descripcion,
                                     ('diferencia_precio' if c.tipo == 'diferencia_precio' else 'costo'): str(c.valor if c.tipo == 'diferencia_precio' else valor_cargo(
                                         c, 0 if juego else pieza.costo_unitario if pieza and pieza.costo_unitario is not None else v.costo_base, grupo)),
-                                    **({'configuracion': {**c.especial.configuracion, **c.configuracion_especial}} if c.tipo == 'especial_producto' else {})}
-                                   for c in v.cargos.all() if not c.opcional or c.pk in d['opcionales']]
-                                  + [{'id': c.pk, 'descripcion': c.descripcion, 'pieza': comp.variante.nombre_catalogo, 'cantidad': comp.cantidad}
-                                     for comp, c in opcionales_piezas(v) if c.pk in d['opcionales']],
+                                    **({'configuracion': {**c.especial.configuracion, **c.configuracion_especial}} if c.tipo == 'especial_producto' else {}),
+                                    **({'unidades': unidades[c.pk]} if c.opcional and unidades[c.pk] > 1 else {})}
+                                   for c in v.cargos.all() if not c.opcional or c.pk in unidades]
+                                  + [{'id': c.pk, 'descripcion': c.descripcion, 'pieza': comp.variante.nombre_catalogo, 'cantidad': comp.cantidad,
+                                      **({'unidades': unidades[c.pk]} if unidades[c.pk] > 1 else {})}
+                                     for comp, c in opcionales_piezas(v) if c.pk in unidades],
                         'calculado': str(calculado), **({'juego': juego} if juego else {})}
         elif por_costo:
             calculado, costo, snapshot = precio_especial_por_costo(d)
@@ -637,7 +643,8 @@ def representar(request, venta):
         d['metraje_especial'] = l.precio_snapshot.get('metraje') if por_costo else None
         d['juego'] = l.precio_snapshot.get('juego')
         d['pieza'] = l.precio_snapshot.get('pieza')
-        d['opcionales'] = [o['id'] if isinstance(o, dict) else o for o in l.opcionales if not isinstance(o, dict) or 'id' in o]
+        # Repetidos = unidades (2 reclinos); las cotizaciones los guardan como {'id', 'cantidad'}.
+        d['opcionales'] = list(conteo_opcionales(l.opcionales).elements())
         d['pedidos'] = [{'id': x.orden_id, 'detalle': x.pk, 'cantidad': x.cantidad,
                          'recibidas': sum(1 for u in x.unidades_recibidas.all() if u.disponibilidad != 'devuelto_proveedor')} for x in detalles]
         d['tela_modo'] = gestion_venta.tela_modo(l)
@@ -866,6 +873,11 @@ def catalogo_productos(request):
     return Response(buscar_catalogo(request, qs, q, pag))
 
 
+def unidades_opcional(cargo):
+    maximo = maximo_unidades(cargo)
+    return {'multiple': maximo > 1, 'maximo': maximo}
+
+
 def costos_opcionales(juego):
     """Los costos propios del conjunto salen solo de opcionales habilitados (ningún obligatorio)."""
     cargos = [c for c in juego.cargos.all() if not c.opcional or c.preseleccionado]
@@ -928,11 +940,12 @@ def buscar_catalogo(request, qs, q, pag):
                            'decorativos_incluidos': 2 if da_decorativos(v, []) else 0, 'es_decorativo': es_decorativo(v),
                            'grupos': [g['id'] for g in grupos if grupo_aplicable(v, GrupoTela(**g))] if usa_tela(v) else [],
                            # en_agrupacion: una pieza dentro de un conjunto no ofrece los marcados «Mostrar en agrupación: No».
+                           # multiple/maximo: cuántas unidades admite (reclinos sí; cojines y transporte, una).
                            'opcionales': [{'id': c.pk, 'descripcion': c.descripcion, 'especial': c.especial_id is not None, 'preseleccionado': c.preseleccionado,
-                                           'decorativos': c.tipo == 'decorativos', 'en_agrupacion': c.en_agrupacion}
+                                           'decorativos': c.tipo == 'decorativos', 'en_agrupacion': c.en_agrupacion, **unidades_opcional(c)}
                                           for c in v.cargos.all() if c.opcional]
                                          + [{'id': c.pk, 'descripcion': f'{c.descripcion} · {comp.variante.nombre_catalogo}', 'especial': c.especial_id is not None,
-                                             'preseleccionado': c.preseleccionado} for comp, c in opcionales_piezas(v)],
+                                             'preseleccionado': c.preseleccionado, **unidades_opcional(c)} for comp, c in opcionales_piezas(v)],
                            'referencias': [{'id': r.pk, 'nombre': f'{r.nombre} · {v.nombre_catalogo} · {proveedor_nombre}' if actual else f'{r.nombre} · {r.proveedor.nombre_empresa}'}
                                            for r in referencias_sugeridas(v)][:5] if request.query_params.get('id') else []})
     return {'results': resultados, 'count': qs.count(), 'page': pag, 'grupos': grupos}

@@ -82,6 +82,24 @@ class ReferenciaSerializer(serializers.ModelSerializer):
     def get_subcategorias_nombres(self, obj):
         return [s.nombre for s in obj.subcategorias.all()]
 
+    # Subcategorías propias de cada referencia (2026-11-10): elegir del catálogo una que ya usa
+    # otra referencia le crea su copia; así cambiarla aquí nunca toca otra referencia.
+    def _guardar(self, validated_data, instance=None):
+        from django.db import transaction
+        from suministros.subcategorias import asignar
+        subcategorias = validated_data.pop('subcategorias', None)
+        with transaction.atomic():
+            referencia = super().update(instance, validated_data) if instance else super().create(validated_data)
+            if subcategorias is not None:
+                asignar(referencia, subcategorias)
+        return referencia
+
+    def create(self, validated_data):
+        return self._guardar(validated_data)
+
+    def update(self, instance, validated_data):
+        return self._guardar(validated_data, instance)
+
 class ProveedorSerializer(serializers.ModelSerializer):
     class Meta:
         model = Proveedor
@@ -343,9 +361,11 @@ class OrdenPedidoSerializer(SinCostoSinPermisoMixin, serializers.ModelSerializer
                 raise serializers.ValidationError('La cantidad supera las unidades de venta pendientes de pedir.')
             if linea.referencia_id and linea.referencia_id != d['referencia'].pk:
                 raise serializers.ValidationError('La referencia no coincide con la línea de venta.')
+        from suministros.subcategorias import subcategoria_de
         orden = OrdenPedido.objects.create(**validated_data)
         DetallePedido.objects.bulk_create([
-            DetallePedido(orden=orden, referencia=d['referencia'], subcategoria=d.get('subcategoria'), cantidad=d['cantidad'],
+            DetallePedido(orden=orden, referencia=d['referencia'], cantidad=d['cantidad'],
+                          subcategoria_id=subcategoria_de(d['referencia'].pk, d['subcategoria'].pk if d.get('subcategoria') else None),
                           especificaciones=d.get('especificaciones') or '-', linea_venta=d.get('linea_venta'))
             for d in self._detalles_validados
         ])

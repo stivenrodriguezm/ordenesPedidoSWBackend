@@ -3,6 +3,8 @@ from django.utils import timezone
 import uuid
 from ordenes.models import Proveedor, CustomUser, Venta, OrdenPedido, Referencia
 
+from suministros.subcategorias import SubcategoriaDeSuReferencia  # noqa: E402  (2026-11-10)
+
 class Categoria(models.Model):
     nombre = models.CharField(max_length=100, unique=True)
 
@@ -30,7 +32,7 @@ class GrupoInventario(models.Model):
         return self.nombre
 
 
-class GrupoInventarioComponente(models.Model):
+class GrupoInventarioComponente(SubcategoriaDeSuReferencia, models.Model):
     grupo = models.ForeignKey(GrupoInventario, on_delete=models.CASCADE, related_name='componentes')
     referencia = models.ForeignKey(Referencia, on_delete=models.CASCADE)
     categoria = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True, blank=True)
@@ -57,7 +59,7 @@ class Zona(models.Model):
     def __str__(self):
         return f"{self.nombre} ({self.sede.nombre})"
 
-class Inventario(models.Model):
+class Inventario(SubcategoriaDeSuReferencia, models.Model):
     DISPONIBILIDAD_CHOICES = [
         ('exhibicion', 'Exhibición'),
         ('cliente', 'Cliente'),
@@ -216,7 +218,7 @@ class AjusteFactura(models.Model):
         return self.valor if self.tipo == self.SUMA else -self.valor
 
 
-class DetalleFactura(models.Model):
+class DetalleFactura(SubcategoriaDeSuReferencia, models.Model):
     factura = models.ForeignKey(FacturaProveedor, on_delete=models.CASCADE, related_name='productos')
     referencia = models.ForeignKey(Referencia, on_delete=models.PROTECT, null=True)
     categoria = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True, blank=True)

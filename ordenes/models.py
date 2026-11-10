@@ -4,6 +4,8 @@ from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.utils import timezone
 
+from suministros.subcategorias import SubcategoriaDeSuReferencia  # noqa: E402  (2026-11-10)
+
 class CustomUser(AbstractUser):
     ROLE_CHOICES = (
         ('vendedor', 'Vendedor'),
@@ -252,7 +254,7 @@ class OrdenPedido(models.Model):
     def __str__(self):
         return f"Orden {self.id} para {self.proveedor.nombre_empresa}"
 
-class DetallePedido(models.Model):
+class DetallePedido(SubcategoriaDeSuReferencia, models.Model):
     orden = models.ForeignKey(OrdenPedido, on_delete=models.CASCADE, related_name='detalles')
     referencia = models.ForeignKey(Referencia, on_delete=models.SET_NULL, null=True, blank=True)
     # (2026-10-27) El pedido se basa en referencia y subcategoría (p. ej. Valencia · Silla). Vacía en

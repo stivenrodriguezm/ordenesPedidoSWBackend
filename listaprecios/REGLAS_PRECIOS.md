@@ -66,6 +66,15 @@ La migración 0023 conserva como archivo inactivo cualquier colección con produ
 
 Agrupar por referencia reúne nombres para presentación, manteniendo cada ID/proveedor como configuración separada. Agrupar por proveedor usa el ID del proveedor. Buscar filtra referencias antes de agrupar, incluyendo subcategorías aunque no tengan precios. No sumar, copiar ni compartir costos por coincidencia de nombre. Cambiar grupo, filtros o búsqueda debe proteger entradas pendientes; las cabeceras no calculan ni cargan detalles de precios.
 
+## Subcategorías propias de cada referencia (2026-11-10, reemplaza lo anterior sobre nombres compartidos)
+
+Decisión del usuario: cada `Subcategoria` pertenece a una sola `Referencia` (un proveedor). Renombrar, cambiar de categoría o agregar desde Administrar lista solo cambia esa referencia, sin restricciones por otras referencias y sin fusionar con otra del mismo nombre; solo se rechaza un nombre que esa misma referencia ya tiene en la categoría. Lo de la referencia (ficha de precios, pedidos, inventario, facturas, grupos) apunta al mismo registro y la sigue. Lógica en `suministros/subcategorias.py` (`asignar`, `separar`, `subcategoria_de`) y `listaprecios/disposicion.py`.
+
+- Asignar en Referencias una subcategoría que usa otra referencia le crea su copia (`ReferenciaSerializer`). Inventario, facturas, componentes y pedidos guardan la de su referencia con ese nombre (`SubcategoriaDeSuReferencia`).
+- Administrar lista y Consulta reúnen en una fila las del mismo nombre de los proveedores de la referencia (`subcategoriasReferencia`, `claveSubcategoria`); el nombre se edita en el proveedor elegido. La disposición (orden y bajas) sigue por nombre comercial con los ids de todos los proveedores.
+- Menús y filtros de inventario, facturas, remisiones y Referencias muestran cada nombre una vez (`src/utils/subcategorias.js`); editar o eliminar en el catálogo de Bases de datos aplica a todas las del mismo nombre.
+- La migración `0029_subcategorias_propias` separó las compartidas (conserva la original la referencia con ficha de precios o la de menor id). No se revierte.
+
 ## Edición de subcategorías desde precios (2026-10-16)
 
 La vista unificada muestra la unión de subcategorías asignadas a referencias del mismo nombre, con proveedor independiente por fila y sin repetir tarjetas por proveedor. La elección del proveedor es una preferencia de sesión; cada costo sigue perteneciendo al ID exacto de Referencia/subcategoría. No copiar ni sumar precios entre proveedores.

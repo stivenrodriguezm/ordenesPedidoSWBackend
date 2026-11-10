@@ -370,6 +370,7 @@ class DetalleFacturaViewSet(viewsets.ModelViewSet):
     filterset_fields = ['factura']
 
 def sugerencias_por_referencia(nombres=None):
+    from .subcategorias import clave_subcategoria
     """{nombre de referencia en minúsculas: (categoria_id, subcategoria_id)} para
     autocompletar productos de remisión. Manda la combinación más frecuente en el
     inventario (ahí sí está bien clasificado); si la referencia aún no tiene inventario,
@@ -393,15 +394,19 @@ def sugerencias_por_referencia(nombres=None):
     for ref in referencias:
         cats, subs = catalogo.setdefault(ref.nombre.strip().lower(), (set(), set()))
         cats.update(c.id for c in ref.categorias.all())
-        subs.update((s.id, s.categoria_id) for s in ref.subcategorias.all())
+        subs.update((s.id, s.categoria_id, clave_subcategoria(s.categoria_id, s.nombre)) for s in ref.subcategorias.all())
     for clave, (cats, subs) in catalogo.items():
         if clave in sugerencias:
             continue
         if len(cats) != 1:
-            cats = {c for _, c in subs}
+            cats = {c for _, c, _ in subs}
         categoria = next(iter(cats)) if len(cats) == 1 else None
-        subs_de_categoria = [s for s, c in subs if c == categoria] if categoria else []
-        subcategoria = subs_de_categoria[0] if len(subs_de_categoria) == 1 else None
+        # Cada proveedor tiene su propia subcategoría (2026-11-10): las del mismo nombre cuentan como una.
+        de_categoria = {}
+        for s, c, nombre in sorted(subs):
+            if c == categoria:
+                de_categoria.setdefault(nombre, s)
+        subcategoria = next(iter(de_categoria.values())) if len(de_categoria) == 1 else None
         if categoria:
             sugerencias[clave] = (categoria, subcategoria)
     return sugerencias

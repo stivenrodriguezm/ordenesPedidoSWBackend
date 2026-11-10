@@ -16,11 +16,13 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from . import business_time
 from .models import LineaVenta, Venta
+from .permissions import tiene_permiso_codigo
 from .servicios import ErrorNegocio, auditar
 
 DIAS_LIMITE = int(getattr(settings, 'GESTION_DIAS_LIMITE', 3))
@@ -123,6 +125,10 @@ def cambiar_gestion(request, venta_id):
         venta.gestion_finalizada_en = timezone.now()
         venta.gestion_finalizada_por = request.user
     else:
+        # Reabrir a mano (2026-11-10): solo con su permiso, que se habilita al administrador.
+        # La reapertura automática por cambios de productos (reabrir_si_falta) no lo exige.
+        if not tiene_permiso_codigo(request, 'REABRIR_GESTION_VENTA'):
+            raise PermissionDenied('No tienes permiso para reabrir la gestión de productos.')
         venta.estado_pedidos = False
         venta.gestion_finalizada_en = None
         venta.gestion_finalizada_por = None

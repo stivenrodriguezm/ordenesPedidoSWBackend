@@ -48,7 +48,7 @@ class ConjuntosYFacturaTests(LottusTestCase):
         # Los opcionales de las piezas también se ofrecen en el conjunto, con su estado inicial.
         usb = CargoVariante.objects.create(variante=mesa, descripcion='USB', valor=5, opcional=True, preseleccionado=True)
         opcionales = self.api_asesor.get('/api/productos-venta/catalogo/', {'id': juego.pk}).data['results'][0]['opcionales']
-        self.assertIn({'id': usb.pk, 'descripcion': 'USB · Mesa', 'especial': False, 'preseleccionado': True}, opcionales)
+        self.assertIn({'id': usb.pk, 'descripcion': 'USB · Mesa', 'especial': False, 'preseleccionado': True, 'multiple': True, 'maximo': 9}, opcionales)
         # El costo base guardado en un conjunto no cuenta (2026-10-15): sigue dividiéndose.
         juego.costo_base = 10
         juego.save()
