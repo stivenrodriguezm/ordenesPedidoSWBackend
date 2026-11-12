@@ -266,6 +266,34 @@ class ProductosVentaTests(LottusTestCase):
         self.assertEqual(c.origen_precio, 'productos')
         self.assertEqual(self.api_admin.patch(f'/api/nomina/lineas/{c.pk}/', {'precio_lista': '1000'}, format='json').status_code, 400)
 
+    def test_sin_precio_de_lista_se_paga_con_importe_y_nota_escritos_por_separado(self):
+        cierre = nomina.crear_cierre(self.admin, date(2026, 10, 1), date(2026, 10, 5))
+        c = LineaNomina.objects.get(tipo='comision', asesor_cierre__cierre=cierre)
+        url = f'/api/nomina/lineas/{c.pk}/'
+        self.assertEqual(self.api_admin.patch(url, {'valor': '15000'}, format='json').status_code, 200)
+        r = self.api_admin.patch(url, {'pagar': True}, format='json')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('nota', str(r.data))
+        # Escribir la nota no borra la comisión escrita antes.
+        self.assertEqual(self.api_admin.patch(url, {'nota': 'Venta revisada con gerencia'}, format='json').status_code, 200)
+        self.assertEqual(self.api_admin.patch(url, {'pagar': True}, format='json').status_code, 200)
+        c.refresh_from_db()
+        self.assertEqual((c.valor, c.pagar), (Decimal(15000), True))
+        # Al recalcular, lo pagado a mano se respeta.
+        nomina.regenerar(cierre.pk, self.admin)
+        c.refresh_from_db()
+        self.assertEqual((c.valor, c.pagar, c.precio_lista), (Decimal(15000), True, None))
+
+    def test_comision_editada_sin_precio_se_completa_al_guardar_los_productos(self):
+        cierre = nomina.crear_cierre(self.admin, date(2026, 10, 1), date(2026, 10, 5))
+        c = LineaNomina.objects.get(tipo='comision', asesor_cierre__cierre=cierre)
+        self.assertEqual(self.api_admin.patch(f'/api/nomina/lineas/{c.pk}/', {'nota': 'Revisar productos'}, format='json').status_code, 200)
+        self.guardar()
+        nomina.regenerar(cierre.pk, self.admin)
+        c.refresh_from_db()
+        self.assertEqual((c.origen_precio, c.precio_lista, c.pagar, c.nota), ('productos', Decimal(460), True, 'Revisar productos'))
+        self.assertEqual(LineaNomina.objects.filter(tipo='comision', asesor_cierre__cierre=cierre).count(), 1)
+
     def test_referencia_de_compra_se_infiere_del_producto(self):
         from ordenes.models import Referencia
         sugerida = Referencia.objects.create(proveedor=self.prov, nombre='Sofá')

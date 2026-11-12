@@ -590,6 +590,13 @@ def descontado_de(campos):
     return incluido_de(campos) + Decimal((campos['precio_snapshot'] or {}).get('transporte', {}).get('valor') or 0)
 
 
+def precio_efectivo(linea):
+    """Precio de lista por unidad de una línea guardada, sin lo incluido (cojines, transporte
+    compartido): el mismo peso con que se repartió el valor de la venta al guardar."""
+    lista = (linea.precio_lista_unitario or Decimal(0)) * linea.cantidad - descontado_de({'precio_snapshot': linea.precio_snapshot})
+    return (lista / linea.cantidad).quantize(CENT) if linea.cantidad else Decimal(0)
+
+
 def repartir(valor_total, items):
     """El precio se pacta global: reparte el valor de la venta entre los productos en
     proporción a su precio de lista (solo para márgenes por producto; nadie lo digita).

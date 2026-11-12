@@ -13,6 +13,7 @@ from . import business_time, nomina
 from .gestion_venta import texto_tela
 from .models import AsesorCierre, AsesorNomina, CierreNomina, CustomUser, LineaNomina, OrdenPedido, PagoReciboCaja, PedidoTela
 from .permissions import check_feature_permission
+from .productos_venta import descontado_de
 from .servicios import ErrorNegocio, auditar
 
 
@@ -252,10 +253,12 @@ def venta_de_linea(request, pk):
             'cantidad': p.cantidad, 'grupo_tela': p.grupo_catalogo.nombre if p.grupo_catalogo else p.grupo_tela,
             'tela': texto_tela(p), 'precio_lista_unitario': _num(lista_u),
             'precio_lista_total': _num(lista_u * p.cantidad) if lista_u is not None else None,
+            # Cojines incluidos y transporte compartido: van en la lista del producto pero no se cobran.
+            'incluido': _num(incluido) if (incluido := descontado_de({'precio_snapshot': p.precio_snapshot})) else None,
             'precio_venta': _num(p.subtotal), 'descuento': _num(p.descuento), 'texto_cliente': p.texto_cliente,
         })
     con_lista = [p for p in productos if p['precio_lista_total'] is not None]
-    suma_lista = sum((Decimal(p['precio_lista_total']) for p in con_lista), Decimal('0'))
+    suma_lista = sum((Decimal(p['precio_lista_total']) - Decimal(p['incluido'] or 0) for p in con_lista), Decimal('0'))
     suma_venta = sum((Decimal(p['precio_venta']) for p in productos), Decimal('0'))
     pagos = [{
         'recibo': pg.recibo_id, 'fecha': pg.recibo.fecha, 'metodo': pg.metodo_pago, 'valor': _num(pg.valor), 'estado': pg.estado,

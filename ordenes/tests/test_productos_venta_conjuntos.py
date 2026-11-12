@@ -159,6 +159,22 @@ class DecorativosTests(LottusTestCase):
         d = self.guardar(filas, revision=d['revision'])
         self.assertEqual(Decimal(d['valor_lista']), Decimal(460 + 40 + 200 - 160))
 
+    def test_nomina_toma_la_lista_con_los_decorativos_incluidos(self):
+        # (2026-11-12) Antes la nómina volvía a sumar la lista sin restar lo incluido y la
+        # venta quedaba «sin confirmar» sin forma de arreglarla.
+        from datetime import date
+        from ordenes import nomina
+        from ordenes.models import LineaNomina
+        self.incluir()
+        d = self.guardar(self.filas())
+        self.assertEqual(Decimal(d['valor_lista']), Decimal(230 + 40 + 200 - 120))
+        cierre = nomina.crear_cierre(self.admin, date(2026, 10, 1), date(2026, 10, 5))
+        com = LineaNomina.objects.get(asesor_cierre__cierre=cierre, tipo='comision')
+        self.assertEqual((com.origen_precio, com.precio_lista, com.pagar), ('productos', Decimal(350), True))
+        r = self.api_admin.get(f'/api/nomina/lineas/{com.pk}/venta/')
+        self.assertEqual((r.data['totales']['lista_cuadra'], r.data['totales']['venta_cuadra']), (True, True))
+        self.assertEqual(r.data['productos'][2]['incluido'], '120.00')
+
     def test_cotizacion_aplica_la_misma_regla(self):
         self.incluir()
         lineas = [{'variante': self.variante.pk, 'grupo_tela': self.grupo.pk, 'cantidad': 1, 'precio_unitario': 230, 'linea_nombre': 'Sofá', 'variante_nombre': 'Tres puestos'},

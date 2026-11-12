@@ -461,8 +461,8 @@ class VentaSerializer(SinMargenSinPermisoMixin, serializers.ModelSerializer):
         nuevo_total = validated_data.get('valor_total', instance.valor_total)
         lineas = list(instance.lineas.all()) if nuevo_total != instance.valor_total else []
         if lineas:
-            from .productos_venta import repartir
-            for linea, reparto in zip(lineas, repartir(Decimal(str(nuevo_total)), [(l.precio_lista_unitario or Decimal(0), l.cantidad, l.tipo) for l in lineas])):
+            from .productos_venta import precio_efectivo, repartir
+            for linea, reparto in zip(lineas, repartir(Decimal(str(nuevo_total)), [(precio_efectivo(l), l.cantidad, l.tipo) for l in lineas])):
                 for campo, valor in reparto.items():
                     setattr(linea, campo, valor)
             LineaVenta.objects.bulk_update(lineas, ['precio_unitario', 'descuento', 'subtotal'])

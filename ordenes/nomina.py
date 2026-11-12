@@ -95,15 +95,14 @@ def _datos_comision(cierre, venta, n):
     lista = Decimal(venta.valor_lista) if venta.valor_lista else None
     origen = 'manual_historico' if lista else 'sin_precio'
     if venta.revision_productos:
-        lineas = list(venta.lineas.all())
-        completa = (venta.productos_confirmados and lineas
-                    and all(l.precio_lista_unitario is not None for l in lineas)
-                    and sum((l.subtotal for l in lineas), Decimal(0)) == venta.valor_total)
-        calculada = sum(((l.precio_lista_unitario or 0) * l.cantidad for l in lineas), Decimal(0))
-        if not completa or calculada != lista:
-            lista, origen = None, 'sin_confirmar'
-        else:
+        # (2026-11-12) El precio de lista de la venta lo calcula el servidor al guardar los
+        # productos, con precios especiales, recargos, Bold, cojines incluidos y transporte
+        # compartido ya aplicados: es la cifra oficial. Antes se volvía a sumar aquí sin
+        # restar lo incluido y la venta quedaba «sin confirmar» sin forma de arreglarla.
+        if venta.productos_confirmados and lista and venta.lineas.all():
             origen = 'productos'
+        else:
+            lista, origen = None, 'sin_confirmar'
     desc = descuento_pct(Decimal(venta.valor_total), lista) if lista else None
     pct = porcentaje_por_descuento(cierre.tabla_comision, desc) if lista else None
     base = q(Decimal(venta.valor_total) / n)
@@ -145,6 +144,28 @@ def regenerar(cierre_id, usuario):
     _generar(cierre)
     auditar(usuario, 'nomina.cierre_regenerado', cierre)
     return cierre
+
+
+def _completar_editadas_sin_precio(cierre):
+    """Una comisión editada a mano (una nota, «no pagar»…) no se recalcula, pero si quedó sin
+    precio de lista y la venta ya lo tiene, se le pone: si no, quedaría atascada sin pagar.
+    Las que se pagaron con un importe manual justificado se respetan."""
+    lineas = list(LineaNomina.objects.filter(
+        asesor_cierre__cierre=cierre, asesor_cierre__estado='abierto', editada=True, tipo='comision',
+        precio_lista__isnull=True, pagar=False, venta__isnull=False).select_related('venta').prefetch_related('venta__lineas'))
+    cambiadas = []
+    for linea in lineas:
+        datos = _datos_comision(cierre, linea.venta, linea.participantes or 1)
+        if datos['precio_lista'] is None:
+            continue
+        for campo, valor in datos.items():
+            setattr(linea, campo, valor)
+        linea.abono_pct = abono_pct(linea.venta)
+        linea.pagar = linea.abono_pct >= cierre.abono_minimo_pct
+        linea.motivo_pendiente = '' if linea.pagar else f'Abono menor al {cierre.abono_minimo_pct:g} %'
+        cambiadas.append(linea)
+    LineaNomina.objects.bulk_update(cambiadas, ['precio_lista', 'descuento_pct', 'porcentaje', 'valor', 'origen_precio',
+                                                'revision_productos', 'abono_pct', 'pagar', 'motivo_pendiente'])
 
 
 def _generar(cierre):
@@ -189,6 +210,7 @@ def _generar(cierre):
     AsesorCierre.objects.bulk_update(list(filas.values()), ['ventas_periodo', 'salario_basico', 'meta'])
 
     LineaNomina.objects.filter(asesor_cierre__cierre=cierre, asesor_cierre__estado='abierto', editada=False).exclude(tipo='ajuste').delete()
+    _completar_editadas_sin_precio(cierre)
     editadas = set(LineaNomina.objects.filter(asesor_cierre__cierre=cierre, editada=True)
                    .values_list('tipo', 'venta_id', 'asesor_cierre__asesor_id'))
     nuevas = []
@@ -289,9 +311,13 @@ def editar_linea(linea_id, usuario, datos):
             raise ErrorNegocio('Corrige el precio en los productos de la venta. Para una excepción solo en nómina usa guardar_en_venta=false y una nota.', 400)
         if not str(datos.get('nota', '')).strip():
             raise ErrorNegocio('La excepción de nómina requiere una nota.', 400)
-    if linea.tipo == 'comision' and not linea.precio_lista and datos.get('pagar'):
-        if not datos.get('precio_lista') and not (str(datos.get('nota', '')).strip() and ('valor' in datos or 'porcentaje' in datos)):
-            raise ErrorNegocio('Falta confirmar el precio de lista o justificar un importe manual.', 400)
+    if linea.tipo == 'comision' and not linea.precio_lista and datos.get('pagar') and not datos.get('precio_lista'):
+        # Sin precio de lista se paga un importe manual justificado; la comisión y la nota
+        # pueden haberse escrito antes, cada una en su casilla.
+        nota = str(datos.get('nota', linea.nota) or '').strip()
+        importe = datos.get('valor') if 'valor' in datos else linea.valor
+        if not nota or not importe or Decimal(str(importe)) == 0:
+            raise ErrorNegocio('Para pagarla sin precio de lista escribe el valor de la comisión y una nota que lo justifique.', 400)
     antes = {'precio_lista': linea.precio_lista, 'porcentaje': linea.porcentaje, 'valor': linea.valor, 'pagar': linea.pagar}
     if 'precio_lista' in datos and linea.tipo == 'comision':
         lista = Decimal(str(datos['precio_lista'])) if datos['precio_lista'] not in (None, '') else None
@@ -316,7 +342,8 @@ def editar_linea(linea_id, usuario, datos):
     for campo in ('nota', 'descripcion'):
         if campo in datos:
             setattr(linea, campo, str(datos[campo] or '')[:255 if campo == 'descripcion' else 2000])
-    if linea.tipo == 'comision' and linea.precio_lista is None and not ('valor' in datos or 'porcentaje' in datos):
+    if (linea.tipo == 'comision' and 'precio_lista' in datos and linea.precio_lista is None
+            and not ('valor' in datos or 'porcentaje' in datos)):
         linea.pagar = False
         linea.porcentaje = None
         linea.descuento_pct = None
