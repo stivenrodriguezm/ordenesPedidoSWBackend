@@ -1,6 +1,6 @@
 #!/bin/bash
 # Arma LottusImpresion-Windows.zip: agente, instalador, Python portátil y SumatraPDF. No lleva
-# config.json (tiene el token): ese se entrega aparte.
+# token: el instalador conecta la computadora con un usuario administrador de la plataforma.
 #   ./empaquetar.sh CARPETA_DE_SALIDA
 set -euo pipefail
 PY_VERSION=3.12.10
@@ -16,7 +16,7 @@ curl -fsSL -o "$TMP/sumatra.zip" "https://www.sumatrapdfreader.org/dl/rel/$SUMAT
 unzip -q "$TMP/python.zip" -d "$PAQUETE/python"
 unzip -q "$TMP/sumatra.zip" -d "$TMP/sumatra"
 cp "$TMP"/sumatra/SumatraPDF-*.exe "$PAQUETE/SumatraPDF.exe"
-cp "$AQUI/../agente.py" "$AQUI/instalar.ps1" "$AQUI/instalar.bat" "$PAQUETE/"
+cp "$AQUI/../agente.py" "$AQUI/instalar.ps1" "$AQUI/instalar.bat" "$AQUI/LEEME.txt" "$PAQUETE/"
 (cd "$TMP" && zip -qr "LottusImpresion-Windows.zip" "LottusImpresion-Windows")
 mv "$TMP/LottusImpresion-Windows.zip" "$SALIDA/"
 shasum -a 256 "$TMP/python.zip" "$TMP/sumatra.zip" | awk '{print $1}'

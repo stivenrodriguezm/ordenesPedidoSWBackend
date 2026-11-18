@@ -98,12 +98,28 @@ class TrabajoAtascadoTests(TestCase):
 class WindowsTests(TestCase):
     """Se prueba la lógica con PowerShell y SumatraPDF simulados; lo real se comprueba con --probar."""
 
-    def test_imprime_con_sumatra_y_sigue_el_trabajo_nuevo(self):
+    def test_imprime_con_sumatra_en_carta_y_sigue_el_trabajo_nuevo(self):
         with mock.patch.object(agente, '_powershell', side_effect=[(0, '4'), (0, '4\n9')]), \
                 mock.patch.object(agente.subprocess, 'run', return_value=respuesta()) as run:
-            self.assertEqual(agente.imprimir_windows(Path('C:/t/d.pdf'), 'RICOH SP', 2, 'CE-1'), '9')
+            self.assertEqual(agente.imprimir_windows(Path('C:/t/d.pdf'), 'RICOH SP', 1, 'CE-1'), '9')
         orden = run.call_args.args[0]
-        self.assertEqual(orden[1:6], ['-print-to', 'RICOH SP', '-silent', '-print-settings', '2x,noscale,paper=letter'])
+        self.assertEqual(orden[1:6], ['-print-to', 'RICOH SP', '-silent', '-print-settings', '1x,noscale,paper=letter,simplex'])
+
+    def test_doble_cara_con_cada_copia_en_su_propio_trabajo(self):
+        # Con 3 páginas y 2 copias en un solo trabajo, la 2.ª copia empezaría al respaldo de la 1.ª.
+        with mock.patch.object(agente, '_powershell', side_effect=[(0, '4'), (0, '4\n10\n11')]), \
+                mock.patch.object(agente.subprocess, 'run', return_value=respuesta()) as run:
+            self.assertEqual(agente.imprimir_windows(Path('C:/t/d.pdf'), 'RICOH SP', 2, 'Remisión', doble_cara=True), '11')
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args.args[0][5], '1x,noscale,paper=letter,duplexlong')
+
+    def test_en_mac_carta_doble_cara_y_copias_intercaladas(self):
+        with mock.patch.object(agente.subprocess, 'run', return_value=respuesta('request id is COLA-12 (1 file(s))')) as run:
+            self.assertEqual(agente.imprimir(Path('/t/d.pdf'), 'COLA', 2, 'Remisión', doble_cara=True), 'COLA-12')
+        orden = run.call_args.args[0]
+        for opcion in ('media=Letter', 'sides=two-sided-long-edge', 'collate=true'):
+            self.assertIn(opcion, orden)
+        self.assertEqual(orden[orden.index('-n') + 1], '2')
 
     def test_si_sumatra_falla_se_reporta(self):
         with mock.patch.object(agente, '_powershell', return_value=(0, '')), \

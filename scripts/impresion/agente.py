@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Agente de impresión de la oficina principal (2026-10-24; Windows desde 2026-10-30).
+Todo sale en hoja carta; lo que el servidor marca a doble cara sale por ambas caras
+(desde 2026-11-18, todo lo de la plataforma).
 
 Corre en la computadora que tiene instalada la impresora. Cada pocos segundos le pregunta
 a cada servidor configurado si hay documentos en cola; si hay, lo convierte a PDF con
@@ -59,8 +61,20 @@ NO_ENCONTRADA = ('La computadora de la oficina no encuentra la impresora: revisa
 log = logging.getLogger('impresion')
 
 
+def carpeta_temporal():
+    """En Windows, Edge puede seguir usando su perfil temporal unos segundos después de
+    terminar: que no poder borrarlo no convierta en error un documento ya impreso."""
+    try:
+        return tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    except TypeError:  # Python anterior a 3.10 (Mac con el python3 del sistema)
+        return tempfile.TemporaryDirectory()
+
+
 def cargar_config():
     config = json.loads(CONFIG.read_text(encoding='utf-8-sig'))  # PowerShell lo guarda con BOM
+    servidores = config.get('servidores')
+    if isinstance(servidores, dict):  # Windows PowerShell 5.1 a veces guarda una lista de uno como objeto
+        config['servidores'] = servidores.get('value') if isinstance(servidores.get('value'), list) else [servidores]
     if not config.get('cola') or not config.get('servidores'):
         raise SystemExit(f'{CONFIG}: falta "cola" o "servidores".')
     return config
@@ -95,12 +109,12 @@ def a_pdf(html, destino, chrome):
     """Convierte el documento a PDF con Chrome sin interfaz. Respeta su @page (carta, márgenes)."""
     html = re.sub(r'<head[^>]*>', lambda m: m.group(0) + CSP, html, count=1, flags=re.I) \
         if re.search(r'<head[^>]*>', html, re.I) else CSP + html
-    with tempfile.TemporaryDirectory() as tmp:
+    with carpeta_temporal() as tmp:
         fuente = Path(tmp) / 'documento.html'
         fuente.write_text(html, encoding='utf-8')
         subprocess.run([
             chrome, '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-            '--disable-extensions', '--hide-scrollbars', f'--user-data-dir={Path(tmp) / "perfil"}',
+            '--disable-extensions', '--disable-breakpad', '--hide-scrollbars', f'--user-data-dir={Path(tmp) / "perfil"}',
             '--no-pdf-header-footer', '--print-to-pdf-no-header', '--virtual-time-budget=5000',
             f'--print-to-pdf={destino}', fuente.as_uri(),
         ], check=True, capture_output=True, timeout=90, **SIN_VENTANA)
@@ -109,9 +123,11 @@ def a_pdf(html, destino, chrome):
 
 
 def imprimir(pdf, cola, copias, titulo, doble_cara=False):
-    """Manda el PDF a CUPS. Devuelve el id del trabajo de CUPS (p. ej. RICOH_…-123)."""
-    opciones = ['-o', 'sides=two-sided-long-edge', '-o', 'Collate=True'] if doble_cara else []
-    r = subprocess.run(['lp', '-d', cola, '-n', str(copias), '-t', titulo[:100], '-o', 'media=Letter', *opciones, str(pdf)],
+    """Manda el PDF a CUPS en hoja carta (y a doble cara si se pide), con las copias
+    intercaladas. Devuelve el id del trabajo de CUPS (p. ej. RICOH_…-123)."""
+    caras = 'two-sided-long-edge' if doble_cara else 'one-sided'
+    r = subprocess.run(['lp', '-d', cola, '-n', str(copias), '-t', titulo[:100], '-o', 'media=Letter',
+                        '-o', f'sides={caras}', '-o', 'collate=true', str(pdf)],
                        capture_output=True, text=True, timeout=60)
     if r.returncode != 0:
         raise RuntimeError((r.stderr or r.stdout).strip() or 'lp falló')
@@ -179,16 +195,19 @@ def pendientes_windows(cola):
 
 
 def imprimir_windows(pdf, cola, copias, titulo, doble_cara=False):
-    """Devuelve el id del trabajo en la cola de Windows, o None si ya salió de la cola."""
+    """Imprime en hoja carta (y a doble cara si se pide) con SumatraPDF. Cada copia va como
+    un trabajo aparte: así una copia nunca empieza al respaldo de la anterior. Devuelve el
+    id del último trabajo en la cola de Windows, o None si ya salieron de la cola."""
     antes = pendientes_windows(cola)
     sumatra = Path(__file__).resolve().parent / 'SumatraPDF.exe'
-    opciones = ',duplexlong,collate' if doble_cara else ''
-    r = subprocess.run([str(sumatra), '-print-to', cola, '-silent', '-print-settings', f'{copias}x,noscale,paper=letter{opciones}', str(pdf)],
-                       capture_output=True, text=True, timeout=120, **SIN_VENTANA)
-    if r.returncode != 0:
-        raise RuntimeError((r.stderr or r.stdout).strip() or 'SumatraPDF no pudo imprimir')
+    ajustes = f'1x,noscale,paper=letter,{"duplexlong" if doble_cara else "simplex"}'
+    for _ in range(max(1, int(copias))):
+        r = subprocess.run([str(sumatra), '-print-to', cola, '-silent', '-print-settings', ajustes, str(pdf)],
+                           capture_output=True, text=True, timeout=120, **SIN_VENTANA)
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or r.stdout).strip() or 'SumatraPDF no pudo imprimir')
     nuevos = pendientes_windows(cola) - antes
-    return min(nuevos, key=int) if nuevos else None
+    return max(nuevos, key=int) if nuevos else None
 
 
 def _estado_windows(cola):
@@ -253,7 +272,7 @@ class Agente:
         log.info('[%s] trabajo %s «%s» × %s', servidor['nombre'], t['id'], t['titulo'], t['copias'])
         ruta = f'/impresion/agente/trabajos/{t["id"]}/'
         try:
-            with tempfile.TemporaryDirectory() as tmp:
+            with carpeta_temporal() as tmp:
                 pdf = Path(tmp) / 'documento.pdf'
                 if t.get('pdf'):
                     contenido = base64.b64decode(t['pdf'], validate=True)
@@ -269,10 +288,7 @@ class Agente:
                     log.info('  simulado: %s', salida)
                     pedir(servidor, ruta, {'estado': 'impreso', 'detalle': 'Simulación: no se imprimió en papel.'})
                     return
-                if t.get('doble_cara'):
-                    cups = imprimir(pdf, self.config['cola'], t['copias'], t['titulo'], doble_cara=True)
-                else:
-                    cups = imprimir(pdf, self.config['cola'], t['copias'], t['titulo'])
+                cups = imprimir(pdf, self.config['cola'], t['copias'], t['titulo'], doble_cara=bool(t.get('doble_cara')))
             detalle = 'La impresora está en pausa en la computadora de la oficina.' if cola_detenida(self.config['cola']) else ''
             if self.impresora_ok is False:
                 detalle = NO_ENCONTRADA
@@ -376,7 +392,7 @@ def pagina_de_prueba(agente):
     html = ('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Prueba</title><style>@page { size: letter; margin: 12mm; }'
             'body { font-family: Arial, sans-serif; }</style></head><body><h1>Lottus · página de prueba</h1>'
             f'<p>Si ves esta hoja, el agente de impresión funciona. {time.strftime("%Y-%m-%d %H:%M")}</p></body></html>')
-    with tempfile.TemporaryDirectory() as tmp:
+    with carpeta_temporal() as tmp:
         pdf = Path(tmp) / 'prueba.pdf'
         a_pdf(html, pdf, agente.chrome)
         imprimir(pdf, agente.config['cola'], 1, 'Prueba Lottus')

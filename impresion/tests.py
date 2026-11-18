@@ -14,6 +14,7 @@ from rest_framework.test import APIClient
 
 from impresion import servicios as s
 from impresion.models import Impresora, TrabajoImpresion as T
+from ordenes.models import RegistroAuditoria
 from ordenes.tests.utils import LottusTestCase
 
 DOC = '<!DOCTYPE html><html><body><p>Remisión ficticia</p></body></html>'
@@ -45,6 +46,7 @@ class ImpresionRemotaTests(LottusTestCase):
         self.assertEqual((r.status_code, r.data['estado'], r.data['en_linea']), (201, 'pendiente', True))
         t = self.siguiente()
         self.assertEqual((t.status_code, t.data['html'], t.data['copias']), (200, DOC, 2))
+        self.assertIs(t.data['doble_cara'], True)  # en la oficina todo sale a doble cara
         self.assertEqual(self.siguiente().status_code, 204)  # nadie más lo recibe
 
         url = f'/api/impresion/agente/trabajos/{t.data["id"]}/'
@@ -123,3 +125,55 @@ class CrearImpresoraTests(LottusTestCase):
             self.assertEqual(len(nuevo), 1)
             self.assertIsNone(s.impresora_del_token(token))
             self.assertEqual(s.impresora_del_token(nuevo[0]['token']), imp.pk)
+
+
+class ConectarComputadoraTests(LottusTestCase):
+    """(2026-11-18) El instalador de Windows conecta la computadora de la oficina con un
+    usuario administrador, sin pasar tokens a mano."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = self.api(self.crear_usuario('admin_imp', role='administrador'))
+
+    def conectar(self, cliente=None, **datos):
+        with self.captureOnCommitCallbacks(execute=True):
+            return (cliente or self.admin).post('/api/impresion/conectar/', {'nombre': 'RICOH SP 3710SF PCL 6', 'equipo': 'PC-OFICINA', **datos}, format='json')
+
+    def agente(self, token):
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION=f'Impresora {token}')
+        return c.post('/api/impresion/agente/siguiente/').status_code
+
+    def test_sin_impresoras_crea_la_de_la_oficina(self):
+        r = self.conectar()
+        self.assertEqual(r.status_code, 201)
+        imp = Impresora.objects.get()
+        self.assertEqual((r.data['impresora'], imp.nombre, imp.ubicacion), (imp.pk, 'RICOH SP 3710SF PCL 6', 'Oficina principal'))
+        self.assertEqual(self.agente(r.data['token']), 204)
+        self.assertNotEqual(imp.token_hash, r.data['token'])  # en la base solo queda el hash
+        registro = RegistroAuditoria.objects.get(accion='impresion.computadora_conectada')
+        self.assertEqual(registro.detalle, {'equipo': 'PC-OFICINA', 'nueva': True})
+
+    def test_volver_a_conectar_reemplaza_la_computadora_anterior(self):
+        viejo = self.conectar().data['token']
+        self.assertEqual(self.agente(viejo), 204)
+        r = self.conectar()
+        self.assertEqual((r.status_code, Impresora.objects.count()), (200, 1))
+        self.assertEqual(self.agente(viejo), 401)
+        self.assertEqual(self.agente(r.data['token']), 204)
+
+    def test_con_varias_impresoras_hay_que_elegir(self):
+        a = Impresora.objects.create(nombre='Ricoh', token_hash='a' * 64)
+        Impresora.objects.create(nombre='Epson bodega', token_hash='b' * 64)
+        r = self.conectar()
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual([i['nombre'] for i in r.data['impresoras']], ['Epson bodega', 'Ricoh'])
+        r = self.conectar(impresora=a.pk)
+        self.assertEqual((r.status_code, r.data['impresora']), (200, a.pk))
+        self.assertEqual(self.conectar(impresora=999).status_code, 400)
+
+    def test_solo_un_administrador_conecta_la_computadora(self):
+        vendedor = self.api(self.crear_usuario('vend_conecta'))
+        self.assertEqual(self.conectar(vendedor).status_code, 403)
+        self.assertEqual(self.conectar(APIClient()).status_code, 401)
+        self.assertFalse(Impresora.objects.exists())

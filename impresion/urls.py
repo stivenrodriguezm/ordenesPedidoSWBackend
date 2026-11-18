@@ -5,6 +5,7 @@ urlpatterns = [
     path('impresoras/', v.impresoras),
     path('trabajos/', v.crear_trabajo),
     path('trabajos/<int:pk>/', v.trabajo),
+    path('conectar/', v.conectar_computadora),
     path('agente/siguiente/', v.agente_siguiente),
     path('agente/trabajos/<int:pk>/', v.agente_reportar),
 ]

@@ -4,11 +4,13 @@ from django.core.cache import cache
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, authentication_classes, permission_classes, throttle_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import BaseThrottle, UserRateThrottle
 
 from lottusPedidos.throttling import ApiUserRateThrottle
+from ordenes.permissions import IsAdministradorRole
+from ordenes.servicios import auditar
 from . import servicios as s
 from .models import Impresora, TrabajoImpresion as T
 
@@ -58,7 +60,8 @@ def crear_trabajo(request):
     if not 1 <= copias <= s.MAX_COPIAS:
         return Response({'error': f'Las copias van de 1 a {s.MAX_COPIAS}.'}, status=400)
     titulo = str(d.get('titulo') or 'Documento').strip()[:150] or 'Documento'
-    trabajo = T.objects.create(impresora=imp, usuario=request.user, titulo=titulo, html=html, copias=copias)
+    # (2026-11-18) En la oficina todo sale en carta (lo fija el documento) y a doble cara.
+    trabajo = T.objects.create(impresora=imp, usuario=request.user, titulo=titulo, html=html, copias=copias, doble_cara=True)
     transaction.on_commit(lambda: s.avisar(imp.pk))
     return Response({**_trabajo(trabajo), 'en_linea': s.en_linea(imp.pk)}, status=201)
 
@@ -66,6 +69,43 @@ def crear_trabajo(request):
 @api_view(['GET'])
 def trabajo(request, pk):
     return Response(_trabajo(get_object_or_404(T, pk=pk, usuario=request.user)))
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, IsAdministradorRole])
+def conectar_computadora(request):
+    """(2026-11-18) El instalador de la computadora de la oficina entra con un administrador
+    y recibe el token de su impresora: renueva el de la impresora activa (la anterior
+    computadora deja de imprimir) o, si no hay ninguna, la crea. Con varias, hay que elegir."""
+    d = request.data
+    equipo = str(d.get('equipo') or '').strip()[:80]
+    with transaction.atomic():
+        activas = list(Impresora.objects.select_for_update().filter(activa=True))
+        elegida = str(d.get('impresora') or '')
+        if elegida:
+            imp = next((i for i in activas if str(i.pk) == elegida), None)
+            if imp is None:
+                return Response({'error': 'Esa impresora no existe o está desactivada.'}, status=400)
+        elif len(activas) > 1:
+            return Response({'error': 'Hay varias impresoras de oficina: elige cuál conectar.',
+                             'impresoras': [{'id': i.pk, 'nombre': i.nombre, 'ubicacion': i.ubicacion} for i in activas]},
+                            status=409)
+        else:
+            imp = activas[0] if activas else None
+        token, h = s.nuevo_token()
+        if imp is None:
+            nombre = str(d.get('nombre') or '').strip()[:80] or 'Ricoh oficina'
+            imp = Impresora.objects.create(nombre=nombre, ubicacion='Oficina principal', token_hash=h)
+            nueva = True
+        else:
+            anterior = imp.token_hash
+            imp.token_hash = h
+            imp.save(update_fields=['token_hash'])
+            transaction.on_commit(lambda: s.olvidar_token(anterior))
+            nueva = False
+        auditar(request.user, 'impresion.computadora_conectada', imp, {'equipo': equipo, 'nueva': nueva})
+    return Response({'impresora': imp.pk, 'nombre': imp.nombre, 'ubicacion': imp.ubicacion, 'token': token},
+                    status=201 if nueva else 200)
 
 
 # ---------------------------------------------------------------------------

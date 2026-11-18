@@ -1,0 +1,23 @@
+﻿LOTTUS - IMPRESIÓN EN LA OFICINA (Ricoh)
+=========================================
+
+Esta computadora recibe lo que se manda a imprimir desde la plataforma eligiendo
+«En la oficina» y lo imprime en la Ricoh: hoja carta y por ambas caras.
+
+INSTALAR (una sola vez, unos 2 minutos)
+1. Clic derecho en LottusImpresion-Windows.zip > «Extraer todo...» > Extraer.
+2. Abre la carpeta extraída y haz doble clic en  instalar.bat
+   (si Windows dice «Windows protegió su PC»: «Más información» > «Ejecutar de todas formas»).
+3. Si pregunta, escribe el número de la Ricoh.
+4. Escribe el usuario y la contraseña de un ADMINISTRADOR de la plataforma.
+5. Espera la hoja de prueba. Si sale, ya está listo.
+
+PARA QUE SIGA FUNCIONANDO
+- Deja esta computadora encendida y con la sesión de Windows abierta
+  (se puede bloquear la pantalla; no cerrar sesión ni apagar).
+- El agente arranca solo cada vez que se inicia sesión en este Windows.
+- Si la computadora está apagada, lo enviado espera hasta 12 horas y luego se descarta.
+
+SI ALGO FALLA
+- Vuelve a ejecutar instalar.bat (no se pierde nada).
+- Registro del agente: %LOCALAPPDATA%\LottusImpresion\agente.log
