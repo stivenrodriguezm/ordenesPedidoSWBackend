@@ -20,14 +20,17 @@ Uso:  python3 agente.py            (lo deja corriendo el LaunchAgent com.lottus.
                                     o, en Windows, el acceso directo de Inicio)
       python3 agente.py --simular  (no imprime; deja los PDF en la carpeta «simulados»)
       python3 agente.py --probar   (imprime una página de prueba y termina)
+      python3 agente.py --diagnostico  (consulta una vez cada servidor mostrando todo en pantalla)
 """
 import base64
+import functools
 import json
 import logging
 import os
 import re
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -42,6 +45,8 @@ ES_WINDOWS = os.name == 'nt'
 CARPETA = (Path(os.environ.get('LOCALAPPDATA') or Path.home()) / 'LottusImpresion' if ES_WINDOWS
            else Path.home() / 'Library' / 'Application Support' / 'LottusImpresion')
 CONFIG = CARPETA / 'config.json'
+# Certificados raíz que van con el agente (los de certifi, ver windows/empaquetar.sh).
+CERTIFICADOS = Path(__file__).resolve().parent / 'certificados.pem'
 CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 NAVEGADORES_WINDOWS = (r'Microsoft\Edge\Application\msedge.exe', r'Google\Chrome\Application\chrome.exe')
 # En Windows, sin esto cada subproceso abriría una ventana de consola.
@@ -80,6 +85,18 @@ def cargar_config():
     return config
 
 
+@functools.lru_cache(maxsize=1)
+def contexto_tls():
+    """(2026-11-19) Los certificados de Windows más los que van con el agente. Python solo ve
+    los certificados raíz que Windows ya guardó; Edge y PowerShell descargan al vuelo los que
+    faltan. El de api.muebleslottus.com usa la cadena nueva de Let's Encrypt (ISRG Root X2) y
+    en la oficina el agente no se conectaba nunca, sin decir nada, mientras el instalador sí."""
+    contexto = ssl.create_default_context()
+    if CERTIFICADOS.exists():
+        contexto.load_verify_locations(cafile=str(CERTIFICADOS))
+    return contexto
+
+
 def pedir(servidor, ruta, datos=None):
     """POST a la API del servidor con el token de la impresora. Devuelve (estado, json)."""
     req = urllib.request.Request(
@@ -88,7 +105,7 @@ def pedir(servidor, ruta, datos=None):
         headers={'Authorization': f'Impresora {servidor["token"]}', 'Content-Type': 'application/json',
                  'User-Agent': 'LottusImpresion/1'})
     try:
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(req, timeout=20, context=contexto_tls()) as r:
             cuerpo = r.read()
             return r.status, (json.loads(cuerpo) if cuerpo else None)
     except urllib.error.HTTPError as e:
@@ -399,8 +416,44 @@ def pagina_de_prueba(agente):
     print('Página de prueba enviada a', agente.config['cola'])
 
 
+def diagnostico():
+    """Para cuando el agente no conecta: consulta una vez cada servidor y muestra todo en
+    pantalla. Si hay un documento en cola, lo imprime y lo sigue hasta que sale."""
+    print(f'Python {sys.version.split()[0]} · agente en {Path(__file__).resolve().parent}')
+    print(f'Certificados propios: {"sí" if CERTIFICADOS.exists() else "NO (solo los de Windows)"}')
+    agente = Agente()
+    print(f'Impresora de Windows: {agente.config["cola"]} · navegador: {agente.chrome}')
+    encontrada = impresora_encontrada(agente.config['cola'])
+    print('Impresora en la red:', {True: 'encontrada', False: 'NO ENCONTRADA', None: 'no se puede comprobar (WSD o USB)'}[encontrada])
+    todo_bien = True
+    for servidor in agente.config['servidores']:
+        try:
+            estado, t = pedir(servidor, '/impresion/agente/siguiente/', {'admite_pdf': True, 'admite_doble_cara': True})
+        except Exception as e:  # noqa: BLE001 — se muestra tal cual para diagnosticar
+            print(f'[{servidor["nombre"]}] NO SE CONECTA con {servidor["api"]}: {e!r}')
+            todo_bien = False
+            continue
+        if estado not in (200, 204):
+            motivo = 'token inválido: vuelve a ejecutar instalar.bat y conéctala de nuevo' if estado == 401 else f'HTTP {estado}'
+            print(f'[{servidor["nombre"]}] el servidor respondió {motivo}')
+            todo_bien = False
+            continue
+        print(f'[{servidor["nombre"]}] conectado con {servidor["api"]}' + (' · hay un documento en cola' if estado == 200 else ' · sin documentos en cola'))
+        if estado == 200:
+            agente.procesar(servidor, t)
+            for _ in range(20):
+                if not agente.en_vuelo:
+                    break
+                time.sleep(3)
+                agente.revisar_en_vuelo()
+    return todo_bien
+
+
 if __name__ == '__main__':
     salida = {'stream': sys.stdout}
+    if '--diagnostico' in sys.argv:
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', **salida)
+        sys.exit(0 if diagnostico() else 1)
     if ES_WINDOWS:  # sin consola (pythonw) ni launchd que guarde la salida; y que el equipo no se duerma
         from logging.handlers import RotatingFileHandler
         import ctypes

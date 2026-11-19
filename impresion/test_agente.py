@@ -95,6 +95,28 @@ class TrabajoAtascadoTests(TestCase):
         self.pedir.assert_called_once_with(SERVIDOR, '/impresion/agente/trabajos/7/', {'estado': 'impreso'})
 
 
+class CertificadosTests(TestCase):
+    """(2026-11-19) En la oficina el agente no veía el certificado raíz del servidor."""
+
+    def tearDown(self):
+        agente.contexto_tls.cache_clear()
+
+    def test_suma_los_certificados_que_van_con_el_agente(self):
+        import certifi
+        agente.contexto_tls.cache_clear()
+        with mock.patch.object(agente, 'CERTIFICADOS', Path('/no/existe.pem')):
+            solo_sistema = agente.contexto_tls().cert_store_stats()['x509_ca']
+        agente.contexto_tls.cache_clear()
+        with mock.patch.object(agente, 'CERTIFICADOS', Path(certifi.where())):
+            self.assertGreater(agente.contexto_tls().cert_store_stats()['x509_ca'], solo_sistema)
+
+    def test_las_consultas_usan_ese_contexto(self):
+        with mock.patch.object(agente.urllib.request, 'urlopen', side_effect=OSError('sin red')) as abrir:
+            with self.assertRaises(OSError):
+                agente.pedir(SERVIDOR, '/impresion/agente/siguiente/')
+        self.assertIs(abrir.call_args.kwargs['context'], agente.contexto_tls())
+
+
 class WindowsTests(TestCase):
     """Se prueba la lógica con PowerShell y SumatraPDF simulados; lo real se comprueba con --probar."""
 

@@ -47,6 +47,20 @@ function CodigoHttp($registro) {
     return 0
 }
 
+function DetenerAgente {
+    Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" |
+        Where-Object { $_.CommandLine -like '*LottusImpresion*agente.py*' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 2  # que Windows suelte los archivos del agente antes de reemplazarlos
+}
+
+function AgenteEnLinea {
+    # La plataforma marca «en línea» la impresora cuando su agente le consulta (cada 3 s).
+    try { $lista = Llamar 'Get' '/impresion/impresoras/' $null $acceso } catch { return $false }
+    foreach ($i in $lista) { if ($i.id -eq $conexion.impresora -and $i.en_linea) { return $true } }
+    return $false
+}
+
 function RespuestaError($registro) {
     try { return ($registro.ErrorDetails.Message | ConvertFrom-Json) } catch { return $null }
 }
@@ -56,7 +70,7 @@ Write-Host '  Lottus - impresión en la oficina' -ForegroundColor Green
 Write-Host '=============================================' -ForegroundColor Green
 Write-Host "Plataforma: $Api"
 
-foreach ($archivo in 'agente.py', 'SumatraPDF.exe', 'python\pythonw.exe') {
+foreach ($archivo in 'agente.py', 'certificados.pem', 'SumatraPDF.exe', 'python\pythonw.exe') {
     if (-not (Test-Path (Join-Path $origen $archivo))) { Fallar "Falta $archivo en esta carpeta. Descomprime todo el .zip y vuelve a ejecutar instalar.bat." }
 }
 # El agente convierte cada documento a PDF con Edge o Chrome (los busca donde los busca agente.py).
@@ -89,12 +103,9 @@ Write-Host "Impresora: $cola"
 
 # 2. Detener el agente anterior y copiar los archivos.
 Paso '2. Copiando el agente'
-Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" |
-    Where-Object { $_.CommandLine -like '*LottusImpresion*agente.py*' } |
-    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-Start-Sleep -Seconds 2  # que Windows suelte los archivos del agente anterior antes de reemplazarlos
+DetenerAgente
 New-Item -ItemType Directory -Force -Path $destino | Out-Null
-Copy-Item (Join-Path $origen 'agente.py'), (Join-Path $origen 'SumatraPDF.exe') $destino -Force
+Copy-Item (Join-Path $origen 'agente.py'), (Join-Path $origen 'certificados.pem'), (Join-Path $origen 'SumatraPDF.exe') $destino -Force
 Copy-Item (Join-Path $origen 'python') $destino -Recurse -Force
 # Lo que viene en un .zip descargado queda marcado «de Internet»: se desmarca para que arranque sin avisos.
 Get-ChildItem $destino -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
@@ -186,6 +197,22 @@ $acceso_directo.WorkingDirectory = $destino
 $acceso_directo.Save()
 Start-Process $python -ArgumentList "`"$agente`"" -WorkingDirectory $destino
 Write-Host 'El agente queda corriendo y arranca solo cada vez que se inicia sesión en este Windows.'
+
+# (2026-11-19) Comprobar que el agente de verdad le habla a la plataforma; si no, diagnóstico en pantalla.
+$conectado = $false
+if ($acceso) {
+    Write-Host 'Comprobando que el agente se conecte con la plataforma...'
+    for ($i = 0; $i -lt 10 -and -not $conectado; $i++) { Start-Sleep -Seconds 2; $conectado = AgenteEnLinea }
+}
+if ($conectado) {
+    Write-Host 'El agente está conectado con la plataforma.' -ForegroundColor Green
+} else {
+    if ($acceso) { Write-Host 'El agente NO se conectó con la plataforma. Diagnóstico (si sale un error, tómale una foto):' -ForegroundColor Yellow }
+    else { Write-Host 'Diagnóstico del agente:' }
+    DetenerAgente
+    & (Join-Path $destino 'python\python.exe') $agente --diagnostico
+    Start-Process $python -ArgumentList "`"$agente`"" -WorkingDirectory $destino
+}
 
 # 5. Hoja de prueba.
 Paso '5. Hoja de prueba'

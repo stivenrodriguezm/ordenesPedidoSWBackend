@@ -17,6 +17,9 @@ unzip -q "$TMP/python.zip" -d "$PAQUETE/python"
 unzip -q "$TMP/sumatra.zip" -d "$TMP/sumatra"
 cp "$TMP"/sumatra/SumatraPDF-*.exe "$PAQUETE/SumatraPDF.exe"
 cp "$AQUI/../agente.py" "$AQUI/instalar.ps1" "$AQUI/instalar.bat" "$AQUI/LEEME.txt" "$PAQUETE/"
+# Certificados raíz propios del agente (certifi del backend): el Python portátil solo ve los que
+# Windows ya guardó y el certificado del servidor usa la cadena nueva de Let's Encrypt.
+cp "$("$AQUI/../../../venv/bin/python" -c 'import certifi; print(certifi.where())')" "$PAQUETE/certificados.pem"
 (cd "$TMP" && zip -qr "LottusImpresion-Windows.zip" "LottusImpresion-Windows")
 mv "$TMP/LottusImpresion-Windows.zip" "$SALIDA/"
 shasum -a 256 "$TMP/python.zip" "$TMP/sumatra.zip" | awk '{print $1}'
